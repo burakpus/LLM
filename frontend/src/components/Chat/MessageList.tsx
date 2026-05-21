@@ -4,7 +4,9 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import type { Message } from '../../store'
-import { t } from '../../store'
+import { t, useStore } from '../../store'
+import { writeFile } from '../../api/project'
+import { computeDiff } from './DiffView'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallBlock from './ToolCallBlock'
 import SetLogo from '../SetLogo'
@@ -20,9 +22,16 @@ interface Props {
 function CodeBlock({
   className, children,
 }: { className?: string; children?: ReactNode }) {
-  const [copied, setCopied] = useState(false)
+  const store    = useStore()
+  const [copied, setCopied]   = useState(false)
+  const [saving, setSaving]   = useState(false)
+  const [saved,  setSaved]    = useState(false)
+  const [fname,  setFname]    = useState('')
+  const [showInput, setShowInput] = useState(false)
   const lang = (className?.match(/language-(\w+)/)?.[1] ?? 'plain').toLowerCase()
   const text = String(children ?? '').replace(/\n$/, '')
+
+  const hasProject = !!store.project.projectId
 
   const copy = async () => {
     try {
@@ -43,6 +52,25 @@ function CodeBlock({
     URL.revokeObjectURL(url)
   }
 
+  const saveToProject = async () => {
+    const path = fname.trim() || `snippet-${Date.now()}.${lang === 'plain' ? 'txt' : lang}`
+    setSaving(true)
+    try {
+      const projectId = store.project.projectId!
+      await writeFile(projectId, path, text)
+      const original = store.project.files[path] ?? ''
+      const diffLines = computeDiff(original, text)
+      store.setFileContent(path, text)
+      store.setPendingChange({ path, originalContent: original, newContent: text, diffLines })
+      store.setActiveFile(path)
+      setSaved(true)
+      setShowInput(false)
+      setTimeout(() => setSaved(false), 2000)
+    } catch { /* ignore */ } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="code-block-wrapper">
       <div className="code-lang-bar">
@@ -50,6 +78,36 @@ function CodeBlock({
         <div className="code-lang-bar-actions">
           <button className="copy-btn" onClick={copy}>{copied ? 'Copied' : t('copy')}</button>
           <button className="dl-btn"   onClick={download}>{t('txt')}</button>
+          {hasProject && !showInput && (
+            <button
+              className="dl-btn"
+              onClick={() => setShowInput(true)}
+              title="Projeye kaydet"
+              style={{ color: saved ? '#34a853' : undefined }}
+            >
+              {saved ? '✓ Kaydedildi' : '📁'}
+            </button>
+          )}
+          {hasProject && showInput && (
+            <span className="flex items-center gap-1">
+              <input
+                autoFocus
+                value={fname}
+                onChange={e => setFname(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') saveToProject(); if (e.key === 'Escape') setShowInput(false) }}
+                placeholder={`dosya.${lang === 'plain' ? 'txt' : lang}`}
+                style={{
+                  fontSize: 11, padding: '1px 6px', borderRadius: 4, outline: 'none',
+                  background: 'var(--bg)', border: '1px solid var(--accent)',
+                  color: 'var(--text)', width: 130,
+                }}
+              />
+              <button className="copy-btn" onClick={saveToProject} disabled={saving}>
+                {saving ? '...' : '✓'}
+              </button>
+              <button className="dl-btn" onClick={() => setShowInput(false)}>✕</button>
+            </span>
+          )}
         </div>
       </div>
       <pre><code className={className}>{children}</code></pre>
