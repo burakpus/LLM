@@ -720,9 +720,21 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
 
     // Inject authenticated username so LiteLLM tracks usage per user
     var username = principal.FindFirstValue(ClaimTypes.Name) ?? "anonymous";
+    var hasVision = false;
     try
     {
         var doc = System.Text.Json.JsonDocument.Parse(bodyStr);
+
+        // Detect vision content (image_url in any message). When present, we
+        // bypass LiteLLM and go straight to vLLM — LiteLLM's request reshaping
+        // breaks Gemma 4's chat template (list-index-out-of-range).
+        if (doc.RootElement.TryGetProperty("messages", out var msgs) && msgs.ValueKind == JsonValueKind.Array)
+            foreach (var m in msgs.EnumerateArray())
+                if (m.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.Array)
+                    foreach (var part in c.EnumerateArray())
+                        if (part.TryGetProperty("type", out var t) && t.GetString() == "image_url")
+                        { hasVision = true; break; }
+
         if (!doc.RootElement.TryGetProperty("user", out _))
         {
             var obj = new Dictionary<string, object>();
@@ -735,15 +747,38 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
     catch { /* leave bodyStr unchanged on parse error */ }
 
     var opts = litellmOpts.Value;
-    var targetUrl = opts.BaseUrl.TrimEnd('/') + "/v1/chat/completions";
+    // Vision requests: bypass LiteLLM, go directly to vLLM (Gemma chat model)
+    var targetUrl = hasVision
+        ? "http://localhost:8000/v1/chat/completions"
+        : opts.BaseUrl.TrimEnd('/') + "/v1/chat/completions";
+    var bearerKey = hasVision
+        ? (Environment.GetEnvironmentVariable("LLM_VLLM_KEY") ?? opts.ApiKey)
+        : opts.ApiKey;
+
+    if (hasVision)
+    {
+        // For direct vLLM, rewrite model name (chat → gemma4-26b)
+        try
+        {
+            var doc = System.Text.Json.JsonDocument.Parse(bodyStr);
+            var obj = new Dictionary<string, object>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                obj[prop.Name] = prop.Value.Clone();
+            obj["model"] = "gemma4-26b";
+            bodyStr = System.Text.Json.JsonSerializer.Serialize(obj);
+        }
+        catch { /* leave unchanged */ }
+        app.Logger.LogInformation("Vision request from {User} → direct vLLM (bypass LiteLLM)", username);
+    }
 
     using var client = httpFactory.CreateClient("proxy");
     client.Timeout = TimeSpan.FromSeconds(600);
 
     using var req = new HttpRequestMessage(HttpMethod.Post, targetUrl);
     req.Content = new StringContent(bodyStr, Encoding.UTF8, "application/json");
-    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", opts.ApiKey);
-    req.Headers.TryAddWithoutValidation("x-litellm-user", username);  // end-user tracking
+    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerKey);
+    if (!hasVision)
+        req.Headers.TryAddWithoutValidation("x-litellm-user", username);  // end-user tracking
 
     using var resp = await client.SendAsync(req,
         HttpCompletionOption.ResponseHeadersRead, ct);
