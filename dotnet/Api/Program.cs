@@ -718,36 +718,30 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
     using var reader = new StreamReader(http.Request.Body);
     var bodyStr = await reader.ReadToEndAsync(ct);
 
-    var rid = Guid.NewGuid().ToString("N").Substring(0, 6);
-    app.Logger.LogInformation("[VISION {Rid}] B1. /api/llm/completions hit — body={Bytes}B", rid, bodyStr.Length);
+    var debug = Environment.GetEnvironmentVariable("LLM_DEBUG_VISION") == "1";
+    var rid   = debug ? Guid.NewGuid().ToString("N").Substring(0, 6) : "";
+    if (debug) app.Logger.LogInformation("[VISION {Rid}] B1. /api/llm/completions hit — body={Bytes}B", rid, bodyStr.Length);
 
     // Inject authenticated username so LiteLLM tracks usage per user
     var username = principal.FindFirstValue(ClaimTypes.Name) ?? "anonymous";
-    var hasVision = false;
-    var msgCount = 0;
-    var modelName = "?";
     try
     {
         var doc = System.Text.Json.JsonDocument.Parse(bodyStr);
-
-        if (doc.RootElement.TryGetProperty("model", out var mdl))
-            modelName = mdl.GetString() ?? "?";
-
-        // Detect vision content (image_url in any message). When present, we
-        // bypass LiteLLM and go straight to vLLM — LiteLLM's request reshaping
-        // breaks Gemma 4's chat template (list-index-out-of-range).
-        if (doc.RootElement.TryGetProperty("messages", out var msgs) && msgs.ValueKind == JsonValueKind.Array)
+        if (debug)
         {
-            msgCount = msgs.GetArrayLength();
-            foreach (var m in msgs.EnumerateArray())
-                if (m.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.Array)
-                    foreach (var part in c.EnumerateArray())
-                        if (part.TryGetProperty("type", out var t) && t.GetString() == "image_url")
-                        { hasVision = true; break; }
+            var modelName = doc.RootElement.TryGetProperty("model", out var mdl) ? mdl.GetString() ?? "?" : "?";
+            var msgCount  = doc.RootElement.TryGetProperty("messages", out var msgs) && msgs.ValueKind == JsonValueKind.Array
+                ? msgs.GetArrayLength() : 0;
+            var hasVision = false;
+            if (doc.RootElement.TryGetProperty("messages", out var ms) && ms.ValueKind == JsonValueKind.Array)
+                foreach (var m in ms.EnumerateArray())
+                    if (m.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.Array)
+                        foreach (var part in c.EnumerateArray())
+                            if (part.TryGetProperty("type", out var t) && t.GetString() == "image_url")
+                            { hasVision = true; break; }
+            app.Logger.LogInformation("[VISION {Rid}] B2. parsed — user={User} model={Model} msgs={Msgs} hasVision={Vision}",
+                rid, username, modelName, msgCount, hasVision);
         }
-
-        app.Logger.LogInformation("[VISION {Rid}] B2. parsed — user={User} model={Model} msgs={Msgs} hasVision={Vision}",
-            rid, username, modelName, msgCount, hasVision);
 
         if (!doc.RootElement.TryGetProperty("user", out _))
         {
@@ -760,37 +754,12 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
     }
     catch (Exception ex)
     {
-        app.Logger.LogError(ex, "[VISION {Rid}] B2. JSON parse failed", rid);
+        if (debug) app.Logger.LogError(ex, "[VISION {Rid}] B2. JSON parse failed", rid);
     }
 
-    var opts = litellmOpts.Value;
-    // Vision requests: bypass LiteLLM, go directly to vLLM (Gemma chat model)
-    var targetUrl = hasVision
-        ? "http://localhost:8000/v1/chat/completions"
-        : opts.BaseUrl.TrimEnd('/') + "/v1/chat/completions";
-    var bearerKey = hasVision
-        ? (Environment.GetEnvironmentVariable("LLM_VLLM_KEY") ?? opts.ApiKey)
-        : opts.ApiKey;
-
-    if (hasVision)
-    {
-        // For direct vLLM, rewrite model name (chat → gemma4-26b)
-        try
-        {
-            var doc = System.Text.Json.JsonDocument.Parse(bodyStr);
-            var obj = new Dictionary<string, object>();
-            foreach (var prop in doc.RootElement.EnumerateObject())
-                obj[prop.Name] = prop.Value.Clone();
-            obj["model"] = "gemma4-26b";
-            bodyStr = System.Text.Json.JsonSerializer.Serialize(obj);
-        }
-        catch { /* leave unchanged */ }
-        app.Logger.LogInformation("[VISION {Rid}] B3. routing → DIRECT vLLM {Url} (bypass LiteLLM)", rid, targetUrl);
-    }
-    else
-    {
-        app.Logger.LogInformation("[VISION {Rid}] B3. routing → LiteLLM {Url}", rid, targetUrl);
-    }
+    var opts      = litellmOpts.Value;
+    var targetUrl = opts.BaseUrl.TrimEnd('/') + "/v1/chat/completions";
+    var bearerKey = opts.ApiKey;
 
     using var client = httpFactory.CreateClient("proxy");
     client.Timeout = TimeSpan.FromSeconds(600);
@@ -798,13 +767,11 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
     using var req = new HttpRequestMessage(HttpMethod.Post, targetUrl);
     req.Content = new StringContent(bodyStr, Encoding.UTF8, "application/json");
     req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerKey);
-    if (!hasVision)
-        req.Headers.TryAddWithoutValidation("x-litellm-user", username);  // end-user tracking
+    req.Headers.TryAddWithoutValidation("x-litellm-user", username);
 
-    app.Logger.LogInformation("[VISION {Rid}] B4. sending request to {Url}", rid, targetUrl);
     using var resp = await client.SendAsync(req,
         HttpCompletionOption.ResponseHeadersRead, ct);
-    app.Logger.LogInformation("[VISION {Rid}] B5. response from upstream — status={Status}", rid, (int)resp.StatusCode);
+    if (debug) app.Logger.LogInformation("[VISION {Rid}] B5. upstream status={Status}", rid, (int)resp.StatusCode);
 
     // ── Warming-up detection ──────────────────────────────────────────────────
     // LiteLLM returns 500 with "Connection error" when the vLLM container is
@@ -813,18 +780,16 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
     if (!resp.IsSuccessStatusCode)
     {
         var errBody = await resp.Content.ReadAsStringAsync(ct);
-        app.Logger.LogWarning("[VISION {Rid}] B6. upstream error body={Body}",
-            rid, errBody[..Math.Min(400, errBody.Length)]);
         var isWarmingUp =
             errBody.Contains("Connection error", StringComparison.OrdinalIgnoreCase) ||
             errBody.Contains("No fallback model group", StringComparison.OrdinalIgnoreCase) ||
             errBody.Contains("ServiceUnavailable", StringComparison.OrdinalIgnoreCase) ||
-            errBody.Contains("health check", StringComparison.OrdinalIgnoreCase) ||
-            errBody.Contains("list index out of range", StringComparison.OrdinalIgnoreCase);
+            errBody.Contains("health check", StringComparison.OrdinalIgnoreCase);
 
         if (isWarmingUp)
         {
-            app.Logger.LogWarning("[VISION {Rid}] B7. returning 503 warming_up to client", rid);
+            app.Logger.LogWarning("Model warming up – upstream error for user {User}: {Error}",
+                username, errBody[..Math.Min(300, errBody.Length)]);
             return Results.Json(
                 new { error = "warming_up", message = "Model henüz yükleniyor, lütfen birkaç saniye sonra tekrar deneyin." },
                 statusCode: 503);
@@ -842,7 +807,6 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
         return Results.Empty;
     }
 
-    app.Logger.LogInformation("[VISION {Rid}] B7. streaming success response to client", rid);
     http.Response.StatusCode = (int)resp.StatusCode;
     foreach (var h in resp.Headers)
         if (!h.Key.StartsWith("Transfer", StringComparison.OrdinalIgnoreCase))
@@ -851,7 +815,7 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
         http.Response.Headers[h.Key] = h.Value.ToArray();
 
     await resp.Content.CopyToAsync(http.Response.Body, ct);
-    app.Logger.LogInformation("[VISION {Rid}] B8. response fully streamed", rid);
+    if (debug) app.Logger.LogInformation("[VISION {Rid}] B6. response streamed", rid);
     return Results.Empty;
 });
 

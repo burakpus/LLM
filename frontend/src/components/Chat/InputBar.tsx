@@ -10,9 +10,18 @@ interface Props {
   generating: boolean
 }
 
-/** Resize image to max 768px and encode as PNG (JPEG causes vLLM decoder issues) */
+/** Debug flag: enable with `localStorage.setItem('vision-debug','1')` or ?vision-debug=1 in URL */
+function visionDebug(): boolean {
+  try {
+    if (localStorage.getItem('vision-debug') === '1') return true
+    if (new URLSearchParams(location.search).get('vision-debug') === '1') return true
+  } catch { /* ignore */ }
+  return false
+}
+
+/** Resize image to max 768px and convert to JPEG base64 (reduces token usage) */
 async function fileToDataUrl(file: File): Promise<string> {
-  console.log(`[VISION] 0a. fileToDataUrl — file=${file.name} type=${file.type} size=${file.size}B`)
+  if (visionDebug()) console.log(`[VISION] 0a. fileToDataUrl — file=${file.name} type=${file.type} size=${file.size}B`)
   return new Promise((resolve, reject) => {
     const r = new FileReader()
     r.onerror = () => reject(r.error)
@@ -28,13 +37,10 @@ async function fileToDataUrl(file: File): Promise<string> {
         }
         const canvas = document.createElement('canvas')
         canvas.width = width; canvas.height = height
-        const ctx = canvas.getContext('2d')!
-        ctx.fillStyle = '#ffffff'
-        ctx.fillRect(0, 0, width, height)
-        ctx.drawImage(img, 0, 0, width, height)
-        const png = canvas.toDataURL('image/png')
-        console.log(`[VISION] 0b. resized ${origW}x${origH} → ${width}x${height}, PNG dataURL=${png.length} chars, prefix=${png.slice(0, 32)}`)
-        resolve(png)
+        canvas.getContext('2d')!.drawImage(img, 0, 0, width, height)
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85)
+        if (visionDebug()) console.log(`[VISION] 0b. resized ${origW}x${origH} → ${width}x${height}, JPEG dataURL=${dataUrl.length} chars`)
+        resolve(dataUrl)
       }
       img.onerror = () => reject(new Error('Image load failed'))
       img.src = String(r.result)
@@ -54,11 +60,10 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating }: P
   const submit = () => {
     const text = input.trim()
     if ((!text && !attachedImage) || generating) return
-    if (attachedImage) {
+    if (attachedImage && visionDebug()) {
       const rid = Math.random().toString(36).slice(2, 8)
       ;(window as any).__visionRid = rid
-      const head = attachedImage.slice(0, 32)
-      console.log(`[VISION ${rid}] 1. submit() — text="${text.slice(0, 40)}" image=${attachedImage.length} chars, prefix=${head}`)
+      console.log(`[VISION ${rid}] 1. submit() — text="${text.slice(0, 40)}" image=${attachedImage.length} chars`)
     }
     setInput('')
     const img = attachedImage ?? undefined

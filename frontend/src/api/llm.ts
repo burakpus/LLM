@@ -141,12 +141,18 @@ export async function* streamCompletion(
     if (token) headers['Authorization'] = `Bearer ${token}`
   }
 
-  const hasVision = params.messages.some(m =>
+  const dbg = (() => {
+    try {
+      if (localStorage.getItem('vision-debug') === '1') return true
+      if (new URLSearchParams(location.search).get('vision-debug') === '1') return true
+    } catch { /* ignore */ }
+    return false
+  })()
+  const hasVision = dbg && params.messages.some(m =>
     Array.isArray(m.content) && (m.content as any[]).some((c: any) => c.type === 'image_url')
   )
   const rid = (window as any).__visionRid || '-'
-  const reqBytes = JSON.stringify(body).length
-  if (hasVision) console.log(`[VISION ${rid}] 5. fetch POST ${url} — body=${reqBytes}B`)
+  if (hasVision) console.log(`[VISION ${rid}] 5. fetch POST ${url} — body=${JSON.stringify(body).length}B`)
 
   let resp: Response
   try {
@@ -162,7 +168,7 @@ export async function* streamCompletion(
     return
   }
 
-  if (hasVision) console.log(`[VISION ${rid}] 6. fetch DONE — status=${resp.status} ${resp.statusText}`)
+  if (hasVision) console.log(`[VISION ${rid}] 6. fetch DONE — status=${resp.status}`)
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => resp.statusText)

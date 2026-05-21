@@ -10,6 +10,15 @@ import { proxyRequest } from '../api'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** Vision debug flag — enable with `localStorage.setItem('vision-debug','1')` */
+function isVisionDebug(): boolean {
+  try {
+    if (localStorage.getItem('vision-debug') === '1') return true
+    if (new URLSearchParams(location.search).get('vision-debug') === '1') return true
+  } catch { /* ignore */ }
+  return false
+}
+
 function tokensPerSec(tokens: number, ms: number): number {
   if (ms <= 0) return 0
   return Math.round((tokens / (ms / 1000)) * 10) / 10
@@ -211,9 +220,9 @@ export function useGeneration() {
 
           const rid = (window as any).__visionRid || '-'
           const builtMsgs = buildMessages(conv)
-          if (hasImage) {
+          if (hasImage && isVisionDebug()) {
             const imgCount = builtMsgs.reduce((n, m) => n + (Array.isArray(m.content) ? (m.content as any[]).filter((c: any) => c.type === 'image_url').length : 0), 0)
-            console.log(`[VISION ${rid}] 4. streamCompletion params — model=${conv.settings.model ?? 'chat'}, baseUrl=${conv.settings.baseUrl ?? store.activeBaseUrl ?? 'null (→ /api/llm/completions)'}, msgs=${builtMsgs.length}, images=${imgCount}, tools=${tools ? tools.length : 0}, stream=${conv.settings.stream}`)
+            console.log(`[VISION ${rid}] 4. streamCompletion params — model=${conv.settings.model ?? 'chat'}, msgs=${builtMsgs.length}, images=${imgCount}, tools=${tools ? tools.length : 0}, stream=${conv.settings.stream}`)
           }
 
           const gen = streamCompletion(
@@ -419,7 +428,8 @@ export function useGeneration() {
   const send = useCallback(
     async (text: string, image?: string): Promise<void> => {
       const rid = (window as any).__visionRid || '-'
-      if (image) console.log(`[VISION ${rid}] 2. send() — text="${text.slice(0,40)}" image=${image.length}c`)
+      const dbg = isVisionDebug()
+      if (image && dbg) console.log(`[VISION ${rid}] 2. send() — text="${text.slice(0,40)}" image=${image.length}c`)
 
       const store = useStore.getState()
       const convId = store.currentId
@@ -439,7 +449,7 @@ export function useGeneration() {
             { type: 'image_url', image_url: { url: image } },
           ]
         : text
-      if (image) console.log(`[VISION ${rid}] 3. apiContent built — type=array, items=${(apiContent as any[]).map((p: any) => p.type).join(',')}`)
+      if (image && dbg) console.log(`[VISION ${rid}] 3. apiContent built — items=${(apiContent as any[]).map((p: any) => p.type).join(',')}`)
       store.addApiHistory(convId, { role: 'user', content: apiContent })
 
       // Assistant placeholder
