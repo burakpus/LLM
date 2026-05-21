@@ -31,8 +31,10 @@ jobs:
           # Copy Skills
           cp -r $ROOT/dotnet/Api/Skills /tmp/setllm-publish/
 
-          # Preserve appsettings keys
-          cp /opt/setllm-api/appsettings.json /tmp/setllm-publish/appsettings.json
+          # Preserve appsettings keys (skip if not exists — first deploy)
+          if [ -f /opt/setllm-api/appsettings.json ]; then
+            cp /opt/setllm-api/appsettings.json /tmp/setllm-publish/appsettings.json
+          fi
 
           # Swap (no sudo needed — admin owns /opt/setllm-api)
           rm -rf /opt/setllm-api
