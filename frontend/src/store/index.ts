@@ -191,11 +191,28 @@ interface AppStore {
   toggleSettings: () => void
 }
 
+// Old direct vLLM ports — should never be used as baseUrl anymore
+const LEGACY_PORTS = [8000, 8001, 8002, 8003]
+
 function ensureSettings(c: Conversation): Conversation {
   if (!c.settings)    c = { ...c, settings:   { ...defaultSettings } }
   if (!c.apiHistory)  c = { ...c, apiHistory: [] }
   if (c.generating == null) c = { ...c, generating: false }
   if (c.stats === undefined) c = { ...c, stats: null }
+
+  // Migrate: clear old direct vLLM baseUrl (port 8000/8002 etc.)
+  if (c.settings.baseUrl) {
+    try {
+      const port = new URL(c.settings.baseUrl).port
+      if (LEGACY_PORTS.includes(Number(port))) {
+        c = { ...c, settings: { ...c.settings, baseUrl: null } }
+      }
+    } catch { /* ignore invalid URL */ }
+  }
+  if (!c.settings.skillCollection) {
+    c = { ...c, settings: { ...c.settings, skillCollection: null } }
+  }
+
   return c
 }
 
