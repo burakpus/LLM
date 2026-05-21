@@ -16,17 +16,27 @@ jobs:
           ROOT=~/Documents/MultiModel/dgx-spark-llm-stack
           cd $ROOT
 
+          # Always get clean copy from git
           git fetch origin
           git reset --hard origin/main
 
+          # Build frontend into wwwroot
           cd $ROOT/frontend
           npm run build 2>&1 | tail -3
 
-          cd $ROOT
-          sudo cp -r dotnet/Api/wwwroot /opt/setllm-api/
-          sudo cp -r dotnet/Api/Skills  /opt/setllm-api/
-          sudo dotnet build dotnet/Api/SetYazilim.Llm.Api.csproj -c Release -o /opt/setllm-api 2>&1 | tail -5
-          sudo systemctl restart setllm-api
+          # Publish .NET app (includes wwwroot, DLLs, Skills)
+          cd $ROOT/dotnet/Api
+          dotnet publish -c Release -o /tmp/setllm-publish 2>&1 | tail -3
 
+          # Copy Skills (not in publish output)
+          cp -r $ROOT/dotnet/Api/Skills /tmp/setllm-publish/
+
+          # Preserve appsettings (has keys) then swap
+          cp /opt/setllm-api/appsettings.json /tmp/setllm-publish/appsettings.json
+          sudo rm -rf /opt/setllm-api
+          sudo mv /tmp/setllm-publish /opt/setllm-api
+          sudo chown -R admin:admin /opt/setllm-api
+
+          sudo systemctl restart setllm-api
           sleep 5
           curl -s http://localhost:5080/health && echo " deployed OK"
