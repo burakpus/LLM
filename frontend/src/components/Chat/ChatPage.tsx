@@ -85,9 +85,10 @@ export default function ChatPage() {
       />
 
       <div className="flex-1 flex overflow-hidden relative">
+        {/* Sidebar is fixed overlay — renders outside flow */}
         <Sidebar />
 
-        <main className="flex-1 flex flex-col min-w-0 transition-[margin-right] duration-300"
+        <main className="flex-1 flex flex-col min-w-0 w-full transition-[margin-right] duration-300"
               style={{ marginRight: store.project.projectId ? '420px' : 0 }}>
           <MessageList
             messages={conv?.messages ?? []}

@@ -101,13 +101,29 @@ export default function Sidebar() {
   }
 
   return (
-    <aside
-      className="transition-[width] duration-300 overflow-hidden flex flex-col shrink-0"
-      style={{
-        width: store.historyOpen ? '260px' : '0',
-        background: 'var(--surface)',
-      }}
-    >
+    <>
+      {/* Backdrop — click outside to close */}
+      <div
+        className="fixed inset-0 z-30 transition-opacity duration-300"
+        style={{
+          background: 'rgba(0,0,0,0.4)',
+          opacity: store.historyOpen ? 1 : 0,
+          pointerEvents: store.historyOpen ? 'auto' : 'none',
+        }}
+        onClick={store.toggleHistory}
+      />
+
+      {/* Sidebar — always fixed overlay, never pushes content */}
+      <aside
+        className="fixed top-0 left-0 h-full flex flex-col z-40"
+        style={{
+          width: '260px',
+          background: 'var(--surface)',
+          transform: store.historyOpen ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 0.28s cubic-bezier(0.4,0,0.2,1)',
+          boxShadow: store.historyOpen ? '4px 0 24px rgba(0,0,0,0.3)' : 'none',
+        }}
+      >
       {/* Top controls */}
       <div className="p-3 space-y-2 shrink-0">
         <button
@@ -198,6 +214,7 @@ export default function Sidebar() {
       </div>
 
     </aside>
+    </>
   )
 }
 
