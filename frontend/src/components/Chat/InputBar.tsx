@@ -10,7 +10,7 @@ interface Props {
   generating: boolean
 }
 
-/** Resize image to max 768px and convert to JPEG base64 (reduces token usage) */
+/** Resize image to max 768px and encode as PNG (JPEG causes vLLM decoder issues) */
 async function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader()
@@ -27,7 +27,10 @@ async function fileToDataUrl(file: File): Promise<string> {
         const canvas = document.createElement('canvas')
         canvas.width = width; canvas.height = height
         canvas.getContext('2d')!.drawImage(img, 0, 0, width, height)
-        resolve(canvas.toDataURL('image/jpeg', 0.85))
+        // PNG: lossless, no decoder issues with vLLM Gemma 4
+        // If PNG > 1.5MB base64, fall back to JPEG
+        const png = canvas.toDataURL('image/png')
+        resolve(png.length < 1_500_000 ? png : canvas.toDataURL('image/jpeg', 0.82))
       }
       img.onerror = () => reject(new Error('Image load failed'))
       img.src = String(r.result)
