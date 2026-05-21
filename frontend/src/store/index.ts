@@ -120,8 +120,8 @@ export type Status =
   | 'unreachable'
 
 export const DEFAULT_ENDPOINTS: Endpoint[] = [
-  { name: 'Chating', port: 8000, model: 'gemma4-26b',  host: '172.16.1.123' },
-  { name: 'Coding',  port: 8002, model: 'qwen3.6-27b', host: '172.16.1.123' },
+  { name: 'Chating', port: 4000, model: 'chat', host: '172.16.1.123' },
+  { name: 'Coding',  port: 4000, model: 'code', host: '172.16.1.123' },
 ]
 
 // ── Store ─────────────────────────────────────────────────────────────────────
