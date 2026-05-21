@@ -91,6 +91,8 @@ export interface Conversation {
   totalTokens:  number
   settings:     ConvSettings
   generating:   boolean
+  starred?:     boolean
+  archived?:    boolean
   /** API-formatted history for re-sending (matches messages but in OpenAI format) */
   apiHistory:   ChatApiMessage[]
   stats:        ConvStats | null
@@ -166,8 +168,10 @@ interface AppStore {
   newConversation: () => string
   loadConversation: (id: string) => void
   deleteConversation: (id: string) => void
-  renameConversation: (id: string, title: string) => void
-  clearConversation:  (id: string) => void
+  renameConversation:  (id: string, title: string) => void
+  clearConversation:   (id: string) => void
+  starConversation:    (id: string, val: boolean) => void
+  archiveConversation: (id: string, val: boolean) => void
 
   updateConvSettings: (id: string, patch: Partial<ConvSettings>) => void
 
@@ -354,6 +358,19 @@ export const useStore = create<AppStore>()(
             : c
         ),
       })),
+
+      starConversation: (id, val) => set(s => ({
+        conversations: s.conversations.map(c => c.id === id ? { ...c, starred: val } : c),
+      })),
+
+      archiveConversation: (id, val) => set(s => {
+        const conversations = s.conversations.map(c => c.id === id ? { ...c, archived: val } : c)
+        // If archiving current conversation, switch to next non-archived one
+        const currentId = val && s.currentId === id
+          ? (conversations.find(c => !c.archived && c.id !== id)?.id ?? null)
+          : s.currentId
+        return { conversations, currentId }
+      }),
 
       updateConvSettings: (id, patch) => set(s => ({
         conversations: s.conversations.map(c =>
