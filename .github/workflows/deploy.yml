@@ -40,6 +40,10 @@ jobs:
           rm -rf ~/setllm-api
           mv /tmp/setllm-publish ~/setllm-api
 
+          # Ensure env file has correct paths
+          sudo sed -i 's|/opt/setllm-api|/home/admin/setllm-api|g' /etc/setllm/env 2>/dev/null || true
+          echo "LLM_Agent__SkillsDirectory=/home/admin/setllm-api/Skills" | sudo tee -a /etc/setllm/env > /dev/null
+
           sudo systemctl restart setllm-api
           sleep 5
           curl -s http://localhost:5080/health && echo " deployed OK"
