@@ -38,6 +38,6 @@ jobs:
           rm -rf /opt/setllm-api
           mv /tmp/setllm-publish /opt/setllm-api
 
-          systemctl restart setllm-api
+          sudo systemctl restart setllm-api
           sleep 5
           curl -s http://localhost:5080/health && echo " deployed OK"
