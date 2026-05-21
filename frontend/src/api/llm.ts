@@ -1,6 +1,5 @@
 // =============================================================================
-// LLM client — talks to /api/llm/completions (server-side LiteLLM proxy)
-// or directly to a vLLM endpoint (when an explicit baseUrl is provided).
+// LLM client — talks to /api/llm/completions (server-side LiteLLM proxy).
 // =============================================================================
 
 // ── Built-in tool schemas ────────────────────────────────────────────────────
@@ -90,17 +89,11 @@ export interface CompletionParams {
   stream?:     boolean
   tools?:      unknown[]
   toolChoice?: string
-  /**
-   * Optional explicit base URL — when set, bypasses /api/llm/completions
-   * and posts directly to `${baseUrl}/v1/chat/completions` (used for direct
-   * vLLM endpoints; no auth header is added in that case).
-   */
-  baseUrl?:    string
 }
 
 // ── Streaming completion generator ───────────────────────────────────────────
 //
-// Posts to /api/llm/completions (or a direct baseUrl if provided) and yields:
+// Posts to /api/llm/completions and yields:
 //   • token     — content tokens (excluding <think>...</think>)
 //   • thinking  — content inside <think>...</think>
 //   • tool_call — accumulated tool call deltas

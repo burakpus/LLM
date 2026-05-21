@@ -222,7 +222,7 @@ export function useGeneration() {
             }
           }
         } else {
-          // ── Direct mode (uses /api/llm/completions or active vLLM baseUrl) ─
+          // ── Direct mode ─
           const token = store.auth.token ?? localStorage.getItem('setllm-token') ?? ''
           const activeModelId = conv.settings.model ?? store.activeModel ?? 'chat'
           const caps = store.modelCapabilities[activeModelId]
@@ -251,7 +251,6 @@ export function useGeneration() {
               maxTokens:   conv.settings.maxTokens,
               stream:      conv.settings.stream,
               tools,
-              baseUrl:     conv.settings.baseUrl ?? store.activeBaseUrl ?? undefined,
             },
             token,
             signal,

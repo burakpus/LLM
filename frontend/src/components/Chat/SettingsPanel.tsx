@@ -2,13 +2,10 @@ import { useState, useEffect } from 'react'
 import { useStore, t, defaultSettings } from '../../store'
 import type { Endpoint } from '../../store'
 
-// Health check against an endpoint
-async function pingEndpoint(host: string, port: number): Promise<boolean> {
+// Health check via .NET proxy (no direct vLLM access from browser)
+async function pingProxy(): Promise<boolean> {
   try {
-    const r = await fetch(`http://${host}:${port}/health`, {
-      signal: AbortSignal.timeout(3000),
-      mode:   'cors',
-    })
+    const r = await fetch('/health', { signal: AbortSignal.timeout(3000) })
     return r.ok
   } catch {
     return false
@@ -20,7 +17,6 @@ export default function SettingsPanel() {
   const conv  = store.currentConv()
   const settings = conv?.settings ?? defaultSettings
 
-  const [customUrl,   setCustomUrl]   = useState(settings.baseUrl ?? '')
   const [customModel, setCustomModel] = useState(settings.model   ?? '')
   const [keyDraft,    setKeyDraft]    = useState(store.apiKey)
   const [connectBusy, setConnectBusy] = useState(false)
@@ -29,7 +25,6 @@ export default function SettingsPanel() {
   )
 
   useEffect(() => {
-    setCustomUrl(settings.baseUrl ?? '')
     setCustomModel(settings.model ?? '')
     setCustomToolsText(JSON.stringify(settings.customTools ?? [], null, 2))
   }, [conv?.id])
@@ -41,22 +36,12 @@ export default function SettingsPanel() {
     store.updateConvSettings(conv.id, patch)
 
   const onConnectCustom = async () => {
-    if (!customUrl.trim()) return
     setConnectBusy(true)
     store.setStatus('connecting', null)
     try {
-      // best-effort ping
-      let ok = true
-      try {
-        const url = customUrl.replace(/\/$/, '') + '/health'
-        const r = await fetch(url, { signal: AbortSignal.timeout(3000) })
-        ok = r.ok
-      } catch {
-        ok = false
-      }
-      store.setActiveEndpoint(customUrl.trim(), customModel.trim() || null, null)
-      setPatch({ baseUrl: customUrl.trim(), model: customModel.trim() || null, endpointIdx: null })
-      store.setStatus(ok ? 'connected' : 'unreachable', ok)
+      store.setActiveEndpoint(customModel.trim() || null, null)
+      setPatch({ model: customModel.trim() || null })
+      store.setStatus('connected', true)
     } finally {
       setConnectBusy(false)
     }
@@ -65,17 +50,16 @@ export default function SettingsPanel() {
   const onConnectEndpoint = async (ep: Endpoint, idx: number) => {
     setConnectBusy(true)
     store.setStatus('connecting', null)
-    const ok = await pingEndpoint(ep.host, ep.port)
-    const base = `http://${ep.host}:${ep.port}`
-    store.setActiveEndpoint(base, ep.model, idx)
-    setPatch({ baseUrl: base, model: ep.model, endpointIdx: idx })
+    const ok = await pingProxy()
+    store.setActiveEndpoint(ep.model, idx)
+    setPatch({ model: ep.model })
     store.setStatus(ok ? 'connected' : 'unreachable', ok)
     setConnectBusy(false)
   }
 
   const onDisconnect = () => {
-    store.setActiveEndpoint(null, null, null)
-    setPatch({ baseUrl: null, model: null, endpointIdx: null })
+    store.setActiveEndpoint(null, null)
+    setPatch({ model: null })
     store.setStatus('disconnected', false)
   }
 
@@ -136,17 +120,6 @@ export default function SettingsPanel() {
             </div>
 
             <label className="block text-[11px] mb-1" style={{ color: 'var(--mute)' }}>
-              {t('customUrl')}
-            </label>
-            <input
-              value={customUrl}
-              onChange={e => setCustomUrl(e.target.value)}
-              placeholder="http://172.16.1.123:8000"
-              className="w-full mb-2 rounded-md px-3 py-1.5 text-sm outline-none"
-              style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-            />
-
-            <label className="block text-[11px] mb-1" style={{ color: 'var(--mute)' }}>
               {t('modelName')}
             </label>
             <input
@@ -185,13 +158,11 @@ export default function SettingsPanel() {
               >
                 {connectBusy ? t('connecting') : t('connect')}
               </button>
-              {store.activeBaseUrl && (
-                <button onClick={onDisconnect}
-                        className="rounded-md px-3 py-1.5 text-xs cursor-pointer"
-                        style={{ background: 'transparent', border: '1px solid #ef4444', color: '#ef4444' }}>
-                  {t('disconnect')}
-                </button>
-              )}
+              <button onClick={onDisconnect}
+                      className="rounded-md px-3 py-1.5 text-xs cursor-pointer"
+                      style={{ background: 'transparent', border: '1px solid #ef4444', color: '#ef4444' }}>
+                {t('disconnect')}
+              </button>
             </div>
 
             <div className="mt-3 flex flex-wrap gap-1.5">

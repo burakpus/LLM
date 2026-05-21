@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '../../store'
-import { health, listSkills, proxyRequest } from '../../api'
+import { health, listSkills } from '../../api'
 import type { Skill } from '../../api'
 import Header        from './Header'
 import Sidebar       from './Sidebar'
@@ -43,35 +43,25 @@ export default function ChatPage() {
     return () => clearInterval(id)
   }, [])
 
-  // ── Auto-connect to first endpoint ────────────────────────────────────────
+  // ── Auto-connect: ping .NET proxy health, select first endpoint model ────────
   useEffect(() => {
-    if (store.activeBaseUrl) return
     const eps = store.endpoints
     if (eps.length === 0) return
 
     let cancelled = false
     ;(async () => {
-      for (let i = 0; i < eps.length; i++) {
-        const ep = eps[i]
-        try {
-          // Use backend proxy to avoid browser CORS restrictions on LiteLLM/vLLM
-          const r = await proxyRequest({
-            url: `http://${ep.host}:${ep.port}/health/liveliness`,
-            method: 'GET',
-          })
-          if (cancelled) return
-          if (r.ok) {
-            // Port 4000 = LiteLLM → backend proxy (no baseUrl), otherwise direct vLLM
-            const base = ep.port === 4000 ? null : `http://${ep.host}:${ep.port}`
-            store.setActiveEndpoint(base, ep.model, i)
-            store.setStatus('connected', true)
-            if (store.currentId) {
-              store.updateConvSettings(store.currentId, { baseUrl: base, model: ep.model, endpointIdx: i })
-            }
-            return
-          }
-        } catch { /* try next */ }
-      }
+      try {
+        const r = await fetch('/health', { signal: AbortSignal.timeout(4000) })
+        if (cancelled) return
+        if (r.ok) {
+          const ep = eps[0]
+          store.setActiveEndpoint(ep.model, 0)
+          store.setStatus('connected', true)
+          if (store.currentId)
+            store.updateConvSettings(store.currentId, { model: ep.model })
+          return
+        }
+      } catch { /* fall through */ }
       if (!cancelled) store.setStatus('not connected', false)
     })()
 

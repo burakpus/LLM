@@ -117,17 +117,12 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating }: P
     if (!ep) return
     store.setStatus('connecting', null)
     try {
-      const r = await proxyRequest({
-        url: `http://${ep.host}:${ep.port}/health/liveliness`,
-        method: 'GET',
-      })
-      const base = ep.port === 4000 ? null : `http://${ep.host}:${ep.port}`
-      store.setActiveEndpoint(base, ep.model, idx)
+      // Health check via .NET proxy — no direct vLLM access from browser
+      const r = await proxyRequest({ url: `http://localhost:5080/health`, method: 'GET' })
+      store.setActiveEndpoint(ep.model, idx)
       store.setSkill(null, null)
       if (conv) store.updateConvSettings(conv.id, {
-        baseUrl:         base,
         model:           ep.model,
-        endpointIdx:     idx,
         skillId:         null,
         skillName:       null,
         skillCollection: null,
@@ -247,7 +242,7 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating }: P
                 key={ep.name + i}
                 onClick={() => onEndpointPing(i)}
                 className={`pill ${active ? 'active' : ''}`}
-                title={`http://${ep.host}:${ep.port} (${ep.model})`}
+                title={ep.model}
               >
                 <span className={`status-dot ${active && store.statusOk ? 'ok' : active && store.statusOk === false ? 'bad' : ''}`} />
                 {ep.name}

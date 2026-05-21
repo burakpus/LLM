@@ -35,9 +35,8 @@ export interface Message {
 
 export interface Endpoint {
   name:  string
-  port:  number
-  model: string
-  host:  string
+  model: string  // LiteLLM model alias (chat / code / reason)
+  // host & port removed — all traffic goes through /api/llm/completions proxy
 }
 
 export interface ConvStats {
@@ -60,10 +59,9 @@ export interface ConvSettings {
   skillId:         string | null
   skillName:       string | null
   skillCollection: string | null  // RAG collection scoped to this skill
-  model:           string | null
-  baseUrl:        string | null
-  endpointIdx:    number | null
+  model:           string | null  // LiteLLM model alias (chat / code)
   agentMode:      boolean
+  // baseUrl / endpointIdx removed — all traffic proxied via .NET API
 }
 
 export const defaultSettings: ConvSettings = {
@@ -78,9 +76,7 @@ export const defaultSettings: ConvSettings = {
   skillId:         null,
   skillName:       null,
   skillCollection: null,
-  model:          'chat',   // LiteLLM proxy default — always valid
-  baseUrl:        null,
-  endpointIdx:    null,
+  model:          'chat',
   agentMode:      false,
 }
 
@@ -121,8 +117,8 @@ export type Status =
   | 'unreachable'
 
 export const DEFAULT_ENDPOINTS: Endpoint[] = [
-  { name: 'Chating', port: 4000, model: 'chat', host: '172.16.1.123' },
-  { name: 'Coding',  port: 4000, model: 'code', host: '172.16.1.123' },
+  { name: 'Chating', model: 'chat' },
+  { name: 'Coding',  model: 'code' },
 ]
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -139,15 +135,14 @@ interface AppStore {
   toggleTheme: () => void
   toggleLang: () => void
 
-  // Connection / endpoints
+  // Connection / endpoints (model selectors — all proxied via .NET API)
   apiKey: string
   setApiKey: (k: string) => void
   endpoints: Endpoint[]
   setEndpoints: (eps: Endpoint[]) => void
-  activeEpIdx:   number | null
-  activeBaseUrl: string | null
-  activeModel:   string | null
-  setActiveEndpoint: (baseUrl: string | null, model: string | null, idx: number | null) => void
+  activeEpIdx:  number | null
+  activeModel:  string | null
+  setActiveEndpoint: (model: string | null, idx: number | null) => void
   status:   Status
   statusOk: boolean | null
   setStatus: (s: Status, ok: boolean | null) => void
@@ -196,24 +191,11 @@ interface AppStore {
   toggleSettings: () => void
 }
 
-// Old direct vLLM ports — should never be used as baseUrl anymore
-const LEGACY_PORTS = [8000, 8001, 8002, 8003]
-
 function ensureSettings(c: Conversation): Conversation {
   if (!c.settings)    c = { ...c, settings:   { ...defaultSettings } }
   if (!c.apiHistory)  c = { ...c, apiHistory: [] }
   if (c.generating == null) c = { ...c, generating: false }
   if (c.stats === undefined) c = { ...c, stats: null }
-
-  // Migrate: clear old direct vLLM baseUrl (port 8000/8002 etc.)
-  if (c.settings.baseUrl) {
-    try {
-      const port = new URL(c.settings.baseUrl).port
-      if (LEGACY_PORTS.includes(Number(port))) {
-        c = { ...c, settings: { ...c.settings, baseUrl: null } }
-      }
-    } catch { /* ignore invalid URL */ }
-  }
   if (!c.settings.skillCollection) {
     c = { ...c, settings: { ...c.settings, skillCollection: null } }
   }
@@ -246,13 +228,12 @@ export const useStore = create<AppStore>()(
       // ── Connection ──────────────────────────────────────────────────────
       apiKey: '',
       setApiKey: (k) => set({ apiKey: k }),
-      endpoints:     DEFAULT_ENDPOINTS,
-      setEndpoints:  (eps) => set({ endpoints: eps }),
-      activeEpIdx:   null,
-      activeBaseUrl: null,
-      activeModel:   null,
-      setActiveEndpoint: (baseUrl, model, idx) =>
-        set({ activeBaseUrl: baseUrl, activeModel: model, activeEpIdx: idx }),
+      endpoints:    DEFAULT_ENDPOINTS,
+      setEndpoints: (eps) => set({ endpoints: eps }),
+      activeEpIdx:  null,
+      activeModel:  null,
+      setActiveEndpoint: (model, idx) =>
+        set({ activeModel: model, activeEpIdx: idx }),
       status:   'not connected',
       statusOk: null,
       setStatus: (s, ok) => set({ status: s, statusOk: ok }),
@@ -474,27 +455,23 @@ export const useStore = create<AppStore>()(
     }),
     {
       name: 'setllm-store',
-      version: 2,
+      version: 3,
       migrate: (persisted: any, version: number) => {
-        // v1→v2: remove direct vLLM endpoints (port 8000/8001/8002/8003),
-        //        clear any baseUrl pointing directly to vLLM (CORS issues).
-        const PROXY_PORT = 4000
-        const DIRECT_PORTS = [8000, 8001, 8002, 8003, 8004]
-        if (version < 2 && persisted) {
+        if (!persisted) return persisted
+        // v1/v2→v3: strip host/port from endpoints (now model-only),
+        //           remove baseUrl/endpointIdx from conv settings.
+        if (version < 3) {
           if (Array.isArray(persisted.endpoints))
             persisted.endpoints = (persisted.endpoints as any[])
-              .filter(ep => !DIRECT_PORTS.includes(ep.port))
-          if (persisted.activeBaseUrl &&
-              DIRECT_PORTS.some(p => String(persisted.activeBaseUrl).includes(`:${p}`))) {
-            persisted.activeBaseUrl = null
-            persisted.activeEpIdx   = null
-            persisted.activeModel   = null
-          }
+              .filter(ep => ep.model)
+              .map(({ name, model }: any) => ({ name, model }))
+          delete persisted.activeBaseUrl
           if (Array.isArray(persisted.conversations))
             persisted.conversations = (persisted.conversations as any[]).map((c: any) => {
-              if (c.settings?.baseUrl &&
-                  DIRECT_PORTS.some(p => String(c.settings.baseUrl).includes(`:${p}`)))
-                c.settings = { ...c.settings, baseUrl: null, endpointIdx: null }
+              if (c.settings) {
+                delete c.settings.baseUrl
+                delete c.settings.endpointIdx
+              }
               return c
             })
         }
@@ -508,7 +485,6 @@ export const useStore = create<AppStore>()(
         apiKey:        s.apiKey,
         endpoints:     s.endpoints,
         activeEpIdx:   s.activeEpIdx,
-        activeBaseUrl: s.activeBaseUrl,
         activeModel:   s.activeModel,
       }),
     }
