@@ -41,3 +41,7 @@ logs/
 # =============================================================================
 .vscode/
 *.swp
+node_modules/
+dotnet/Api/wwwroot/
+.env
+secrets/*.txt
