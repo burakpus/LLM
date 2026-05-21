@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import { useStore } from './store'
 import LoginPage from './components/LoginPage'
 import ChatPage  from './components/Chat/ChatPage'
+import AdminPage from './components/Admin/AdminPage'
 import { me }   from './api'
 
 export default function App() {
   const { auth, setAuth, clearAuth } = useStore()
   const [checking, setChecking]      = useState(true)
+  const [path, setPath]              = useState<string>(window.location.pathname)
 
   useEffect(() => {
     // Restore auth from localStorage on mount
@@ -24,6 +26,13 @@ export default function App() {
     }
   }, [])
 
+  // Listen for back/forward navigation
+  useEffect(() => {
+    const onPop = () => setPath(window.location.pathname)
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
   if (checking) {
     return (
       <div className="h-dvh flex items-center justify-center"
@@ -34,5 +43,8 @@ export default function App() {
     )
   }
 
-  return auth.token ? <ChatPage /> : <LoginPage />
+  if (!auth.token) return <LoginPage />
+
+  const isAdmin = path === '/admin' || path.startsWith('/admin/')
+  return isAdmin ? <AdminPage /> : <ChatPage />
 }

@@ -193,6 +193,21 @@ export default function Header({ skills, statusOk }: Props) {
         {store.auth.username}
       </span>
 
+      {/* Admin */}
+      <a
+        href="/admin"
+        className="p-2 rounded-full transition cursor-pointer"
+        style={{ color: 'var(--text-2)' }}
+        title="Admin"
+        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round"
+            d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+        </svg>
+      </a>
+
       {/* Settings */}
       <button
         onClick={store.toggleSettings}
