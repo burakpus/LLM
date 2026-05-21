@@ -213,3 +213,4 @@ If users notice degraded code quality, run `emergency-fallback-bf16` (see `ARCHI
 
 Internal use. Adapt freely within your organization.
 # CI test Thu May 21 08:56:17 TST 2026
+# auto-deploy test Thu May 21 08:59:41 TST 2026
