@@ -19,6 +19,23 @@ function isVisionDebug(): boolean {
   return false
 }
 
+/**
+ * Estimate token cost of a message.
+ * - Image:  ~512 tokens (Gemma 4 tile-based, ~256-512 depending on resolution)
+ * - Text:   length / 4  (rough 4 chars/token approximation)
+ */
+function estimateTokens(msg: ChatApiMessage): number {
+  if (Array.isArray(msg.content)) {
+    return (msg.content as any[]).reduce((n: number, p: any) => {
+      if (p.type === 'image_url') return n + 512
+      if (p.type === 'text')      return n + Math.ceil((p.text?.length ?? 0) / 4)
+      return n
+    }, 0)
+  }
+  if (typeof msg.content === 'string') return Math.ceil(msg.content.length / 4)
+  return 0
+}
+
 function tokensPerSec(tokens: number, ms: number): number {
   if (ms <= 0) return 0
   return Math.round((tokens / (ms / 1000)) * 10) / 10
@@ -88,25 +105,22 @@ export function useGeneration() {
 
   // ── Build message list for the next LLM call ───────────────────────────────
   const buildMessages = (conv: Conversation): ChatApiMessage[] => {
-    const MAX_CONTEXT_CHARS = 24000 // ~6000 tokens for history (leaves room for prompt+answer)
-
+    // Token budget for conversation history.
+    // Model context = 16384. Reserve 750 for system prompt, 2048 for response.
+    const MAX_HISTORY_TOKENS = 6000
     const systemPrompt = conv.settings.systemPrompt?.trim() ?? ''
+    const systemTokens = Math.ceil(systemPrompt.length / 4)
     const history = conv.apiHistory
 
-    // Sliding window: keep most recent messages that fit within budget.
-    // BUT always include the LAST message (e.g. vision message with large
-    // base64 image), regardless of size, otherwise the request is meaningless.
-    let budget = MAX_CONTEXT_CHARS - systemPrompt.length
+    // Sliding window: newest → oldest, keep messages that fit in token budget.
+    // The LAST message is always included regardless of size (e.g. large image).
+    let budget = MAX_HISTORY_TOKENS - systemTokens
     const kept: ChatApiMessage[] = []
     for (let i = history.length - 1; i >= 0; i--) {
-      const m = history[i]
-      const len = typeof m.content === 'string'
-        ? m.content.length
-        : JSON.stringify(m.content).length
-      // Always keep the most recent message; budget-skip older ones
-      if (i === history.length - 1 || budget - len >= 0) {
-        kept.unshift(m)
-        budget -= len
+      const cost = estimateTokens(history[i])
+      if (i === history.length - 1 || budget - cost >= 0) {
+        kept.unshift(history[i])
+        budget -= cost
       } else {
         break
       }
@@ -210,13 +224,15 @@ export function useGeneration() {
         } else {
           // ── Direct mode (uses /api/llm/completions or active vLLM baseUrl) ─
           const token = store.auth.token ?? localStorage.getItem('setllm-token') ?? ''
-          // Don't send tools when the LATEST user message contains an image —
-          // vision + tool_choice=auto breaks Gemma (doesn't support tool calling).
-          // Only the current turn matters; later turns without images can use tools.
+          const activeModelId = conv.settings.model ?? store.activeModel ?? 'chat'
+          const caps = store.modelCapabilities[activeModelId]
+
+          // Disable tools if: model doesn't support them OR latest message has image
           const lastUserMsg = [...conv.apiHistory].reverse().find(m => m.role === 'user')
           const lastMsgHasImage = Array.isArray(lastUserMsg?.content) &&
             (lastUserMsg!.content as any[]).some((c: any) => c.type === 'image_url')
-          const tools = (conv.settings.agenticEnabled && !lastMsgHasImage)
+          const modelSupportsTools = caps ? caps.supportsTools : true // default: allow
+          const tools = (conv.settings.agenticEnabled && modelSupportsTools && !lastMsgHasImage)
             ? buildToolList(conv.settings.customTools)
             : undefined
 

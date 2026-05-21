@@ -152,6 +152,10 @@ interface AppStore {
   statusOk: boolean | null
   setStatus: (s: Status, ok: boolean | null) => void
 
+  // Model capabilities
+  modelCapabilities: Record<string, { supportsVision: boolean; supportsTools: boolean; contextWindow: number }>
+  setModelCapabilities: (caps: Record<string, { supportsVision: boolean; supportsTools: boolean; contextWindow: number }>) => void
+
   // Conversations
   conversations: Conversation[]
   currentId: string | null
@@ -252,6 +256,10 @@ export const useStore = create<AppStore>()(
       status:   'not connected',
       statusOk: null,
       setStatus: (s, ok) => set({ status: s, statusOk: ok }),
+
+      // ── Model capabilities ──────────────────────────────────────────────
+      modelCapabilities: {},
+      setModelCapabilities: (caps) => set({ modelCapabilities: caps }),
 
       // ── Conversations ───────────────────────────────────────────────────
       conversations: [],

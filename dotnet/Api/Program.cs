@@ -154,6 +154,19 @@ app.MapGet("/api/auth/me", [Authorize] (ClaimsPrincipal user) =>
 // ─── Skills ──────────────────────────────────────────────────────────────────
 
 // GET /api/skills — list skills with metadata
+// GET /api/models/capabilities — model feature matrix for frontend routing decisions
+app.MapGet("/api/models/capabilities", [Authorize] () => Results.Ok(new Dictionary<string, object>
+{
+    ["chat"]   = new { supportsVision = true,  supportsTools = false, contextWindow = 32768,
+                       description = "Gemma 4 26B — genel asistan, doküman analizi, görsel anlama" },
+    ["code"]   = new { supportsVision = false, supportsTools = true,  contextWindow = 32768,
+                       description = "Qwen3.6 27B — kod üretimi, ajansal görevler, tool kullanımı" },
+    ["reason"] = new { supportsVision = false, supportsTools = true,  contextWindow = 32768,
+                       description = "GPT-OSS 120B — derin muhakeme, agent orchestration" },
+    ["embed"]  = new { supportsVision = false, supportsTools = false, contextWindow = 2048,
+                       description = "nomic-embed-text-v1.5 — 768 boyut embedding" },
+}));
+
 app.MapGet("/api/skills", [Authorize] (SkillRegistry registry) =>
 {
     var skills = registry.All.Select(kv =>

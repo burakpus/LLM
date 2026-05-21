@@ -1,10 +1,10 @@
 import { useState, useEffect, FormEvent } from 'react'
-import { login, getDomains } from '../api'
+import { login, getDomains, getModelCapabilities } from '../api'
 import { useStore } from '../store'
 import SetLogo from './SetLogo'
 
 export default function LoginPage() {
-  const { setAuth } = useStore()
+  const { setAuth, setModelCapabilities } = useStore()
   const [domains,   setDomains]   = useState<string[]>([])
   const [domain,    setDomain]    = useState('')
   const [username,  setUsername]  = useState('')
@@ -26,6 +26,8 @@ export default function LoginPage() {
     try {
       const r = await login(username, password, domain)
       setAuth({ token: r.token, username: r.username, domain: r.domain })
+      // Fetch model capabilities after login
+      getModelCapabilities().then(setModelCapabilities).catch(() => { /* non-critical */ })
     } catch {
       setError('Invalid username or password.')
     } finally {

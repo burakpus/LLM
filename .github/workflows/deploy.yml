@@ -10,7 +10,7 @@ jobs:
     steps:
       - name: Pull & Build & Deploy
         run: |
-          set -e
+          set -eo pipefail
           export PATH="/home/admin/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
           ROOT=~/Documents/MultiModel/dgx-spark-llm-stack
@@ -19,28 +19,46 @@ jobs:
           git fetch origin
           git reset --hard origin/main
 
-          # Frontend build
+          # ── vLLM model name validation (non-blocking, warns on mismatch) ──────
+          VLLM_KEY=$(grep '^VLLM_KEY=' $ROOT/.env 2>/dev/null | cut -d= -f2 || true)
+          if [ -n "$VLLM_KEY" ]; then
+            for SERVICE in "gemma:8000:GEMMA_MODEL_NAME" "qwen:8002:QWEN_MODEL_NAME"; do
+              NAME=$(echo $SERVICE | cut -d: -f1)
+              PORT=$(echo $SERVICE | cut -d: -f2)
+              ENVKEY=$(echo $SERVICE | cut -d: -f3)
+              EXPECTED=$(grep "^${ENVKEY}=" $ROOT/.env 2>/dev/null | cut -d= -f2 | sed 's|openai/||' || true)
+              ACTUAL=$(curl -sf -H "Authorization: Bearer $VLLM_KEY" \
+                http://localhost:${PORT}/v1/models 2>/dev/null | \
+                python3 -c "import json,sys; d=json.load(sys.stdin); print(d['data'][0]['id'])" 2>/dev/null || echo "unreachable")
+              if [ "$ACTUAL" = "unreachable" ]; then
+                echo "⚠️  vLLM $NAME (port $PORT) unreachable — skip validation"
+              elif [ "$ACTUAL" != "$EXPECTED" ]; then
+                echo "⚠️  vLLM $NAME model mismatch: .env=$EXPECTED actual=$ACTUAL — update .env!"
+              else
+                echo "✅ vLLM $NAME model OK: $ACTUAL"
+              fi
+            done
+          fi
+
+          # ── Frontend build ────────────────────────────────────────────────────
           cd $ROOT/frontend
           chmod +x node_modules/.bin/* 2>/dev/null || true
-          npm run build 2>&1 | tail -3
+          npm run build
 
-          # Backend publish
+          # ── Backend publish ───────────────────────────────────────────────────
           cd $ROOT/dotnet/Api
-          dotnet publish -c Release -o /tmp/setllm-publish 2>&1 | tail -3
+          dotnet publish -c Release -o /tmp/setllm-publish
 
-          # Copy Skills
+          # ── Deploy ────────────────────────────────────────────────────────────
           cp -r $ROOT/dotnet/Api/Skills /tmp/setllm-publish/
 
-          # Preserve appsettings keys (skip if not exists — first deploy)
           if [ -f ~/setllm-api/appsettings.json ]; then
             cp ~/setllm-api/appsettings.json /tmp/setllm-publish/appsettings.json
           fi
 
-          # Swap (no sudo needed — admin owns ~/setllm-api)
           rm -rf ~/setllm-api
           mv /tmp/setllm-publish ~/setllm-api
 
-          # Ensure Skills path is correct in env
           sudo sed -i 's|/opt/setllm-api|/home/admin/setllm-api|g' /etc/setllm/env 2>/dev/null || true
 
           sudo systemctl restart setllm-api

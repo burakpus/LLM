@@ -165,6 +165,19 @@ export async function ingest(payload: IngestPayload) {
   return apiPost('/api/ingest', payload)
 }
 
+// ── Model capabilities ────────────────────────────────────────────────────────
+
+export interface ModelCapabilities {
+  supportsVision: boolean
+  supportsTools:  boolean
+  contextWindow:  number
+  description:    string
+}
+
+export async function getModelCapabilities(): Promise<Record<string, ModelCapabilities>> {
+  return apiGet('/api/models/capabilities')
+}
+
 // ── Health ────────────────────────────────────────────────────────────────────
 
 export async function health(): Promise<boolean> {

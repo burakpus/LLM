@@ -147,6 +147,11 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating }: P
     store.updateConvSettings(conv.id, { agentMode: !agentMode })
   }
 
+  // Check if active model supports vision (default: allow if caps not loaded yet)
+  const activeModelId = settings?.model ?? store.activeModel ?? 'chat'
+  const caps = store.modelCapabilities[activeModelId]
+  const modelSupportsVision = caps ? caps.supportsVision : true
+
   const hasText = !!input.trim() || !!attachedImage
 
   return (
@@ -171,27 +176,31 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating }: P
 
         {/* Main input — rounded-full container */}
         <div className="gemini-input flex items-end gap-1 px-2 py-2">
-          {/* Attach button */}
-          <button
-            onClick={() => fileRef.current?.click()}
-            title={t('attach')}
-            className="h-10 w-10 rounded-full flex items-center justify-center cursor-pointer transition shrink-0"
-            style={{ color: 'var(--text-2)' }}
-            onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
-            onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round"
-                d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-            </svg>
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={onFile}
-          />
+          {/* Attach button — only shown if active model supports vision */}
+          {modelSupportsVision && (
+            <>
+              <button
+                onClick={() => fileRef.current?.click()}
+                title={t('attach')}
+                className="h-10 w-10 rounded-full flex items-center justify-center cursor-pointer transition shrink-0"
+                style={{ color: 'var(--text-2)' }}
+                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round"
+                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                </svg>
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={onFile}
+              />
+            </>
+          )}
 
           <textarea
             ref={ref}
