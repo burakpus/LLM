@@ -224,7 +224,10 @@ export function useGeneration() {
         } else {
           // ── Direct mode ─
           const token = store.auth.token ?? localStorage.getItem('setllm-token') ?? ''
-          const activeModelId = conv.settings.model ?? store.activeModel ?? 'chat'
+          // Only LiteLLM aliases are valid — raw vLLM names (gemma4-26b etc.) fall back to 'chat'
+          const VALID_MODELS = ['chat', 'code', 'reason', 'embed']
+          const rawModel = conv.settings.model ?? store.activeModel
+          const activeModelId = (rawModel && VALID_MODELS.includes(rawModel)) ? rawModel : 'chat'
           const caps = store.modelCapabilities[activeModelId]
 
           // Disable tools if: model doesn't support them OR latest message has image

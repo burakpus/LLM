@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { KeyboardEvent, ClipboardEvent, ChangeEvent } from 'react'
-import { useStore, t } from '../../store'
+import { useStore, t, DEFAULT_ENDPOINTS } from '../../store'
 import { proxyRequest } from '../../api'
 
 interface Props {
@@ -235,7 +235,7 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating }: P
 
         {/* Bottom row — endpoints + agent + status */}
         <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-          {store.endpoints.map((ep, i) => {
+          {(store.endpoints.length ? store.endpoints : DEFAULT_ENDPOINTS).map((ep, i) => {
             const active = store.activeEpIdx === i
             return (
               <button
