@@ -191,7 +191,7 @@ export default function Header({ skills, statusOk }: Props) {
       {settings?.agenticEnabled && (
         <span className="ml-2 text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded-full"
               style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b' }}>
-          AGENTIC
+          OTONOM
         </span>
       )}
 
