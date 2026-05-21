@@ -338,7 +338,7 @@ function ContentProject() {
         'Sidebar\'da proje bağlı sohbetlerde 📁 ikonu görünür',
       ]} />
 
-      <Tip>Dosyalar DGX sunucusunda ~/llm-projects/{kullanıcı}/{proje}/ klasöründe saklanır.</Tip>
+      <Tip>Dosyalar DGX sunucusunda ~/llm-projects/&#123;kullanıcı&#125;/&#123;proje&#125;/ klasöründe saklanır.</Tip>
     </div>
   )
 }
