@@ -1,0 +1,97 @@
+# =============================================================================
+# Prometheus alert rules — DGX Spark LLM Stack
+# =============================================================================
+
+groups:
+  - name: dgx-spark-vram
+    interval: 30s
+    rules:
+      - alert: VRAMNearOOM
+        expr: (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100 > 95
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "GPU VRAM > 95% (potential OOM)"
+          description: "GPU {{ $labels.gpu }} VRAM usage is {{ $value }}%. KV cache OOM imminent."
+
+      - alert: VRAMOverSubscribed
+        expr: (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100 > 99
+        for: 30s
+        labels: { severity: critical, page: "true" }
+        annotations:
+          summary: "GPU VRAM oversubscribed — model OOM"
+          description: "Either swap is misconfigured or both states are loaded simultaneously."
+
+      - alert: GPUTempHigh
+        expr: DCGM_FI_DEV_GPU_TEMP > 85
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "GPU temperature > 85°C (DGX Spark thermal throttle nearing)"
+
+  - name: dgx-spark-vllm
+    interval: 30s
+    rules:
+      - alert: ModelDown
+        expr: up{job=~"vllm-.*"} == 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Model {{ $labels.job }} is down"
+          description: "Could be intentional swap; verify state file before paging."
+
+      - alert: HighRequestQueue
+        expr: vllm:num_requests_waiting > 20
+        for: 3m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.model }} has high queue depth ({{ $value }})"
+
+      - alert: SlowTTFT
+        expr: histogram_quantile(0.99, rate(vllm:time_to_first_token_seconds_bucket[5m])) > 3
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.model }} TTFT p99 > 3s"
+
+  - name: dgx-spark-litellm
+    interval: 30s
+    rules:
+      - alert: LiteLLMDown
+        expr: up{job="litellm"} == 0
+        for: 1m
+        labels: { severity: critical, page: "true" }
+        annotations:
+          summary: "LiteLLM Gateway down — full outage"
+
+      - alert: HighErrorRate
+        expr: (rate(litellm_total_requests{status=~"5.."}[5m]) / rate(litellm_total_requests[5m])) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "LiteLLM 5xx rate > 5% over 5m"
+
+      - alert: BudgetExhausted
+        expr: litellm_remaining_budget / litellm_max_budget < 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Team {{ $labels.team }} budget < 5% remaining"
+
+  - name: dgx-spark-swap
+    interval: 30s
+    rules:
+      - alert: SwapTakingTooLong
+        expr: (time() - vllm_startup_timestamp_seconds) > 720
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Model {{ $labels.model }} swap exceeded 12 min"
+
+      - alert: ModelMissing
+        expr: count(up{job=~"vllm-.*"} == 1) < 3
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Fewer than 3 vLLM models running"
+          description: "All-hot architecture expects 3 models always. Investigate which is down."

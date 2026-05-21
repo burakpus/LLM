@@ -1,0 +1,71 @@
+# =============================================================================
+# Traefik static config — TLS termination + Docker provider
+# =============================================================================
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+api:
+  dashboard: true
+  insecure: false   # restrict via firewall + auth middleware
+
+log:
+  level: INFO
+  format: json
+
+accessLog:
+  format: json
+  fields:
+    headers:
+      defaultMode: drop
+      names:
+        Authorization: drop
+        Cookie: drop
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+
+  websecure:
+    address: ":443"
+    http:
+      tls: {}
+      middlewares:
+        - security-headers@file
+        - rate-limit@file
+
+  traefik:
+    address: ":8080"   # dashboard
+
+providers:
+  docker:
+    exposedByDefault: false
+    network: llm-net
+    watch: true
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
+# TLS certs:
+# Option A — internal CA: drop cert + key into ./traefik/certs (referenced in dynamic.yml)
+# Option B — Let's Encrypt (if internet-reachable):
+#
+# certificatesResolvers:
+#   le:
+#     acme:
+#       email: ops@yourcompany.com
+#       storage: /certs/acme.json
+#       tlsChallenge: {}
+
+metrics:
+  prometheus:
+    addEntryPointsLabels: true
+    addServicesLabels: true
+    entryPoint: traefik

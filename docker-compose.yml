@@ -1,0 +1,314 @@
+version: "3.9"
+
+# =============================================================================
+# DGX Spark — Multi-Model LLM Stack (All-Hot 4-bit)
+#   Gemma 4 31B (FP4)             — port 8000  ~19 GB
+#   Qwen3-Coder-Next               — port 8001
+#   GPT-OSS 120B (MXFP4 native)   — port 8002  ~63 GB
+#                                   TOTAL:    ~105 GB / 128 GB
+#
+# Profile:
+#   docker compose --profile default up -d   # All 3 models + infra
+#
+# (legacy "reasoning" profile retained as emergency fallback only)
+# =============================================================================
+
+networks:
+  llm-net:
+    name: llm-net
+    driver: bridge
+
+volumes:
+  vllm-cache:
+  redis-data:
+  pg-data:
+  prom-data:
+  grafana-data:
+
+secrets:
+  hf_token:
+    file: ./secrets/hf_token.txt
+  vllm_key:
+    file: ./secrets/vllm_key.txt
+
+# =============================================================================
+# X-templates (DRY for vLLM common config)
+# =============================================================================
+x-vllm-common: &vllm-common
+  image: vllm/vllm-openai:latest
+  restart: unless-stopped
+  runtime: nvidia
+  networks: [llm-net]
+  shm_size: 16gb
+  ipc: host
+  entrypoint: ["/bin/sh", "-c", "export HF_TOKEN=$(cat /run/secrets/hf_token); export VLLM_API_KEY=$(cat /run/secrets/vllm_key); exec vllm serve \"$@\"", "--"]
+  environment:
+    NCCL_DEBUG: WARN
+  secrets:
+    - hf_token
+    - vllm_key
+  volumes:
+    - vllm-cache:/root/.cache/huggingface
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  # ──────────────────────────────────────────────────────────────────────────
+  # HOT TIER — default profile
+  # ──────────────────────────────────────────────────────────────────────────
+  vllm-gemma:
+    <<: *vllm-common
+    container_name: vllm-gemma
+    profiles: ["default"]
+    ports: ["8000:8000"]
+    labels:
+      - "llm.tier=hot"
+      - "llm.model=gemma4-31b"
+    command: >
+      nvidia/Gemma-4-26B-A4B-NVFP4
+      --gpu-memory-utilization 0.35
+      --max-model-len 16384
+      --max-num-seqs 16
+      --enable-prefix-caching
+      --no-enable-chunked-prefill
+      --max-num-batched-tokens 16384
+      --served-model-name gemma4-26b
+      --uvicorn-log-level warning
+      --allow-credentials
+      --allowed-origins '["http://172.16.0.160:3333","http://localhost:3333","http://127.0.0.1:3333"]'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # GPT-OSS 120B — co-resident in default profile (MXFP4 native)
+  # ──────────────────────────────────────────────────────────────────────────
+  vllm-qwen3:
+    <<: *vllm-common
+    container_name: vllm-qwen3
+    profiles: ["default"]
+    ports: ["8002:8000"]
+    shm_size: 24gb
+    labels:
+      - "llm.tier=hot"
+      - "llm.model=qwen3.6-27b"
+    command: >
+      Qwen/Qwen3.6-27B-FP8
+      --gpu-memory-utilization 0.45
+      --max-model-len 16384
+      --max-num-seqs 8
+      --max-num-batched-tokens 16384
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --served-model-name qwen3.6-27b
+      --uvicorn-log-level warning
+      --allow-credentials
+      --allowed-origins '["http://172.16.0.160:3333","http://localhost:3333","http://127.0.0.1:3333"]'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 540s
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # EMBED — nomic-embed-text-v1.5  (~274 MB VRAM, ~7% utilisation)
+  #   Serves OpenAI-compatible /v1/embeddings on port 8004.
+  #   Included in default profile; disable with --scale vllm-embed=0 if not needed.
+  # ──────────────────────────────────────────────────────────────────────────
+  vllm-embed:
+    <<: *vllm-common
+    container_name: vllm-embed
+    profiles: ["default"]
+    ports: ["8004:8000"]
+    labels:
+      - "llm.tier=hot"
+      - "llm.model=nomic-embed-text-v1.5"
+    command: >
+      nomic-ai/nomic-embed-text-v1.5
+      --gpu-memory-utilization 0.07
+      --max-model-len 2048
+      --max-num-seqs 64
+      --served-model-name nomic-embed-text
+      --trust-remote-code
+      --uvicorn-log-level warning
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # GATEWAY — LiteLLM Proxy (always on)
+  # ──────────────────────────────────────────────────────────────────────────
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm
+    profiles: ["default", "reasoning", "infra"]
+    restart: unless-stopped
+    networks: [llm-net]
+    ports: ["4000:4000"]
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: redis://redis:6379
+      VLLM_KEY: ${VLLM_KEY}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      LITELLM_LOG: INFO
+      GEMMA_MODEL_NAME: ${GEMMA_MODEL_NAME}
+      GEMMA_API_BASE: ${GEMMA_API_BASE}
+      QWEN_MODEL_NAME: ${QWEN_MODEL_NAME}
+      QWEN_API_BASE: ${QWEN_API_BASE}
+      REASON_MODEL_NAME: ${REASON_MODEL_NAME}
+      REASON_API_BASE: ${REASON_API_BASE}
+      LITELLM_CORS_ALLOW_CREDENTIALS: "true"
+      LITELLM_CORS_ORIGINS: "http://172.16.0.160:3333,http://localhost:3333,http://127.0.0.1:3333"
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "4"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.litellm.rule=Host(`${DOMAIN:-llm.internal}`)"
+      - "traefik.http.routers.litellm.entrypoints=websecure"
+      - "traefik.http.routers.litellm.tls=true"
+      - "traefik.http.services.litellm.loadbalancer.server.port=4000"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # INFRA — always on
+  # ──────────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    profiles: ["default", "reasoning", "infra"]
+    restart: unless-stopped
+    networks: [llm-net]
+    volumes: [redis-data:/data]
+    command: ["redis-server", "--maxmemory", "2gb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    profiles: ["default", "reasoning", "infra"]
+    restart: unless-stopped
+    networks: [llm-net]
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    volumes: [pg-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  traefik:
+    image: traefik:v3.1
+    container_name: traefik
+    profiles: ["default", "reasoning", "infra"]
+    restart: unless-stopped
+    networks: [llm-net]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"   # dashboard (restrict via firewall)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ./traefik/certs:/certs:ro
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # OBSERVABILITY
+  # ──────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    profiles: ["default", "reasoning", "infra"]
+    restart: unless-stopped
+    networks: [llm-net]
+    ports: ["9090:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    profiles: ["default", "reasoning", "infra"]
+    restart: unless-stopped
+    networks: [llm-net]
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/dgx-llm.json:ro
+    depends_on: [prometheus]
+
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.7-3.5.0-ubuntu22.04
+    container_name: dcgm-exporter
+    profiles: ["default", "reasoning", "infra"]
+    restart: unless-stopped
+    runtime: nvidia
+    networks: [llm-net]
+    ports: ["9400:9400"]
+    cap_add: [SYS_ADMIN]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    profiles: ["default", "reasoning", "infra"]
+    restart: unless-stopped
+    networks: [llm-net]
+    ports: ["8081:8080"]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg

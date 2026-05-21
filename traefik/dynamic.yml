@@ -1,0 +1,60 @@
+# =============================================================================
+# Traefik dynamic config — TLS, middleware, internal CA cert
+# =============================================================================
+
+tls:
+  certificates:
+    - certFile: /certs/llm.internal.crt
+      keyFile:  /certs/llm.internal.key
+  options:
+    default:
+      minVersion: VersionTLS12
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+      sniStrict: true
+
+http:
+  middlewares:
+    security-headers:
+      headers:
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        customResponseHeaders:
+          X-Robots-Tag: "noindex, nofollow"
+
+    rate-limit:
+      rateLimit:
+        average: 100
+        burst: 50
+        period: 1s
+
+    # IP allow-list (adjust to your corp CIDR)
+    corp-only:
+      ipAllowList:
+        sourceRange:
+          - "10.0.0.0/8"
+          - "172.16.0.0/12"
+          - "192.168.0.0/16"
+
+    # Apply to dashboard route
+    traefik-dashboard-auth:
+      basicAuth:
+        # generate: htpasswd -nb admin yourpassword
+        users:
+          - "admin:$apr1$H5R5X6H0$5CKeiarLWq1M6qp/TvuDL0"
+
+  routers:
+    traefik-dashboard:
+      rule: "Host(`traefik.llm.internal`)"
+      entryPoints: [websecure]
+      service: api@internal
+      tls: {}
+      middlewares: [traefik-dashboard-auth, corp-only, security-headers]

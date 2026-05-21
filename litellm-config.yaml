@@ -1,0 +1,143 @@
+# =============================================================================
+# LiteLLM Proxy Configuration — DGX Spark Stack
+# =============================================================================
+
+model_list:
+  # All 3 models always-on (4-bit quantized, co-resident on single DGX Spark)
+  - model_name: chat
+    litellm_params:
+      model: os.environ/GEMMA_MODEL_NAME
+      api_base: os.environ/GEMMA_API_BASE
+      api_key: os.environ/VLLM_KEY
+      timeout: 120
+      max_retries: 1
+    model_info:
+      mode: chat
+      tier: free
+      quantization: fp4
+      max_tokens: 32768
+      supports_function_calling: true
+      supports_tool_choice: true
+      description: "Gemma 4 31B FP4 — general assistant, document analysis, internal AI"
+
+  - model_name: code
+    litellm_params:
+      model: os.environ/QWEN_MODEL_NAME
+      api_base: os.environ/QWEN_API_BASE
+      api_key: os.environ/VLLM_KEY
+      timeout: 180
+      max_retries: 1
+    model_info:
+      mode: chat
+      tier: free
+      quantization: fp8
+      max_tokens: 32768
+      supports_function_calling: true
+      supports_tool_choice: true
+      description: "Qwen3.6-27B FP8 — code gen, agentic, 32K ctx, tool use"
+
+  - model_name: embed
+    litellm_params:
+      model: openai/nomic-embed-text
+      api_base: http://vllm-embed:8000/v1
+      api_key: os.environ/VLLM_KEY
+      timeout: 60
+      max_retries: 1
+    model_info:
+      mode: embedding
+      tier: free
+      description: "nomic-embed-text-v1.5 — 768-dim embeddings for pgvector search"
+
+  - model_name: reason
+    litellm_params:
+      model: os.environ/REASON_MODEL_NAME
+      api_base: os.environ/REASON_API_BASE
+      api_key: os.environ/VLLM_KEY
+      timeout: 300
+      stream_timeout: 600
+      max_retries: 1
+    model_info:
+      mode: chat
+      tier: free
+      quantization: mxfp4
+      supports_function_calling: true
+      supports_tool_choice: true
+      description: "GPT-OSS 120B MXFP4 — reasoning, agent orchestration"
+
+# ─── Routing ──────────────────────────────────────────────────────────────────
+router_settings:
+  routing_strategy: simple-shuffle
+  num_retries: 1
+  timeout: 90
+  allowed_fails: 3
+  cooldown_time: 30
+  # Cross-model fallback enabled now that all 3 are co-resident
+  fallbacks:
+    - reason: ["chat"]    # if GPT-OSS down → degrade to Gemma
+    - code: ["chat"]      # if Qwen down → degrade to Gemma
+
+# ─── Cache + Logging ──────────────────────────────────────────────────────────
+litellm_settings:
+  cache: true
+  cache_params:
+    type: redis
+    host: redis
+    port: 6379
+    ttl: 3600
+    supported_call_types: ["acompletion", "completion", "embedding"]
+
+  drop_params: true
+  set_verbose: false
+  json_logs: true
+  request_timeout: 600
+
+  success_callback: ["langfuse", "prometheus"]
+  failure_callback: ["langfuse", "prometheus"]
+
+  # Background health checks — auto-detects swap state
+  background_health_checks: true
+  health_check_interval: 30
+
+  # Telemetry
+  telemetry: false
+
+# ─── General / Admin ──────────────────────────────────────────────────────────
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true
+  store_prompts_in_spend_logs: false  # privacy: do not log raw prompts
+
+  # Concurrency control
+  global_max_parallel_requests: 60
+
+  # Budget
+  max_budget: 5000
+  budget_duration: 30d
+
+  # Alerts (Slack)
+  alerting: ["slack"]
+  alerting_threshold: 300   # alert if request > 300s
+  alert_types:
+    - "llm_too_slow"
+    - "llm_exceptions"
+    - "budget_alerts"
+    - "db_exceptions"
+    - "outage_alerts"
+  slack_alerting:
+    webhook_url: os.environ/SLACK_WEBHOOK_URL
+
+  # UI
+  ui_access_mode: admin_only
+  disable_spend_logs: false
+
+# ─── Per-team budget examples (managed via UI/DB) ─────────────────────────────
+# Use the LiteLLM Admin UI at /ui to create teams + virtual keys.
+# Example structure (set up via API after first boot):
+#
+# Teams:
+#   - engineering: budget 2000/month, models: [chat, code, reason]
+#   - finance:     budget  500/month, models: [chat]
+#   - support:     budget  300/month, models: [chat]
+#
+# Each team gets a virtual key (sk-...) that the .NET app uses.
