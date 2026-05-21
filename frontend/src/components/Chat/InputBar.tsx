@@ -26,11 +26,13 @@ async function fileToDataUrl(file: File): Promise<string> {
         }
         const canvas = document.createElement('canvas')
         canvas.width = width; canvas.height = height
-        canvas.getContext('2d')!.drawImage(img, 0, 0, width, height)
-        // PNG: lossless, no decoder issues with vLLM Gemma 4
-        // If PNG > 1.5MB base64, fall back to JPEG
-        const png = canvas.toDataURL('image/png')
-        resolve(png.length < 1_500_000 ? png : canvas.toDataURL('image/jpeg', 0.82))
+        const ctx = canvas.getContext('2d')!
+        // Flatten alpha onto white background — vLLM Gemma 4 chokes on RGBA
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, width, height)
+        ctx.drawImage(img, 0, 0, width, height)
+        // Always use PNG — JPEG triggers list-index-out-of-range in vLLM Gemma 4
+        resolve(canvas.toDataURL('image/png'))
       }
       img.onerror = () => reject(new Error('Image load failed'))
       img.src = String(r.result)
