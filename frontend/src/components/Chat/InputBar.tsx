@@ -105,7 +105,17 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating }: P
       })
       const base = ep.port === 4000 ? null : `http://${ep.host}:${ep.port}`
       store.setActiveEndpoint(base, ep.model, idx)
-      if (conv) store.updateConvSettings(conv.id, { baseUrl: base, model: ep.model, endpointIdx: idx })
+      store.setSkill(null, null)
+      if (conv) store.updateConvSettings(conv.id, {
+        baseUrl:         base,
+        model:           ep.model,
+        endpointIdx:     idx,
+        skillId:         null,
+        skillName:       null,
+        skillCollection: null,
+        systemPrompt:    '',
+        agentMode:       false,
+      })
       store.setStatus(r.ok ? 'connected' : 'unreachable', r.ok)
     } catch {
       store.setStatus('unreachable', false)
