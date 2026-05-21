@@ -484,10 +484,42 @@ app.MapGet("/api/admin/usage/session-users", [Authorize] async (
     return Results.Ok(rows);
 });
 
-// GET /api/admin/usage/models
+// GET /api/admin/usage/models — aggregate from spend logs (reliable after reset)
 app.MapGet("/api/admin/usage/models", [Authorize] async (
-    IOptions<LiteLLMOptions> opts, IHttpClientFactory http, CancellationToken ct) =>
-    await LiteLLMProxy("/global/spend/models", opts, http, ct));
+    IOptions<LiteLLMOptions> litellmOpts, IHttpClientFactory httpFactory, CancellationToken ct) =>
+{
+    using var client = httpFactory.CreateClient("proxy");
+    client.Timeout = TimeSpan.FromSeconds(30);
+    using var req = new HttpRequestMessage(HttpMethod.Get,
+        litellmOpts.Value.BaseUrl.TrimEnd('/') + "/spend/logs?limit=5000");
+    req.Headers.Authorization =
+        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", litellmOpts.Value.ApiKey);
+    using var resp = await client.SendAsync(req, ct);
+    var body = await resp.Content.ReadAsStringAsync(ct);
+
+    var doc  = JsonSerializer.Deserialize<JsonElement>(body);
+    var logs = doc.ValueKind == JsonValueKind.Array ? doc
+             : doc.TryGetProperty("data", out var d) ? d : default;
+
+    if (logs.ValueKind != JsonValueKind.Array)
+        return Results.Ok(Array.Empty<object>());
+
+    var agg = new Dictionary<string, (long tokens, long count)>(StringComparer.OrdinalIgnoreCase);
+    foreach (var entry in logs.EnumerateArray())
+    {
+        var model  = entry.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String
+            ? m.GetString()! : "unknown";
+        var total  = entry.TryGetProperty("total_tokens", out var tt) ? tt.GetInt64() : 0;
+        var cnt    = agg.TryGetValue(model, out var prev) ? prev : (0, 0);
+        agg[model] = (cnt.tokens + total, cnt.count + 1);
+    }
+
+    var result = agg
+        .OrderByDescending(kv => kv.Value.tokens)
+        .Select(kv => new { model = kv.Key, total_tokens = kv.Value.tokens, total_count = kv.Value.count });
+
+    return Results.Ok(result);
+});
 
 // GET /api/admin/usage/logs?limit=50
 app.MapGet("/api/admin/usage/logs", [Authorize] async (
