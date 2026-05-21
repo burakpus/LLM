@@ -3,6 +3,7 @@ import { useStore, t } from '../../store'
 import { logout } from '../../api'
 import type { Skill } from '../../api'
 import SetLogo from '../SetLogo'
+import HelpModal from './HelpModal'
 
 const MAX_SKILL_CHARS = 12000 // ~3000 tokens — keep context window headroom
 
@@ -138,6 +139,7 @@ export default function Header({ skills, statusOk }: Props) {
   const store = useStore()
   const conv  = store.currentConv()
   const settings = conv?.settings
+  const [helpOpen, setHelpOpen] = useState(false)
 
   const statusClass = statusOk === true  ? 'ok'
                     : statusOk === false ? 'bad'
@@ -154,6 +156,7 @@ export default function Header({ skills, statusOk }: Props) {
   const activeModel = settings?.model ?? store.activeModel
 
   return (
+  <>
     <header
       className="h-14 flex items-center gap-2 px-3 shrink-0"
       style={{ background: 'var(--bg)' }}
@@ -234,6 +237,18 @@ export default function Header({ skills, statusOk }: Props) {
         </svg>
       </a>
 
+      {/* Help */}
+      <button
+        onClick={() => setHelpOpen(true)}
+        className="p-2 rounded-full transition cursor-pointer font-bold text-sm"
+        style={{ color: 'var(--text-2)' }}
+        title="Yardım"
+        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+      >
+        ?
+      </button>
+
       {/* Settings */}
       <button
         onClick={store.toggleSettings}
@@ -305,5 +320,8 @@ export default function Header({ skills, statusOk }: Props) {
         </svg>
       </button>
     </header>
+
+    {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+  </>
   )
 }
