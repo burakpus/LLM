@@ -19,6 +19,16 @@ interface Props {
 }
 
 // ── Code block renderer ─────────────────────────────────────────────────────
+/** Extract plain text from React node tree (handles syntax-highlighted nodes) */
+function nodeToText(node: ReactNode): string {
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(nodeToText).join('')
+  if (node && typeof node === 'object' && 'props' in (node as any))
+    return nodeToText((node as any).props?.children)
+  return ''
+}
+
 function CodeBlock({
   className, children,
 }: { className?: string; children?: ReactNode }) {
@@ -29,7 +39,8 @@ function CodeBlock({
   const [fname,  setFname]    = useState('')
   const [showInput, setShowInput] = useState(false)
   const lang = (className?.match(/language-(\w+)/)?.[1] ?? 'plain').toLowerCase()
-  const text = String(children ?? '').replace(/\n$/, '')
+  // nodeToText handles syntax-highlighted nodes (arrays of React elements)
+  const text = nodeToText(children).replace(/\n$/, '')
 
   const hasProject = !!store.project.projectId
 
