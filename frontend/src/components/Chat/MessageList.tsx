@@ -86,18 +86,21 @@ export default function MessageList({
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // Always scroll to bottom while generating; scroll when new message added
+  // Scroll to bottom on every token while generating
   useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
     if (generating) {
-      bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+      el.scrollTop = el.scrollHeight
     }
-  }, [messages, generating])
+  })
 
-  // Smooth scroll when user sends a message (messages count increases)
+  // Smooth scroll when a new message is added
   const prevLenRef = useRef(0)
   useEffect(() => {
     if (messages.length > prevLenRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+      const el = scrollRef.current
+      if (el) el.scrollTop = el.scrollHeight
     }
     prevLenRef.current = messages.length
   }, [messages.length])
