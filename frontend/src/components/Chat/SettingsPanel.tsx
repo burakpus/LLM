@@ -325,20 +325,6 @@ export default function SettingsPanel() {
             </label>
           </section>
 
-          {/* ── Agent (RAG) mode ────────────────────────────────────── */}
-          <section className="pt-3" style={{ borderTop: '1px solid var(--border)' }}>
-            <label className="flex items-center justify-between cursor-pointer">
-              <span className="text-sm font-medium" style={{ color: 'var(--text)' }}>
-                {t('agentMode')}
-              </span>
-              <input
-                type="checkbox"
-                checked={settings.agentMode}
-                onChange={e => setPatch({ agentMode: e.target.checked })}
-              />
-            </label>
-          </section>
-
           {/* ── Clear chat ──────────────────────────────────────────── */}
           <section className="pt-3" style={{ borderTop: '1px solid var(--border)' }}>
             <button
