@@ -13,8 +13,9 @@ import { useGeneration } from '../../hooks/useGeneration'
 
 export default function ChatPage() {
   const store    = useStore()
-  const [skills, setSkills]     = useState<Skill[]>([])
-  const [statusOk, setStatusOk] = useState<boolean | null>(null)
+  const [skills,      setSkills]      = useState<Skill[]>([])
+  const [statusOk,    setStatusOk]    = useState<boolean | null>(null)
+  const [fileContext, setFileContext]  = useState<string>('')   // injected from project panel tab click
   const { send, regenerate, continueResponse, stop } = useGeneration()
 
   // ── Ensure at least one conversation ───────────────────────────────────────
@@ -100,11 +101,13 @@ export default function ChatPage() {
             onStop={stop}
             onRegenerate={regenerate}
             generating={generating}
+            fileContext={fileContext}
+            onFileContextConsumed={() => setFileContext('')}
           />
         </main>
 
         <SettingsPanel />
-        <ProjectPanel />
+        <ProjectPanel onFileContext={setFileContext} />
       </div>
     </div>
   )

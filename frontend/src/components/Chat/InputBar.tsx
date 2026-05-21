@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import type { KeyboardEvent, ClipboardEvent, ChangeEvent } from 'react'
 import { useStore, t, DEFAULT_ENDPOINTS } from '../../store'
 import { proxyRequest } from '../../api'
@@ -8,6 +8,8 @@ interface Props {
   onStop:     () => void
   onRegenerate?: () => void
   generating: boolean
+  fileContext?: string              // injected from project panel tab click
+  onFileContextConsumed?: () => void
 }
 
 /** Debug flag: enable with `localStorage.setItem('vision-debug','1')` or ?vision-debug=1 in URL */
@@ -49,13 +51,23 @@ async function fileToDataUrl(file: File): Promise<string> {
   })
 }
 
-export default function InputBar({ onSend, onStop, onRegenerate, generating }: Props) {
+export default function InputBar({ onSend, onStop, onRegenerate, generating,
+  fileContext, onFileContextConsumed }: Props) {
   const store = useStore()
   const conv  = store.currentConv()
   const [input, setInput] = useState('')
   const [attachedImage, setAttachedImage] = useState<string | null>(null)
   const ref     = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  // Inject file context from project panel tab click
+  useEffect(() => {
+    if (fileContext) {
+      setInput(prev => prev ? `${prev} ${fileContext}` : fileContext)
+      ref.current?.focus()
+      onFileContextConsumed?.()
+    }
+  }, [fileContext])
 
   const submit = () => {
     const text = input.trim()
