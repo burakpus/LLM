@@ -13,14 +13,16 @@ jobs:
           set -e
           export PATH="/home/admin/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
           
-          cd ~/Documents/MultiModel/dgx-spark-llm-stack
+          ROOT=~/Documents/MultiModel/dgx-spark-llm-stack
+          cd $ROOT
           git pull
 
-          cd frontend
+          cd $ROOT/frontend
           npm run build 2>&1 | tail -3
 
+          cd $ROOT
           sudo cp -r dotnet/Api/wwwroot /opt/setllm-api/
-          sudo cp -r dotnet/Api/Skills /opt/setllm-api/
+          sudo cp -r dotnet/Api/Skills  /opt/setllm-api/
           sudo systemctl restart setllm-api
 
           sleep 5
