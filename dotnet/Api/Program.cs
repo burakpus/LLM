@@ -495,6 +495,59 @@ app.MapGet("/api/admin/usage/logs", [Authorize] async (
     IOptions<LiteLLMOptions> opts, IHttpClientFactory http, CancellationToken ct) =>
     await LiteLLMProxy($"/spend/logs?limit={Math.Clamp(limit, 1, 200)}", opts, http, ct));
 
+// GET /api/admin/usage/end-users — aggregate end_user spend from LiteLLM logs
+app.MapGet("/api/admin/usage/end-users", [Authorize] async (
+    IOptions<LiteLLMOptions> opts, IHttpClientFactory httpFactory, CancellationToken ct) =>
+{
+    using var client = httpFactory.CreateClient("proxy");
+    client.Timeout = TimeSpan.FromSeconds(30);
+    using var req = new HttpRequestMessage(HttpMethod.Get,
+        opts.Value.BaseUrl.TrimEnd('/') + "/spend/logs?limit=5000");
+    req.Headers.Authorization =
+        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", opts.Value.ApiKey);
+    using var resp = await client.SendAsync(req, ct);
+    var body = await resp.Content.ReadAsStringAsync(ct);
+
+    var doc  = JsonSerializer.Deserialize<JsonElement>(body);
+    var logs = doc.ValueKind == JsonValueKind.Array ? doc
+             : doc.TryGetProperty("data", out var d) ? d : default;
+
+    if (logs.ValueKind != JsonValueKind.Array)
+        return Results.Ok(Array.Empty<object>());
+
+    // aggregate by end_user (fallback → user field)
+    var agg = new Dictionary<string, (long prompt, long completion, long total, int requests, DateTime last)>(StringComparer.OrdinalIgnoreCase);
+    foreach (var entry in logs.EnumerateArray())
+    {
+        var userId = entry.TryGetProperty("end_user", out var eu) && eu.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(eu.GetString())
+            ? eu.GetString()!
+            : entry.TryGetProperty("user",     out var u)  && u.ValueKind  == JsonValueKind.String ? u.GetString()!  : "(anonymous)";
+
+        var prompt     = entry.TryGetProperty("prompt_tokens",     out var pt) ? pt.GetInt64() : 0;
+        var completion = entry.TryGetProperty("completion_tokens", out var ct2) ? ct2.GetInt64() : 0;
+        var total      = entry.TryGetProperty("total_tokens",      out var tt) ? tt.GetInt64() : prompt + completion;
+        var ts         = entry.TryGetProperty("startTime",         out var st) && DateTime.TryParse(st.GetString(), out var d2) ? d2 : DateTime.MinValue;
+
+        if (agg.TryGetValue(userId, out var prev))
+            agg[userId] = (prev.prompt + prompt, prev.completion + completion, prev.total + total, prev.requests + 1, ts > prev.last ? ts : prev.last);
+        else
+            agg[userId] = (prompt, completion, total, 1, ts);
+    }
+
+    var result = agg
+        .OrderByDescending(kv => kv.Value.total)
+        .Select(kv => new {
+            userId           = kv.Key,
+            messages         = (long)kv.Value.requests,
+            promptTokens     = kv.Value.prompt,
+            completionTokens = kv.Value.completion,
+            totalTokens      = kv.Value.total,
+            lastActive       = kv.Value.last == DateTime.MinValue ? (DateTime?)null : kv.Value.last
+        });
+
+    return Results.Ok(result);
+});
+
 // GET /api/admin/skills
 app.MapGet("/api/admin/skills", [Authorize] (SkillRegistry registry) =>
     Results.Ok(registry.All.Select(kv => new { id = kv.Key, size = kv.Value.Length })));

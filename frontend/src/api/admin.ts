@@ -153,7 +153,7 @@ async function usageGet(path: string) {
   return Array.isArray(d) ? d : (d.users ?? d.models ?? d.logs ?? d.data ?? [])
 }
 
-export const getUsageUsers  = (): Promise<UserSpend[]>  => usageGet('/api/admin/usage/session-users')
+export const getUsageUsers  = (): Promise<UserSpend[]>  => usageGet('/api/admin/usage/end-users')
   .then((rows: any[]) => rows.map(r => ({
     user_id:           r.userId,
     total_spend:       0,
