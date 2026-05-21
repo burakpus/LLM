@@ -189,6 +189,43 @@ interface AppStore {
   settingsOpen: boolean
   toggleHistory: () => void
   toggleSettings: () => void
+
+  // ── Project mode ──────────────────────────────────────────────────────────
+  project: ProjectState
+  setProjectId:       (id: string | null) => void
+  setActiveFile:      (path: string | null) => void
+  setFileContent:     (path: string, content: string) => void
+  setPendingChange:   (change: PendingChange | null) => void
+  acceptPendingChange: () => void
+}
+
+// ── Project types ─────────────────────────────────────────────────────────────
+
+export interface DiffLine {
+  type:       'unchanged' | 'added' | 'removed'
+  lineNumber: number   // line number in new file (added/unchanged) or old file (removed)
+  text:       string
+}
+
+export interface PendingChange {
+  path:            string
+  originalContent: string
+  newContent:      string
+  diffLines:       DiffLine[]
+}
+
+export interface ProjectState {
+  projectId:      string | null
+  files:          Record<string, string>  // path → content (accepted)
+  activeFilePath: string | null
+  pendingChange:  PendingChange | null
+}
+
+const defaultProject: ProjectState = {
+  projectId:      null,
+  files:          {},
+  activeFilePath: null,
+  pendingChange:  null,
 }
 
 function ensureSettings(c: Conversation): Conversation {
@@ -452,6 +489,27 @@ export const useStore = create<AppStore>()(
       settingsOpen: false,
       toggleHistory: () => set(s => ({ historyOpen: !s.historyOpen })),
       toggleSettings: () => set(s => ({ settingsOpen: !s.settingsOpen })),
+
+      // ── Project ─────────────────────────────────────────────────────────
+      project: defaultProject,
+      setProjectId: (id) => set(s => ({ project: { ...s.project, projectId: id } })),
+      setActiveFile: (path) => set(s => ({ project: { ...s.project, activeFilePath: path } })),
+      setFileContent: (path, content) => set(s => ({
+        project: { ...s.project, files: { ...s.project.files, [path]: content } }
+      })),
+      setPendingChange: (change) => set(s => ({ project: { ...s.project, pendingChange: change } })),
+      acceptPendingChange: () => set(s => {
+        const ch = s.project.pendingChange
+        if (!ch) return s
+        return {
+          project: {
+            ...s.project,
+            files:         { ...s.project.files, [ch.path]: ch.newContent },
+            activeFilePath: ch.path,
+            pendingChange:  null,
+          }
+        }
+      }),
     }),
     {
       name: 'setllm-store',

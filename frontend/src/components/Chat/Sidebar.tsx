@@ -2,6 +2,48 @@ import { useState, useEffect, useRef } from 'react'
 import type { KeyboardEvent } from 'react'
 import { useStore, t } from '../../store'
 
+function ProjectButton() {
+  const store = useStore()
+  const [input, setInput] = useState('')
+  const [open,  setOpen]  = useState(false)
+  const proj = store.project
+
+  if (proj.projectId) return (
+    <div className="flex items-center gap-1.5 px-3 py-2 rounded-full text-xs"
+         style={{ background: 'rgba(138,180,248,0.12)', border: '1px solid rgba(138,180,248,0.3)', color: 'var(--accent-hi)' }}>
+      <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+      </svg>
+      <span className="flex-1 truncate font-medium">{proj.projectId}</span>
+      <button onClick={() => store.setProjectId(null)} className="cursor-pointer" title="Kapat">✕</button>
+    </div>
+  )
+
+  if (open) return (
+    <form onSubmit={e => { e.preventDefault(); if (input.trim()) { store.setProjectId(input.trim()); setOpen(false); setInput('') } }}
+          className="flex gap-1">
+      <input autoFocus value={input} onChange={e => setInput(e.target.value)}
+             placeholder="proje-adı" className="flex-1 px-2 py-1.5 rounded-lg text-xs outline-none"
+             style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+      <button type="submit" className="px-2 py-1.5 rounded-lg text-xs cursor-pointer"
+              style={{ background: 'var(--accent)', color: '#0b1929' }}>✓</button>
+      <button type="button" onClick={() => setOpen(false)} className="px-2 py-1.5 rounded-lg text-xs cursor-pointer"
+              style={{ background: 'var(--surface-hi)', color: 'var(--mute)' }}>✕</button>
+    </form>
+  )
+
+  return (
+    <button onClick={() => setOpen(true)}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-full text-xs transition cursor-pointer"
+            style={{ background: 'transparent', border: '1px dashed var(--border)', color: 'var(--mute)' }}>
+      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+      </svg>
+      <span>Yeni Proje</span>
+    </button>
+  )
+}
+
 export default function Sidebar() {
   const store = useStore()
   const [query, setQuery] = useState('')
@@ -65,10 +107,7 @@ export default function Sidebar() {
         <button
           onClick={() => store.newConversation()}
           className="w-full flex items-center gap-3 px-3 py-2.5 rounded-full text-sm font-medium transition cursor-pointer"
-          style={{
-            background: 'var(--surface-hi)',
-            color: 'var(--text)',
-          }}
+          style={{ background: 'var(--surface-hi)', color: 'var(--text)' }}
           title={t('newChat')}
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -77,6 +116,8 @@ export default function Sidebar() {
           </svg>
           <span>{t('newChat')}</span>
         </button>
+        {/* New project */}
+        <ProjectButton />
 
         <div className="relative">
           <svg className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2"

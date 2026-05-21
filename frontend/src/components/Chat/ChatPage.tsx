@@ -8,6 +8,7 @@ import MessageList   from './MessageList'
 import InputBar      from './InputBar'
 import SettingsPanel from './SettingsPanel'
 import StatsBar      from './StatsBar'
+import ProjectPanel  from './ProjectPanel'
 import { useGeneration } from '../../hooks/useGeneration'
 
 export default function ChatPage() {
@@ -85,7 +86,8 @@ export default function ChatPage() {
       <div className="flex-1 flex overflow-hidden relative">
         <Sidebar />
 
-        <main className="flex-1 flex flex-col min-w-0">
+        <main className="flex-1 flex flex-col min-w-0 transition-[margin-right] duration-300"
+              style={{ marginRight: store.project.projectId ? '420px' : 0 }}>
           <MessageList
             messages={conv?.messages ?? []}
             generating={generating}
@@ -102,6 +104,7 @@ export default function ChatPage() {
         </main>
 
         <SettingsPanel />
+        <ProjectPanel />
       </div>
     </div>
   )

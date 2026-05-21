@@ -127,7 +127,27 @@ export function useGeneration() {
     }
 
     const msgs: ChatApiMessage[] = []
-    if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt })
+
+    // Project mode: inject system prompt telling AI how to output file changes
+    const proj = useStore.getState().project
+    let effectiveSystem = systemPrompt
+    if (proj.projectId) {
+      const fileList = Object.keys(proj.files)
+      const fileContext = fileList.length > 0
+        ? `\n\nMevcut proje dosyaları:\n${fileList.map(f => `- ${f}`).join('\n')}`
+        : ''
+      const projectPrompt =
+        `Sen proje modunda çalışıyorsun (proje: ${proj.projectId}).` +
+        ` Dosya değişikliği yaparken dosyanın TAM içeriğini şu formatta yaz:\n` +
+        "```file:yol/dosya.uzantı\n(tam içerik)\n```\n" +
+        `Sadece değiştirilen dosyaları yaz. Açıklamayı kod bloğu dışında yap.` +
+        fileContext
+      effectiveSystem = effectiveSystem
+        ? `${effectiveSystem}\n\n${projectPrompt}`
+        : projectPrompt
+    }
+
+    if (effectiveSystem) msgs.push({ role: 'system', content: effectiveSystem })
     for (const m of kept) msgs.push(m)
     return msgs
   }
@@ -315,8 +335,6 @@ export function useGeneration() {
         })
 
         // Push assistant content to apiHistory (for follow-up turns).
-        // Use only the newly generated delta (so Continue doesn't duplicate
-        // the previous truncated content).
         const delta = msg && msg.content.startsWith(baseContent)
           ? msg.content.slice(baseContent.length)
           : msg?.content ?? ''
@@ -332,6 +350,24 @@ export function useGeneration() {
               })),
             } : {}),
           })
+
+          // ── Project mode: parse file blocks from AI response ─────────────
+          // Format: ```file:path/to/file.ext\ncontent\n```
+          const proj = store.project
+          if (proj.projectId && delta) {
+            const FILE_BLOCK = /```file:([^\n`]+)\n([\s\S]*?)```/g
+            let m: RegExpExecArray | null
+            while ((m = FILE_BLOCK.exec(delta)) !== null) {
+              const filePath   = m[1].trim()
+              const newContent = m[2]
+              const { computeDiff } = await import('../components/Chat/DiffView')
+              const originalContent = proj.files[filePath] ?? ''
+              const diffLines = computeDiff(originalContent, newContent)
+              store.setPendingChange({ path: filePath, originalContent, newContent, diffLines })
+              store.setActiveFile(filePath)
+              break  // one pending change at a time
+            }
+          }
         }
       }
 
