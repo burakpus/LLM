@@ -249,7 +249,7 @@ export function useGeneration() {
           const gen = streamCompletion(
             {
               messages:    builtMsgs,
-              model:       conv.settings.model ?? store.activeModel ?? 'chat',
+              model:       activeModelId,
               temperature: conv.settings.temperature,
               maxTokens:   conv.settings.maxTokens,
               stream:      conv.settings.stream,
