@@ -2,13 +2,15 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import {
   uploadFiles, listDocuments, listCollections,
   deleteDocument, listSkills, getSkill, uploadSkills, deleteSkill,
+  getUsageUsers, getUsageModels, getUsageLogs,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
+  UserSpend, ModelSpend, SpendLog,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 
-type Tab = 'upload' | 'documents' | 'skills'
+type Tab = 'upload' | 'documents' | 'skills' | 'usage'
 
 // =============================================================================
 // AdminPage — RAG admin panel (3 tabs: upload / documents / skills)
@@ -45,7 +47,7 @@ export default function AdminPage() {
         <div className="flex-1" />
 
         <nav className="flex items-center gap-1">
-          {(['upload', 'documents', 'skills'] as Tab[]).map(t => (
+          {(['upload', 'documents', 'skills', 'usage'] as Tab[]).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -56,7 +58,7 @@ export default function AdminPage() {
                 border:     tab === t ? '1px solid var(--border)' : '1px solid transparent',
               }}
             >
-              {t === 'upload' ? 'Upload' : t === 'documents' ? 'Documents' : 'Skills'}
+              {t === 'upload' ? 'Upload' : t === 'documents' ? 'Documents' : t === 'skills' ? 'Skills' : 'Kullanım'}
             </button>
           ))}
         </nav>
@@ -68,6 +70,7 @@ export default function AdminPage() {
           {tab === 'upload'    && <UploadTab />}
           {tab === 'documents' && <DocumentsTab />}
           {tab === 'skills'    && <SkillsTab />}
+          {tab === 'usage'     && <UsageTab />}
         </div>
       </main>
     </div>
@@ -607,6 +610,172 @@ function SkillsTab() {
           </pre>
         </div>
       </div>
+    </section>
+  )
+}
+
+// =============================================================================
+// Tab 4 — Usage
+// =============================================================================
+
+function UsageTab() {
+  const [users,  setUsers]  = useState<UserSpend[]>([])
+  const [models, setModels] = useState<ModelSpend[]>([])
+  const [logs,   setLogs]   = useState<SpendLog[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error,   setError]   = useState<string | null>(null)
+
+  const load = async () => {
+    setLoading(true); setError(null)
+    try {
+      const [u, m, l] = await Promise.all([
+        getUsageUsers(), getUsageModels(), getUsageLogs(50)
+      ])
+      setUsers(u); setModels(m); setLogs(l)
+    } catch (e: any) {
+      setError(e.message ?? String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [])
+
+  const totalTokens = (arr: UserSpend[]) =>
+    arr.reduce((s, u) => s + (u.total_tokens ?? 0), 0)
+
+  return (
+    <section className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-medium">Token Kullanımı</h2>
+          <p className="text-xs mt-1" style={{ color: 'var(--mute)' }}>LiteLLM spend log verisi</p>
+        </div>
+        <button onClick={load} className="px-3 py-1.5 rounded-lg text-xs cursor-pointer"
+                style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+          ↺ Yenile
+        </button>
+      </div>
+
+      {error && (
+        <div className="rounded-md px-3 py-2 text-xs"
+             style={{ background: 'rgba(234,67,53,0.1)', color: '#ea4335', border: '1px solid rgba(234,67,53,0.3)' }}>
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-center py-12 text-xs" style={{ color: 'var(--mute)' }}>Yükleniyor…</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+
+          {/* Kullanıcı bazlı */}
+          <div className="rounded-xl overflow-hidden"
+               style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div className="px-4 py-3 text-xs font-semibold uppercase tracking-wider"
+                 style={{ color: 'var(--mute)', borderBottom: '1px solid var(--border)' }}>
+              Kullanıcı Bazlı — Toplam {totalTokens(users).toLocaleString()} tok
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--mute)', fontSize: 11 }}>
+                  <th className="px-4 py-2 text-left font-medium">Kullanıcı</th>
+                  <th className="px-4 py-2 text-right font-medium">Token</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.length === 0 && (
+                  <tr><td colSpan={2} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Veri yok</td></tr>
+                )}
+                {[...users].sort((a,b) => (b.total_tokens??0)-(a.total_tokens??0)).map((u, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--text)' }}>
+                      {u.user_id || '(anonymous)'}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--accent-hi)' }}>
+                      {(u.total_tokens ?? 0).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Model bazlı */}
+          <div className="rounded-xl overflow-hidden"
+               style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div className="px-4 py-3 text-xs font-semibold uppercase tracking-wider"
+                 style={{ color: 'var(--mute)', borderBottom: '1px solid var(--border)' }}>
+              Model Bazlı
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--mute)', fontSize: 11 }}>
+                  <th className="px-4 py-2 text-left font-medium">Model</th>
+                  <th className="px-4 py-2 text-right font-medium">Token</th>
+                  <th className="px-4 py-2 text-right font-medium">İstek</th>
+                </tr>
+              </thead>
+              <tbody>
+                {models.length === 0 && (
+                  <tr><td colSpan={3} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Veri yok</td></tr>
+                )}
+                {[...models].sort((a,b) => (b.total_tokens??0)-(a.total_tokens??0)).map((m, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--text)' }}>{m.model}</td>
+                    <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--accent-hi)' }}>
+                      {(m.total_tokens ?? 0).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--mute)' }}>
+                      {(m.total_count ?? 0).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Son istekler */}
+          <div className="rounded-xl overflow-hidden md:col-span-2"
+               style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div className="px-4 py-3 text-xs font-semibold uppercase tracking-wider"
+                 style={{ color: 'var(--mute)', borderBottom: '1px solid var(--border)' }}>
+              Son 50 İstek
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--mute)' }}>
+                    <th className="px-3 py-2 text-left font-medium">Zaman</th>
+                    <th className="px-3 py-2 text-left font-medium">Kullanıcı</th>
+                    <th className="px-3 py-2 text-left font-medium">Model</th>
+                    <th className="px-3 py-2 text-right font-medium">Prompt</th>
+                    <th className="px-3 py-2 text-right font-medium">Completion</th>
+                    <th className="px-3 py-2 text-right font-medium">Toplam</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {logs.length === 0 && (
+                    <tr><td colSpan={6} className="px-3 py-6 text-center" style={{ color: 'var(--mute)' }}>Veri yok</td></tr>
+                  )}
+                  {logs.map((l, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="px-3 py-2" style={{ color: 'var(--mute)' }}>
+                        {l.startTime ? new Date(l.startTime).toLocaleString() : '-'}
+                      </td>
+                      <td className="px-3 py-2" style={{ color: 'var(--text)' }}>{l.user || '-'}</td>
+                      <td className="px-3 py-2" style={{ color: 'var(--accent-hi)' }}>{l.model}</td>
+                      <td className="px-3 py-2 text-right" style={{ color: 'var(--mute)' }}>{l.prompt_tokens ?? 0}</td>
+                      <td className="px-3 py-2 text-right" style={{ color: 'var(--mute)' }}>{l.completion_tokens ?? 0}</td>
+                      <td className="px-3 py-2 text-right font-medium" style={{ color: 'var(--text)' }}>{l.total_tokens ?? 0}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }

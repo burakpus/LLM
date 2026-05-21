@@ -431,6 +431,39 @@ app.MapDelete("/api/admin/documents/{collection}/{*source}", [Authorize] async (
     return Results.Ok(new { deleted = n });
 });
 
+// =============================================================================
+// ─── Admin — Usage (LiteLLM spend proxy) ─────────────────────────────────────
+
+async Task<IResult> LiteLLMProxy(string path, IOptions<LiteLLMOptions> opts,
+    IHttpClientFactory httpFactory, CancellationToken ct)
+{
+    using var client = httpFactory.CreateClient("proxy");
+    client.Timeout = TimeSpan.FromSeconds(15);
+    using var req = new HttpRequestMessage(HttpMethod.Get,
+        opts.Value.BaseUrl.TrimEnd('/') + path);
+    req.Headers.Authorization =
+        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", opts.Value.ApiKey);
+    using var resp = await client.SendAsync(req, ct);
+    var body = await resp.Content.ReadAsStringAsync(ct);
+    return Results.Text(body, "application/json", statusCode: (int)resp.StatusCode);
+}
+
+// GET /api/admin/usage/users
+app.MapGet("/api/admin/usage/users", [Authorize] async (
+    IOptions<LiteLLMOptions> opts, IHttpClientFactory http, CancellationToken ct) =>
+    await LiteLLMProxy("/spend/users", opts, http, ct));
+
+// GET /api/admin/usage/models
+app.MapGet("/api/admin/usage/models", [Authorize] async (
+    IOptions<LiteLLMOptions> opts, IHttpClientFactory http, CancellationToken ct) =>
+    await LiteLLMProxy("/global/spend/models", opts, http, ct));
+
+// GET /api/admin/usage/logs?limit=50
+app.MapGet("/api/admin/usage/logs", [Authorize] async (
+    int limit,
+    IOptions<LiteLLMOptions> opts, IHttpClientFactory http, CancellationToken ct) =>
+    await LiteLLMProxy($"/spend/logs?limit={Math.Clamp(limit, 1, 200)}", opts, http, ct));
+
 // GET /api/admin/skills
 app.MapGet("/api/admin/skills", [Authorize] (SkillRegistry registry) =>
     Results.Ok(registry.All.Select(kv => new { id = kv.Key, size = kv.Value.Length })));

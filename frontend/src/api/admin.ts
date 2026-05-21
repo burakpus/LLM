@@ -131,3 +131,20 @@ export async function deleteSkill(id: string): Promise<{ deleted: string }> {
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return r.json()
 }
+
+// ── Usage (LiteLLM spend) ────────────────────────────────────────────────────
+
+export interface UserSpend  { user_id: string; total_spend: number; total_tokens: number }
+export interface ModelSpend { model: string; total_tokens: number; total_count: number }
+export interface SpendLog   { request_id: string; user: string; model: string; prompt_tokens: number; completion_tokens: number; total_tokens: number; startTime: string }
+
+async function usageGet(path: string) {
+  const r = await fetch(path, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  const d = await r.json()
+  return Array.isArray(d) ? d : (d.users ?? d.models ?? d.logs ?? d.data ?? [])
+}
+
+export const getUsageUsers  = (): Promise<UserSpend[]>  => usageGet('/api/admin/usage/users')
+export const getUsageModels = (): Promise<ModelSpend[]> => usageGet('/api/admin/usage/models')
+export const getUsageLogs   = (limit = 50): Promise<SpendLog[]> => usageGet(`/api/admin/usage/logs?limit=${limit}`)
