@@ -32,13 +32,13 @@ jobs:
           cp -r $ROOT/dotnet/Api/Skills /tmp/setllm-publish/
 
           # Preserve appsettings keys (skip if not exists — first deploy)
-          if [ -f /opt/setllm-api/appsettings.json ]; then
-            cp /opt/setllm-api/appsettings.json /tmp/setllm-publish/appsettings.json
+          if [ -f ~/setllm-api/appsettings.json ]; then
+            cp ~/setllm-api/appsettings.json /tmp/setllm-publish/appsettings.json
           fi
 
-          # Swap (no sudo needed — admin owns /opt/setllm-api)
-          rm -rf /opt/setllm-api
-          mv /tmp/setllm-publish /opt/setllm-api
+          # Swap (no sudo needed — admin owns ~/setllm-api)
+          rm -rf ~/setllm-api
+          mv /tmp/setllm-publish ~/setllm-api
 
           sudo systemctl restart setllm-api
           sleep 5
