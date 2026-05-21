@@ -453,6 +453,34 @@ app.MapGet("/api/admin/usage/users", [Authorize] async (
     IOptions<LiteLLMOptions> opts, IHttpClientFactory http, CancellationToken ct) =>
     await LiteLLMProxy("/spend/users", opts, http, ct));
 
+// GET /api/admin/usage/session-users — token stats from our own session_memories (reliable)
+app.MapGet("/api/admin/usage/session-users", [Authorize] async (
+    NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"
+        SELECT user_id,
+               COUNT(*)               AS messages,
+               COALESCE(SUM(token_count), 0) AS total_tokens,
+               MAX(created_at)        AS last_active
+        FROM   session_memories
+        WHERE  role = 'user'
+        GROUP  BY user_id
+        ORDER  BY total_tokens DESC
+        LIMIT  100;";
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    var rows = new List<object>();
+    while (await r.ReadAsync(ct))
+        rows.Add(new {
+            userId      = r.GetString(0),
+            messages    = r.GetInt64(1),
+            totalTokens = r.GetInt64(2),
+            lastActive  = r.GetDateTime(3)
+        });
+    return Results.Ok(rows);
+});
+
 // GET /api/admin/usage/models
 app.MapGet("/api/admin/usage/models", [Authorize] async (
     IOptions<LiteLLMOptions> opts, IHttpClientFactory http, CancellationToken ct) =>
@@ -627,6 +655,7 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
     using var req = new HttpRequestMessage(HttpMethod.Post, targetUrl);
     req.Content = new StringContent(bodyStr, Encoding.UTF8, "application/json");
     req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", opts.ApiKey);
+    req.Headers.TryAddWithoutValidation("x-litellm-user", username);  // end-user tracking
 
     using var resp = await client.SendAsync(req,
         HttpCompletionOption.ResponseHeadersRead, ct);
