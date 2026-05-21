@@ -12,10 +12,12 @@ jobs:
         run: |
           set -e
           export PATH="/home/admin/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-          
+
           ROOT=~/Documents/MultiModel/dgx-spark-llm-stack
           cd $ROOT
-          git pull
+
+          git fetch origin
+          git reset --hard origin/main
 
           cd $ROOT/frontend
           npm run build 2>&1 | tail -3
@@ -23,6 +25,7 @@ jobs:
           cd $ROOT
           sudo cp -r dotnet/Api/wwwroot /opt/setllm-api/
           sudo cp -r dotnet/Api/Skills  /opt/setllm-api/
+          sudo dotnet build dotnet/Api/SetYazilim.Llm.Api.csproj -c Release -o /opt/setllm-api 2>&1 | tail -5
           sudo systemctl restart setllm-api
 
           sleep 5
