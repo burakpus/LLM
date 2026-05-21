@@ -84,7 +84,7 @@ public sealed class AgentChat : IAgentChat
             Model       = LlmModel.Chat.ToApiName(),
             Messages    = allMessages,
             Temperature = 0.3,
-            MaxTokens   = 1024,
+            MaxTokens   = 8192,
             User        = req.UserId
         }, ct);
 
@@ -136,7 +136,7 @@ public sealed class AgentChat : IAgentChat
             Model       = LlmModel.Chat.ToApiName(),
             Messages    = allMessages,
             Temperature = 0.3,
-            MaxTokens   = 1024,
+            MaxTokens   = 8192,
             Stream      = true,
             User        = req.UserId
         }, ct))
