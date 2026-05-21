@@ -596,10 +596,27 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
     HttpContext http,
     IOptions<LiteLLMOptions> litellmOpts,
     IHttpClientFactory httpFactory,
+    ClaimsPrincipal principal,
     CancellationToken ct) =>
 {
     using var reader = new StreamReader(http.Request.Body);
     var bodyStr = await reader.ReadToEndAsync(ct);
+
+    // Inject authenticated username so LiteLLM tracks usage per user
+    var username = principal.FindFirstValue(ClaimTypes.Name) ?? "anonymous";
+    try
+    {
+        var doc = System.Text.Json.JsonDocument.Parse(bodyStr);
+        if (!doc.RootElement.TryGetProperty("user", out _))
+        {
+            var obj = new Dictionary<string, object>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                obj[prop.Name] = prop.Value.Clone();
+            obj["user"] = username;
+            bodyStr = System.Text.Json.JsonSerializer.Serialize(obj);
+        }
+    }
+    catch { /* leave bodyStr unchanged on parse error */ }
 
     var opts = litellmOpts.Value;
     var targetUrl = opts.BaseUrl.TrimEnd('/') + "/v1/chat/completions";
