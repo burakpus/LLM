@@ -763,7 +763,7 @@ function UsageTab() {
                       <td className="px-3 py-2" style={{ color: 'var(--mute)' }}>
                         {l.startTime ? new Date(l.startTime).toLocaleString() : '-'}
                       </td>
-                      <td className="px-3 py-2" style={{ color: 'var(--text)' }}>{l.user || '-'}</td>
+                      <td className="px-3 py-2" style={{ color: 'var(--text)' }}>{(l as any).end_user || l.user || '-'}</td>
                       <td className="px-3 py-2" style={{ color: 'var(--accent-hi)' }}>{l.model}</td>
                       <td className="px-3 py-2 text-right" style={{ color: 'var(--mute)' }}>{l.prompt_tokens ?? 0}</td>
                       <td className="px-3 py-2 text-right" style={{ color: 'var(--mute)' }}>{l.completion_tokens ?? 0}</td>
