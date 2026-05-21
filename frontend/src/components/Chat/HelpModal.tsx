@@ -105,13 +105,13 @@ function ContentStart() {
         <Step n={4}>Giriş Yap'a tıklayın — 8 saat geçerli oturum açılır</Step>
       </div>
       <H>Ekran Düzeni</H>
-      <UL([
+      <UL items={[
         '☰  Sol panel — sohbet listesi, favoriler, arşiv, proje',
         'Orta alan — mesajlaşma alanı',
         'Üst bar — mod, model adı, ayarlar, tema, dil',
         'Alt bar — mesaj yazma, resim ekleme, mod seçici pill\'ler',
         'Sağ panel — proje modunda dosya paneli',
-      ])} />
+      ]} />
     </div>
   )
 }
@@ -129,7 +129,7 @@ function ContentModes() {
         <p className="text-sm" style={{ color: 'var(--text-2)' }}>
           Genel amaçlı sohbet. Türkçe ve İngilizce tam destek, görsel anlama, uzun metin analizi.
         </p>
-        <UL(['Belge analizi ve özetleme', 'Görsel anlama (resim gönderebilirsiniz)', 'Yazı düzenleme ve çeviri']) />
+        <UL items={['Belge analizi ve özetleme', 'Görsel anlama (resim gönderebilirsiniz)', 'Yazı düzenleme ve çeviri']} />
       </div>
 
       {/* Coding */}
@@ -142,7 +142,7 @@ function ContentModes() {
         <p className="text-sm" style={{ color: 'var(--text-2)' }}>
           Kod yazma ve analiz için optimize edilmiş mod. Otonom Mod ile araç çağırabilir.
         </p>
-        <UL(['SQL sorgu yazımı ve optimizasyonu', 'Python, C#, JavaScript ve tüm diller', 'Kod inceleme ve hata düzeltme', 'Otonom Mod ile hesaplama, HTTP istekleri']) />
+        <UL items={['SQL sorgu yazımı ve optimizasyonu', 'Python, C#, JavaScript ve tüm diller', 'Kod inceleme ve hata düzeltme', 'Otonom Mod ile hesaplama, HTTP istekleri']} />
       </div>
 
       {/* RAG */}
@@ -155,7 +155,7 @@ function ContentModes() {
         <p className="text-sm" style={{ color: 'var(--text-2)' }}>
           Admin panelinden yüklenen şirket içi dökümanlardan bilgi çekme modu.
         </p>
-        <UL(['PDF, DOCX, TXT, MD dosyalarında arama', 'Skill seçilince ilgili koleksiyonda arama', 'Yanıtta kaç döküman referans alındığı gösterilir']) />
+        <UL items={['PDF, DOCX, TXT, MD dosyalarında arama', 'Skill seçilince ilgili koleksiyonda arama', 'Yanıtta kaç döküman referans alındığı gösterilir']} />
       </div>
 
       <Tip>Alt bardaki pill'lere tıklayarak modlar arasında geçiş yapabilirsiniz. Her sohbet kendi modunu hatırlar.</Tip>
@@ -211,13 +211,13 @@ function ContentImage() {
       </div>
 
       <H>Ne Yapabilirsiniz?</H>
-      <UL([
+      <UL items={[
         'Fatura, makbuz, belge okuma',
         'Diyagram ve grafik analizi',
         'Barkod ve etiket içeriği okuma',
         'Ekran görüntüsü açıklama',
         'Görsel karşılaştırma',
-      ])} />
+      ]} />
 
       <div className="p-3 rounded-lg text-sm" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
         <span className="font-medium" style={{ color: 'var(--text)' }}>Desteklenen formatlar: </span>
@@ -317,12 +317,12 @@ function ContentProject() {
       </div>
 
       <H>Düzenleme & Diff</H>
-      <UL([
+      <UL items={[
         'Dosya sekmesine tıkla → içerik görünür',
         '✏️ Düzenle → textarea açılır',
         'Değişiklikler yeşil/kırmızı diff olarak gösterilir',
         'Tamam → sunucuya kaydedilir | Reddet → iptal',
-      ])} />
+      ]} />
 
       <H>Tab Tıklama → Chat Context</H>
       <p className="text-sm" style={{ color: 'var(--text-2)' }}>
@@ -331,12 +331,12 @@ function ContentProject() {
       </p>
 
       <H>Proje-Sohbet İlişkisi</H>
-      <UL([
+      <UL items={[
         'Her sohbet bir projeye bağlanabilir',
         'Sohbet değişince proje paneli otomatik güncellenir',
         'Aynı projeye birden fazla sohbet bağlanabilir',
         'Sidebar\'da proje bağlı sohbetlerde 📁 ikonu görünür',
-      ])} />
+      ]} />
 
       <Tip>Dosyalar DGX sunucusunda ~/llm-projects/{kullanıcı}/{proje}/ klasöründe saklanır.</Tip>
     </div>
@@ -412,7 +412,7 @@ function ContentAdmin() {
           <div className="flex items-center gap-2 font-medium text-sm mb-2" style={{ color: 'var(--text)' }}>
             <span>{s.icon}</span> {s.tab}
           </div>
-          <UL(s.items)} />
+          <UL items={s.items} />
         </div>
       ))}
     </div>
