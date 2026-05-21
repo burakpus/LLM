@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import {
   uploadFiles, listDocuments, listCollections,
-  deleteDocument, listSkills, getSkill,
+  deleteDocument, listSkills, getSkill, uploadSkills, deleteSkill,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
@@ -454,15 +454,17 @@ function DocumentsTab() {
 // =============================================================================
 
 function SkillsTab() {
-  const [skills, setSkills]   = useState<SkillRow[]>([])
+  const [skills, setSkills]     = useState<SkillRow[]>([])
   const [selected, setSelected] = useState<string | null>(null)
-  const [content, setContent] = useState<string>('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError]     = useState<string | null>(null)
+  const [content, setContent]   = useState<string>('')
+  const [loading, setLoading]   = useState(false)
+  const [error, setError]       = useState<string | null>(null)
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
-    listSkills().then(setSkills).catch(e => setError(e.message ?? String(e)))
-  }, [])
+  const reload = () => listSkills().then(setSkills).catch(e => setError(e.message ?? String(e)))
+
+  useEffect(() => { reload() }, [])
 
   const openSkill = async (id: string) => {
     setSelected(id)
@@ -478,14 +480,62 @@ function SkillsTab() {
     }
   }
 
+  const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    setError(null)
+    try {
+      const results = await uploadSkills(files)
+      const ok  = results.filter(r => r.ok).length
+      const bad = results.filter(r => !r.ok)
+      setUploadMsg(`${ok} skill(s) uploaded.${bad.length > 0 ? ' Errors: ' + bad.map(r => r.error).join(', ') : ''}`)
+      reload()
+    } catch (e: any) {
+      setError(e.message ?? String(e))
+    } finally {
+      e.target.value = ''
+    }
+  }
+
+  const onDelete = async (id: string) => {
+    if (!confirm(`"${id}" skill'ini sil?`)) return
+    setError(null)
+    try {
+      await deleteSkill(id)
+      if (selected === id) { setSelected(null); setContent('') }
+      reload()
+    } catch (e: any) {
+      setError(e.message ?? String(e))
+    }
+  }
+
   return (
     <section className="space-y-5">
-      <div>
-        <h2 className="text-lg font-medium">Skills</h2>
-        <p className="text-xs mt-1" style={{ color: 'var(--mute)' }}>
-          System prompts loaded from the Skills directory. Click to view full content.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-medium">Skills</h2>
+          <p className="text-xs mt-1" style={{ color: 'var(--mute)' }}>
+            System prompts loaded from the Skills directory. Click to view.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <input ref={fileRef} type="file" accept=".md" multiple className="hidden" onChange={onUpload} />
+          <button
+            onClick={() => fileRef.current?.click()}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition"
+            style={{ background: 'var(--accent)', color: '#0b1929' }}
+          >
+            + Skill Yükle (.md)
+          </button>
+        </div>
       </div>
+
+      {uploadMsg && (
+        <div className="rounded-md px-3 py-2 text-xs"
+             style={{ background: 'rgba(52,168,83,0.1)', color: '#34a853', border: '1px solid rgba(52,168,83,0.3)' }}>
+          {uploadMsg}
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md px-3 py-2 text-xs"
@@ -507,22 +557,31 @@ function SkillsTab() {
               const active = selected === s.id
               return (
                 <li key={s.id}>
-                  <button
-                    onClick={() => openSkill(s.id)}
-                    className="w-full text-left px-3 py-2.5 text-sm cursor-pointer transition flex items-center justify-between"
-                    style={{
-                      background: active ? 'rgba(138,180,248,0.15)' : 'transparent',
-                      color:      active ? 'var(--accent-hi)' : 'var(--text)',
-                      borderBottom: '1px solid var(--border)',
-                    }}
-                    onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)' }}
-                    onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+                  <div
+                    className="flex items-center group"
+                    style={{ borderBottom: '1px solid var(--border)', background: active ? 'rgba(138,180,248,0.15)' : 'transparent' }}
                   >
-                    <span className="truncate">{s.id}</span>
-                    <span className="text-[10px] shrink-0 ml-2" style={{ color: 'var(--mute)' }}>
-                      {formatBytes(s.size)}
-                    </span>
-                  </button>
+                    <button
+                      onClick={() => openSkill(s.id)}
+                      className="flex-1 text-left px-3 py-2.5 text-sm cursor-pointer transition flex items-center justify-between"
+                      style={{ color: active ? 'var(--accent-hi)' : 'var(--text)' }}
+                    >
+                      <span className="truncate">{s.id}</span>
+                      <span className="text-[10px] shrink-0 ml-2" style={{ color: 'var(--mute)' }}>
+                        {formatBytes(s.size)}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => onDelete(s.id)}
+                      className="opacity-0 group-hover:opacity-100 px-2 py-2.5 cursor-pointer transition shrink-0"
+                      style={{ color: '#ea4335' }}
+                      title="Sil"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/>
+                      </svg>
+                    </button>
+                  </div>
                 </li>
               )
             })}

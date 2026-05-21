@@ -442,6 +442,62 @@ app.MapGet("/api/admin/skills/{id}", [Authorize] (string id, SkillRegistry regis
     return Results.Text(registry.All[id], "text/plain; charset=utf-8");
 });
 
+// POST /api/admin/skills — upload a .md skill file
+app.MapPost("/api/admin/skills", [Authorize] async (
+    HttpContext http,
+    SkillRegistry registry,
+    CancellationToken ct) =>
+{
+    if (!http.Request.HasFormContentType)
+        return Results.BadRequest(new { error = "multipart/form-data required" });
+
+    var form = await http.Request.ReadFormAsync(ct);
+    var results = new List<object>();
+
+    foreach (var file in form.Files)
+    {
+        if (!file.FileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+        {
+            results.Add(new { file = file.FileName, ok = false, error = "Only .md files allowed" });
+            continue;
+        }
+
+        using var reader = new StreamReader(file.OpenReadStream());
+        var content = (await reader.ReadToEndAsync(ct)).Trim();
+
+        var skillId = Path.GetFileNameWithoutExtension(file.FileName);
+
+        // Write to disk if path is known
+        if (registry.SkillsPath is not null)
+        {
+            var filePath = Path.Combine(registry.SkillsPath, file.FileName);
+            await File.WriteAllTextAsync(filePath, content, ct);
+        }
+
+        registry.Register(skillId, content);
+        results.Add(new { file = file.FileName, ok = true, id = skillId });
+    }
+
+    return Results.Ok(results);
+});
+
+// DELETE /api/admin/skills/{id}
+app.MapDelete("/api/admin/skills/{id}", [Authorize] (string id, SkillRegistry registry) =>
+{
+    if (!registry.All.ContainsKey(id))
+        return Results.NotFound(new { error = $"Skill '{id}' not found" });
+
+    // Remove from disk
+    if (registry.SkillsPath is not null)
+    {
+        var filePath = Path.Combine(registry.SkillsPath, id + ".md");
+        if (File.Exists(filePath)) File.Delete(filePath);
+    }
+
+    registry.Remove(id);
+    return Results.Ok(new { deleted = id });
+});
+
 // =============================================================================
 // ─── Session ─────────────────────────────────────────────────────────────────
 

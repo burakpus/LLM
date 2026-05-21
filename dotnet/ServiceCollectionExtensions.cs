@@ -159,7 +159,7 @@ public static class ServiceCollectionExtensions
         {
             var log = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<SkillRegistry>>();
             var registry = new SkillRegistry(log);
-            registry.LoadFromDirectory(skillsDirectory);
+            registry.LoadFromDirectory(skillsDirectory, setPath: true);
             return registry;
         });
 

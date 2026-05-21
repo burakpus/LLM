@@ -110,3 +110,24 @@ export async function getSkill(id: string): Promise<string> {
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return r.text()
 }
+
+export async function uploadSkills(files: FileList): Promise<{ file: string; ok: boolean; id?: string; error?: string }[]> {
+  const fd = new FormData()
+  for (const f of Array.from(files)) fd.append('files', f)
+  const r = await fetch('/api/admin/skills', {
+    method: 'POST',
+    headers: authHeaders(),
+    body:    fd,
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export async function deleteSkill(id: string): Promise<{ deleted: string }> {
+  const r = await fetch(`/api/admin/skills/${encodeURIComponent(id)}`, {
+    method:  'DELETE',
+    headers: authHeaders(),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}

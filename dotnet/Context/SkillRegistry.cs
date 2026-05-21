@@ -55,6 +55,17 @@ public sealed class SkillRegistry
     public void Register(string key, string systemPrompt) =>
         _prompts[key] = systemPrompt;
 
+    public bool Remove(string key) =>
+        _prompts.TryRemove(key, out _);
+
+    public string? SkillsPath { get; private set; }
+
+    public void LoadFromDirectory(string skillsPath, bool setPath)
+    {
+        if (setPath) SkillsPath = skillsPath;
+        LoadFromDirectory(skillsPath);
+    }
+
     public IReadOnlyDictionary<string, string> All => _prompts;
 
     private static string BuildKey(string root, string file)
