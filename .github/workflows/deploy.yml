@@ -1,0 +1,28 @@
+name: Deploy to DGX
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to DGX via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DGX_HOST }}
+          username: ${{ secrets.DGX_USER }}
+          key: ${{ secrets.DGX_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/Documents/MultiModel/dgx-spark-llm-stack
+            git pull
+            cd frontend
+            chmod +x node_modules/.bin/* 2>/dev/null || true
+            npm run build 2>&1 | tail -3
+            sudo cp -r dotnet/Api/wwwroot /opt/setllm-api/
+            sudo cp -r dotnet/Api/Skills /opt/setllm-api/
+            sudo systemctl restart setllm-api
+            sleep 5
+            curl -s http://localhost:5080/health && echo " deployed OK"
