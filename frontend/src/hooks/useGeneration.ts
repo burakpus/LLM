@@ -195,7 +195,11 @@ export function useGeneration() {
         } else {
           // ── Direct mode (uses /api/llm/completions or active vLLM baseUrl) ─
           const token = store.auth.token ?? localStorage.getItem('setllm-token') ?? ''
-          const tools = conv.settings.agenticEnabled
+          // Don't send tools when there's an image — vision + tool_choice breaks Gemma
+          const hasImage = conv.apiHistory.some(
+            m => Array.isArray(m.content) && (m.content as any[]).some((c: any) => c.type === 'image_url')
+          )
+          const tools = (conv.settings.agenticEnabled && !hasImage)
             ? buildToolList(conv.settings.customTools)
             : undefined
 
