@@ -4,6 +4,14 @@ import { logout } from '../../api'
 import type { Skill } from '../../api'
 import SetLogo from '../SetLogo'
 
+async function fetchSkillPrompt(id: string): Promise<string> {
+  const token = localStorage.getItem('setllm-token') ?? ''
+  const r = await fetch(`/api/skills/${encodeURIComponent(id)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  return r.ok ? r.text() : ''
+}
+
 interface Props {
   skills:     Skill[]
   statusOk:   boolean | null
@@ -27,11 +35,17 @@ function SkillSelector({ skills }: { skills: Skill[] }) {
   const activeId   = conv?.settings.skillId ?? store.activeSkillId
   const activeName = conv?.settings.skillName ?? store.activeSkillName
 
-  const setSkill = (id: string | null, name: string | null, collection?: string | null) => {
+  const setSkill = async (id: string | null, name: string | null, collection?: string | null) => {
+    // Load skill system prompt so direct mode also benefits
+    let systemPrompt = ''
+    if (id) {
+      systemPrompt = await fetchSkillPrompt(id).catch(() => '')
+    }
     if (conv) store.updateConvSettings(conv.id, {
       skillId:         id,
       skillName:       name,
       skillCollection: collection ?? null,
+      systemPrompt,
     })
     store.setSkill(id, name)
     setOpen(false)
