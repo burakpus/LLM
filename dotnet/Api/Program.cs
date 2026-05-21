@@ -758,6 +758,7 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
         http.Response.Headers[h.Key] = h.Value.ToArray();
 
     await resp.Content.CopyToAsync(http.Response.Body, ct);
+    return Results.Empty;
 });
 
 // =============================================================================
