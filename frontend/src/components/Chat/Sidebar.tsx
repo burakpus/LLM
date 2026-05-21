@@ -44,8 +44,23 @@ function ProjectButton() {
   )
 }
 
+/** ≥768px = tablet, sidebar pushes content. <768px = mobile, overlay. */
+function useIsTablet() {
+  const [isTablet, setIsTablet] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 768 : true
+  )
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 768px)')
+    const handler = (e: MediaQueryListEvent) => setIsTablet(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  return isTablet
+}
+
 export default function Sidebar() {
   const store = useStore()
+  const isTablet = useIsTablet()
   const [query,        setQuery]        = useState('')
   const [editingId,    setEditingId]    = useState<string | null>(null)
   const [editingValue, setEditingValue] = useState('')
@@ -102,22 +117,37 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Backdrop — click outside to close */}
-      <div
-        className="fixed inset-0 z-30 transition-opacity duration-300"
-        style={{
-          background: 'rgba(0,0,0,0.4)',
-          opacity: store.historyOpen ? 1 : 0,
-          pointerEvents: store.historyOpen ? 'auto' : 'none',
-        }}
-        onClick={store.toggleHistory}
-      />
+      {/* Backdrop — only on mobile overlay mode */}
+      {!isTablet && (
+        <div
+          className="fixed inset-0 z-30 transition-opacity duration-300"
+          style={{
+            background: 'rgba(0,0,0,0.4)',
+            opacity: store.historyOpen ? 1 : 0,
+            pointerEvents: store.historyOpen ? 'auto' : 'none',
+          }}
+          onClick={store.toggleHistory}
+        />
+      )}
 
-      {/* Sidebar — always fixed overlay, never pushes content */}
       <aside
-        className="fixed top-0 left-0 h-full flex flex-col z-40"
-        style={{
+        className="flex flex-col shrink-0"
+        style={isTablet ? {
+          /* ── Tablet+ : inline push ─────────────────────── */
+          position: 'relative',
+          width: store.historyOpen ? '260px' : '0',
+          minWidth: 0,
+          overflow: 'hidden',
+          background: 'var(--surface)',
+          transition: 'width 0.28s cubic-bezier(0.4,0,0.2,1)',
+        } : {
+          /* ── Mobile : fixed overlay ────────────────────── */
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          height: '100%',
           width: '260px',
+          zIndex: 40,
           background: 'var(--surface)',
           transform: store.historyOpen ? 'translateX(0)' : 'translateX(-100%)',
           transition: 'transform 0.28s cubic-bezier(0.4,0,0.2,1)',
