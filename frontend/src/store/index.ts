@@ -58,10 +58,10 @@ export interface ConvSettings {
   autoComplete:   boolean
   skillId:         string | null
   skillName:       string | null
-  skillCollection: string | null  // RAG collection scoped to this skill
-  model:           string | null  // LiteLLM model alias (chat / code)
+  skillCollection: string | null
+  model:           string | null
   agentMode:      boolean
-  // baseUrl / endpointIdx removed — all traffic proxied via .NET API
+  projectId:       string | null  // linked project (null = no project)
 }
 
 export const defaultSettings: ConvSettings = {
@@ -78,6 +78,7 @@ export const defaultSettings: ConvSettings = {
   skillCollection: null,
   model:          'chat',
   agentMode:      false,
+  projectId:       null,
 }
 
 export interface Conversation {
@@ -300,13 +301,15 @@ export const useStore = create<AppStore>()(
 
       newConversation: () => {
         const id: string = uuidv4()
+        // Inherit active project into the new conversation
+        const currentProjectId = get().project.projectId
         const conv: Conversation = {
           id,
           title:       'New conversation',
           messages:    [],
           updatedAt:   Date.now(),
           totalTokens: 0,
-          settings:    { ...defaultSettings },
+          settings:    { ...defaultSettings, projectId: currentProjectId },
           generating:  false,
           apiHistory:  [],
           stats:       null,
@@ -318,7 +321,17 @@ export const useStore = create<AppStore>()(
         return id
       },
 
-      loadConversation: (id) => set({ currentId: id }),
+      loadConversation: (id) => set(s => {
+        // Sync project panel with the loaded conversation's projectId
+        const conv = s.conversations.find(c => c.id === id)
+        const projId = conv?.settings?.projectId ?? null
+        return {
+          currentId: id,
+          project: projId !== s.project.projectId
+            ? { ...defaultProject, projectId: projId, files: projId ? s.project.files : {} }
+            : s.project,
+        }
+      }),
 
       deleteConversation: (id) => set(s => {
         const convs = s.conversations.filter(c => c.id !== id)
@@ -492,7 +505,19 @@ export const useStore = create<AppStore>()(
 
       // ── Project ─────────────────────────────────────────────────────────
       project: defaultProject,
-      setProjectId: (id) => set(s => ({ project: { ...s.project, projectId: id } })),
+      setProjectId: (id) => set(s => {
+        // Also persist projectId in the current conversation's settings
+        const conversations = s.currentId
+          ? s.conversations.map(c =>
+              c.id === s.currentId
+                ? ensureSettings({ ...c, settings: { ...c.settings, projectId: id } })
+                : c)
+          : s.conversations
+        return {
+          conversations,
+          project: { ...s.project, projectId: id, pendingChange: null },
+        }
+      }),
       setActiveFile: (path) => set(s => ({ project: { ...s.project, activeFilePath: path } })),
       setFileContent: (path, content) => set(s => ({
         project: { ...s.project, files: { ...s.project.files, [path]: content } }

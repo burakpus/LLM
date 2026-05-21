@@ -178,6 +178,17 @@ export default function Sidebar() {
               )}
 
               <div className="min-w-0 flex-1">
+                {/* Project badge */}
+                {conv.settings?.projectId && (
+                  <div className="flex items-center gap-1 mb-0.5">
+                    <svg className="w-2.5 h-2.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} style={{ color: 'var(--accent)' }}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+                    </svg>
+                    <span className="text-[9px] truncate" style={{ color: 'var(--accent)' }}>
+                      {conv.settings.projectId}
+                    </span>
+                  </div>
+                )}
                 {editingId === conv.id ? (
                   <input
                     ref={editRef}
