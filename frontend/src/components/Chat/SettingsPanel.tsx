@@ -202,7 +202,7 @@ export default function SettingsPanel() {
                           onClick={() => onConnectEndpoint(ep, i)}
                           className={`pill ${active ? 'active' : ''}`}>
                     <span className={`status-dot ${active && store.statusOk ? 'ok' : ''}`} />
-                    {ep.name}:{ep.port}
+                    {ep.name}
                   </button>
                 )
               })}
