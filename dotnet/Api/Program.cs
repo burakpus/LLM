@@ -162,6 +162,7 @@ app.MapGet("/api/skills", [Authorize] (SkillRegistry registry) =>
         var name = kv.Key;
         var desc = "";
         var icon = "sparkles";
+        var collection = (string?)null;
 
         // Parse frontmatter if present
         if (content.TrimStart().StartsWith("---"))
@@ -179,11 +180,12 @@ app.MapGet("/api/skills", [Authorize] (SkillRegistry registry) =>
                     if (k == "name")        name = v;
                     if (k == "description") desc = v;
                     if (k == "icon")        icon = v;
+                    if (k == "collection")  collection = v;
                 }
             }
         }
 
-        return new { id = kv.Key, name, description = desc, icon };
+        return new { id = kv.Key, name, description = desc, icon, collection };
     });
 
     return Results.Ok(skills);

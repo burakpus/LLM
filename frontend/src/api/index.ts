@@ -73,6 +73,7 @@ export interface Skill {
   name:        string
   description: string
   icon:        string
+  collection?: string  // if set, RAG is scoped to this collection
 }
 
 export async function listSkills(): Promise<Skill[]> {

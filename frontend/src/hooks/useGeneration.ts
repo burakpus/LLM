@@ -135,10 +135,13 @@ export function useGeneration() {
               'Authorization': `Bearer ${token}`,
             },
             body: JSON.stringify({
-              sessionId: convId,
-              agentId:   'default',
-              skillName: conv.settings.skillId ?? 'chat',
-              message:   userText,
+              sessionId:   convId,
+              agentId:     'default',
+              skillName:   conv.settings.skillId ?? 'chat',
+              message:     userText,
+              collections: conv.settings.skillCollection
+                           ? [conv.settings.skillCollection]
+                           : undefined,
             }),
             signal,
           })

@@ -56,9 +56,10 @@ export interface ConvSettings {
   maxAgentLoops:  number
   customTools:    unknown[]
   autoComplete:   boolean
-  skillId:        string | null
-  skillName:      string | null
-  model:          string | null
+  skillId:         string | null
+  skillName:       string | null
+  skillCollection: string | null  // RAG collection scoped to this skill
+  model:           string | null
   baseUrl:        string | null
   endpointIdx:    number | null
   agentMode:      boolean
@@ -73,8 +74,9 @@ export const defaultSettings: ConvSettings = {
   maxAgentLoops:  10,
   customTools:    [],
   autoComplete:   false,
-  skillId:        null,
-  skillName:      null,
+  skillId:         null,
+  skillName:       null,
+  skillCollection: null,
   model:          'chat',   // LiteLLM proxy default — always valid
   baseUrl:        null,
   endpointIdx:    null,
