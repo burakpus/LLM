@@ -238,7 +238,7 @@ export function useGeneration() {
 
           const rid = (window as any).__visionRid || '-'
           const builtMsgs = buildMessages(conv)
-          if (hasImage && isVisionDebug()) {
+          if (lastMsgHasImage && isVisionDebug()) {
             const imgCount = builtMsgs.reduce((n, m) => n + (Array.isArray(m.content) ? (m.content as any[]).filter((c: any) => c.type === 'image_url').length : 0), 0)
             console.log(`[VISION ${rid}] 4. streamCompletion params — model=${conv.settings.model ?? 'chat'}, msgs=${builtMsgs.length}, images=${imgCount}, tools=${tools ? tools.length : 0}, stream=${conv.settings.stream}`)
           }
