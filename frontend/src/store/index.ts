@@ -474,6 +474,32 @@ export const useStore = create<AppStore>()(
     }),
     {
       name: 'setllm-store',
+      version: 2,
+      migrate: (persisted: any, version: number) => {
+        // v1→v2: remove direct vLLM endpoints (port 8000/8001/8002/8003),
+        //        clear any baseUrl pointing directly to vLLM (CORS issues).
+        const PROXY_PORT = 4000
+        const DIRECT_PORTS = [8000, 8001, 8002, 8003, 8004]
+        if (version < 2 && persisted) {
+          if (Array.isArray(persisted.endpoints))
+            persisted.endpoints = (persisted.endpoints as any[])
+              .filter(ep => !DIRECT_PORTS.includes(ep.port))
+          if (persisted.activeBaseUrl &&
+              DIRECT_PORTS.some(p => String(persisted.activeBaseUrl).includes(`:${p}`))) {
+            persisted.activeBaseUrl = null
+            persisted.activeEpIdx   = null
+            persisted.activeModel   = null
+          }
+          if (Array.isArray(persisted.conversations))
+            persisted.conversations = (persisted.conversations as any[]).map((c: any) => {
+              if (c.settings?.baseUrl &&
+                  DIRECT_PORTS.some(p => String(c.settings.baseUrl).includes(`:${p}`)))
+                c.settings = { ...c.settings, baseUrl: null, endpointIdx: null }
+              return c
+            })
+        }
+        return persisted
+      },
       partialize: (s) => ({
         conversations: s.conversations,
         currentId:     s.currentId,

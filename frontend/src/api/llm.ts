@@ -130,15 +130,12 @@ export async function* streamCompletion(
     body.tool_choice = params.toolChoice ?? 'auto'
   }
 
-  // Decide endpoint + auth
-  let url: string
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (params.baseUrl) {
-    url = params.baseUrl.replace(/\/$/, '') + '/v1/chat/completions'
-    // direct vLLM endpoint — no auth
-  } else {
-    url = '/api/llm/completions'
-    if (token) headers['Authorization'] = `Bearer ${token}`
+  // Always route through .NET proxy — never call vLLM/LiteLLM directly from browser
+  // (CORS, auth key exposure). baseUrl is passed as a hint but proxied server-side.
+  const url = '/api/llm/completions'
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
 
   const dbg = (() => {
