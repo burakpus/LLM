@@ -461,11 +461,12 @@ app.MapGet("/api/admin/usage/session-users", [Authorize] async (
     await using var cmd  = conn.CreateCommand();
     cmd.CommandText = @"
         SELECT user_id,
-               COUNT(*)               AS messages,
-               COALESCE(SUM(token_count), 0) AS total_tokens,
-               MAX(created_at)        AS last_active
+               COUNT(*)                                                        AS messages,
+               COALESCE(SUM(CASE WHEN role='user'      THEN token_count ELSE 0 END), 0) AS prompt_tokens,
+               COALESCE(SUM(CASE WHEN role='assistant' THEN token_count ELSE 0 END), 0) AS completion_tokens,
+               COALESCE(SUM(token_count), 0)                                   AS total_tokens,
+               MAX(created_at)                                                  AS last_active
         FROM   session_memories
-        WHERE  role = 'user'
         GROUP  BY user_id
         ORDER  BY total_tokens DESC
         LIMIT  100;";
@@ -473,10 +474,12 @@ app.MapGet("/api/admin/usage/session-users", [Authorize] async (
     var rows = new List<object>();
     while (await r.ReadAsync(ct))
         rows.Add(new {
-            userId      = r.GetString(0),
-            messages    = r.GetInt64(1),
-            totalTokens = r.GetInt64(2),
-            lastActive  = r.GetDateTime(3)
+            userId           = r.GetString(0),
+            messages         = r.GetInt64(1),
+            promptTokens     = r.GetInt64(2),
+            completionTokens = r.GetInt64(3),
+            totalTokens      = r.GetInt64(4),
+            lastActive       = r.GetDateTime(5)
         });
     return Results.Ok(rows);
 });

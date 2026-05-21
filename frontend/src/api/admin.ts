@@ -134,7 +134,15 @@ export async function deleteSkill(id: string): Promise<{ deleted: string }> {
 
 // ── Usage (LiteLLM spend) ────────────────────────────────────────────────────
 
-export interface UserSpend  { user_id: string; total_spend: number; total_tokens: number }
+export interface UserSpend  {
+  user_id:           string
+  total_spend:       number
+  total_tokens:      number
+  prompt_tokens?:    number
+  completion_tokens?: number
+  messages?:         number
+  last_active?:      string
+}
 export interface ModelSpend { model: string; total_tokens: number; total_count: number }
 export interface SpendLog   { request_id: string; user: string; model: string; prompt_tokens: number; completion_tokens: number; total_tokens: number; startTime: string }
 
@@ -146,6 +154,14 @@ async function usageGet(path: string) {
 }
 
 export const getUsageUsers  = (): Promise<UserSpend[]>  => usageGet('/api/admin/usage/session-users')
-  .then((rows: any[]) => rows.map(r => ({ user_id: r.userId, total_spend: 0, total_tokens: r.totalTokens })))
+  .then((rows: any[]) => rows.map(r => ({
+    user_id:           r.userId,
+    total_spend:       0,
+    total_tokens:      r.totalTokens,
+    prompt_tokens:     r.promptTokens,
+    completion_tokens: r.completionTokens,
+    messages:          r.messages,
+    last_active:       r.lastActive,
+  })))
 export const getUsageModels = (): Promise<ModelSpend[]> => usageGet('/api/admin/usage/models')
 export const getUsageLogs   = (limit = 50): Promise<SpendLog[]> => usageGet(`/api/admin/usage/logs?limit=${limit}`)

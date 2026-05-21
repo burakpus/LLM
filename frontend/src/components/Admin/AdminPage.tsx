@@ -670,33 +670,74 @@ function UsageTab() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
 
           {/* Kullanıcı bazlı */}
-          <div className="rounded-xl overflow-hidden"
+          <div className="rounded-xl overflow-hidden md:col-span-2"
                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-            <div className="px-4 py-3 text-xs font-semibold uppercase tracking-wider"
-                 style={{ color: 'var(--mute)', borderBottom: '1px solid var(--border)' }}>
-              Kullanıcı Bazlı — Toplam {totalTokens(users).toLocaleString()} tok
+            <div className="px-4 py-3 flex items-center justify-between"
+                 style={{ borderBottom: '1px solid var(--border)' }}>
+              <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--mute)' }}>
+                Kullanıcı Bazlı Token Kullanımı
+              </span>
+              <span className="text-xs font-medium" style={{ color: 'var(--accent-hi)' }}>
+                Toplam {totalTokens(users).toLocaleString()} token
+              </span>
             </div>
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--mute)', fontSize: 11 }}>
                   <th className="px-4 py-2 text-left font-medium">Kullanıcı</th>
-                  <th className="px-4 py-2 text-right font-medium">Token</th>
+                  <th className="px-4 py-2 text-right font-medium">Mesaj</th>
+                  <th className="px-4 py-2 text-right font-medium">Prompt</th>
+                  <th className="px-4 py-2 text-right font-medium">Completion</th>
+                  <th className="px-4 py-2 text-right font-medium">Toplam</th>
+                  <th className="px-4 py-2 text-left font-medium" style={{ minWidth: 120 }}>Pay</th>
+                  <th className="px-4 py-2 text-left font-medium">Son Aktif</th>
                 </tr>
               </thead>
               <tbody>
                 {users.length === 0 && (
-                  <tr><td colSpan={2} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Veri yok</td></tr>
+                  <tr><td colSpan={7} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Veri yok</td></tr>
                 )}
-                {[...users].sort((a,b) => (b.total_tokens??0)-(a.total_tokens??0)).map((u, i) => (
-                  <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--text)' }}>
-                      {u.user_id || '(anonymous)'}
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--accent-hi)' }}>
-                      {(u.total_tokens ?? 0).toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
+                {(() => {
+                  const sorted  = [...users].sort((a,b) => (b.total_tokens??0)-(a.total_tokens??0))
+                  const grandTotal = totalTokens(sorted) || 1
+                  return sorted.map((u, i) => {
+                    const pct = Math.round(((u.total_tokens ?? 0) / grandTotal) * 100)
+                    return (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td className="px-4 py-2.5 text-xs font-medium" style={{ color: 'var(--text)' }}>
+                          {u.user_id || '(anonymous)'}
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--mute)' }}>
+                          {(u.messages ?? 0).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--mute)' }}>
+                          {(u.prompt_tokens ?? 0).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--mute)' }}>
+                          {(u.completion_tokens ?? 0).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-right font-semibold" style={{ color: 'var(--accent-hi)' }}>
+                          {(u.total_tokens ?? 0).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 rounded-full overflow-hidden"
+                                 style={{ background: 'var(--surface-hi)', minWidth: 60 }}>
+                              <div className="h-full rounded-full"
+                                   style={{ width: `${pct}%`, background: 'var(--accent)' }} />
+                            </div>
+                            <span className="text-[10px] w-8 text-right shrink-0" style={{ color: 'var(--mute)' }}>
+                              {pct}%
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--mute)' }}>
+                          {u.last_active ? formatDate(u.last_active) : '—'}
+                        </td>
+                      </tr>
+                    )
+                  })
+                })()}
               </tbody>
             </table>
           </div>
