@@ -84,7 +84,9 @@ export function useGeneration() {
     const systemPrompt = conv.settings.systemPrompt?.trim() ?? ''
     const history = conv.apiHistory
 
-    // Sliding window: keep most recent messages that fit within budget
+    // Sliding window: keep most recent messages that fit within budget.
+    // BUT always include the LAST message (e.g. vision message with large
+    // base64 image), regardless of size, otherwise the request is meaningless.
     let budget = MAX_CONTEXT_CHARS - systemPrompt.length
     const kept: ChatApiMessage[] = []
     for (let i = history.length - 1; i >= 0; i--) {
@@ -92,9 +94,13 @@ export function useGeneration() {
       const len = typeof m.content === 'string'
         ? m.content.length
         : JSON.stringify(m.content).length
-      if (budget - len < 0) break
-      kept.unshift(m)
-      budget -= len
+      // Always keep the most recent message; budget-skip older ones
+      if (i === history.length - 1 || budget - len >= 0) {
+        kept.unshift(m)
+        budget -= len
+      } else {
+        break
+      }
     }
 
     const msgs: ChatApiMessage[] = []
