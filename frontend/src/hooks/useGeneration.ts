@@ -452,8 +452,8 @@ export function useGeneration() {
       if (image && dbg) console.log(`[VISION ${rid}] 2. send() — text="${text.slice(0,40)}" image=${image.length}c`)
 
       const store = useStore.getState()
-      const convId = store.currentId
-      if (!convId) return
+      // Auto-create conversation if none is active
+      const convId = store.currentId ?? store.newConversation()
       const conv = store.getConv(convId)
       if (!conv || conv.generating) return
 
