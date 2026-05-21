@@ -12,12 +12,14 @@ interface Props {
 
 /** Resize image to max 768px and encode as PNG (JPEG causes vLLM decoder issues) */
 async function fileToDataUrl(file: File): Promise<string> {
+  console.log(`[VISION] 0a. fileToDataUrl — file=${file.name} type=${file.type} size=${file.size}B`)
   return new Promise((resolve, reject) => {
     const r = new FileReader()
     r.onerror = () => reject(r.error)
     r.onload = () => {
       const img = new Image()
       img.onload = () => {
+        const origW = img.width, origH = img.height
         const MAX = 768
         let { width, height } = img
         if (width > MAX || height > MAX) {
@@ -27,12 +29,12 @@ async function fileToDataUrl(file: File): Promise<string> {
         const canvas = document.createElement('canvas')
         canvas.width = width; canvas.height = height
         const ctx = canvas.getContext('2d')!
-        // Flatten alpha onto white background — vLLM Gemma 4 chokes on RGBA
         ctx.fillStyle = '#ffffff'
         ctx.fillRect(0, 0, width, height)
         ctx.drawImage(img, 0, 0, width, height)
-        // Always use PNG — JPEG triggers list-index-out-of-range in vLLM Gemma 4
-        resolve(canvas.toDataURL('image/png'))
+        const png = canvas.toDataURL('image/png')
+        console.log(`[VISION] 0b. resized ${origW}x${origH} → ${width}x${height}, PNG dataURL=${png.length} chars, prefix=${png.slice(0, 32)}`)
+        resolve(png)
       }
       img.onerror = () => reject(new Error('Image load failed'))
       img.src = String(r.result)
@@ -52,6 +54,12 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating }: P
   const submit = () => {
     const text = input.trim()
     if ((!text && !attachedImage) || generating) return
+    if (attachedImage) {
+      const rid = Math.random().toString(36).slice(2, 8)
+      ;(window as any).__visionRid = rid
+      const head = attachedImage.slice(0, 32)
+      console.log(`[VISION ${rid}] 1. submit() — text="${text.slice(0, 40)}" image=${attachedImage.length} chars, prefix=${head}`)
+    }
     setInput('')
     const img = attachedImage ?? undefined
     setAttachedImage(null)

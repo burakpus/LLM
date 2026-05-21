@@ -141,6 +141,13 @@ export async function* streamCompletion(
     if (token) headers['Authorization'] = `Bearer ${token}`
   }
 
+  const hasVision = params.messages.some(m =>
+    Array.isArray(m.content) && (m.content as any[]).some((c: any) => c.type === 'image_url')
+  )
+  const rid = (window as any).__visionRid || '-'
+  const reqBytes = JSON.stringify(body).length
+  if (hasVision) console.log(`[VISION ${rid}] 5. fetch POST ${url} — body=${reqBytes}B`)
+
   let resp: Response
   try {
     resp = await fetch(url, {
@@ -150,12 +157,16 @@ export async function* streamCompletion(
       signal,
     })
   } catch (e: unknown) {
+    if (hasVision) console.error(`[VISION ${rid}] 6. fetch FAILED — ${(e as Error).message}`)
     yield { type: 'error', message: (e as Error).message || 'Network error' }
     return
   }
 
+  if (hasVision) console.log(`[VISION ${rid}] 6. fetch DONE — status=${resp.status} ${resp.statusText}`)
+
   if (!resp.ok) {
     const errText = await resp.text().catch(() => resp.statusText)
+    if (hasVision) console.warn(`[VISION ${rid}] 7. non-OK body=${errText.slice(0, 200)}`)
     // 503 = model warming up → friendly warning, not a hard error
     if (resp.status === 503) {
       let msg = '⏳ Model henüz yükleniyor, lütfen birkaç saniye sonra tekrar deneyin.'
@@ -169,6 +180,7 @@ export async function* streamCompletion(
     yield { type: 'error', message: `HTTP ${resp.status}: ${errText.slice(0, 500)}` }
     return
   }
+  if (hasVision) console.log(`[VISION ${rid}] 7. response OK — streaming...`)
 
   // ── Non-streaming path ─────────────────────────────────────────────────────
   if (params.stream === false) {

@@ -203,9 +203,16 @@ export function useGeneration() {
             ? buildToolList(conv.settings.customTools)
             : undefined
 
+          const rid = (window as any).__visionRid || '-'
+          const builtMsgs = buildMessages(conv)
+          if (hasImage) {
+            const imgCount = builtMsgs.reduce((n, m) => n + (Array.isArray(m.content) ? (m.content as any[]).filter((c: any) => c.type === 'image_url').length : 0), 0)
+            console.log(`[VISION ${rid}] 4. streamCompletion params — model=${conv.settings.model ?? 'chat'}, baseUrl=${conv.settings.baseUrl ?? store.activeBaseUrl ?? 'null (→ /api/llm/completions)'}, msgs=${builtMsgs.length}, images=${imgCount}, tools=${tools ? tools.length : 0}, stream=${conv.settings.stream}`)
+          }
+
           const gen = streamCompletion(
             {
-              messages:    buildMessages(conv),
+              messages:    builtMsgs,
               model:       conv.settings.model ?? store.activeModel ?? 'chat',
               temperature: conv.settings.temperature,
               maxTokens:   conv.settings.maxTokens,
@@ -405,6 +412,9 @@ export function useGeneration() {
 
   const send = useCallback(
     async (text: string, image?: string): Promise<void> => {
+      const rid = (window as any).__visionRid || '-'
+      if (image) console.log(`[VISION ${rid}] 2. send() — text="${text.slice(0,40)}" image=${image.length}c`)
+
       const store = useStore.getState()
       const convId = store.currentId
       if (!convId) return
@@ -423,6 +433,7 @@ export function useGeneration() {
             { type: 'image_url', image_url: { url: image } },
           ]
         : text
+      if (image) console.log(`[VISION ${rid}] 3. apiContent built — type=array, items=${(apiContent as any[]).map((p: any) => p.type).join(',')}`)
       store.addApiHistory(convId, { role: 'user', content: apiContent })
 
       // Assistant placeholder
