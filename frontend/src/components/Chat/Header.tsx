@@ -4,12 +4,17 @@ import { logout } from '../../api'
 import type { Skill } from '../../api'
 import SetLogo from '../SetLogo'
 
+const MAX_SKILL_CHARS = 12000 // ~3000 tokens — keep context window headroom
+
 async function fetchSkillPrompt(id: string): Promise<string> {
   const token = localStorage.getItem('setllm-token') ?? ''
   const r = await fetch(`/api/skills/${encodeURIComponent(id)}`, {
     headers: { Authorization: `Bearer ${token}` }
   })
-  return r.ok ? r.text() : ''
+  if (!r.ok) return ''
+  const text = await r.text()
+  if (text.length <= MAX_SKILL_CHARS) return text
+  return text.slice(0, MAX_SKILL_CHARS) + '\n\n[...skill truncated to fit context window...]'
 }
 
 interface Props {

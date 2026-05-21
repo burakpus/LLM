@@ -79,11 +79,27 @@ export function useGeneration() {
 
   // ── Build message list for the next LLM call ───────────────────────────────
   const buildMessages = (conv: Conversation): ChatApiMessage[] => {
-    const msgs: ChatApiMessage[] = []
-    if (conv.settings.systemPrompt && conv.settings.systemPrompt.trim()) {
-      msgs.push({ role: 'system', content: conv.settings.systemPrompt })
+    const MAX_CONTEXT_CHARS = 24000 // ~6000 tokens for history (leaves room for prompt+answer)
+
+    const systemPrompt = conv.settings.systemPrompt?.trim() ?? ''
+    const history = conv.apiHistory
+
+    // Sliding window: keep most recent messages that fit within budget
+    let budget = MAX_CONTEXT_CHARS - systemPrompt.length
+    const kept: ChatApiMessage[] = []
+    for (let i = history.length - 1; i >= 0; i--) {
+      const m = history[i]
+      const len = typeof m.content === 'string'
+        ? m.content.length
+        : JSON.stringify(m.content).length
+      if (budget - len < 0) break
+      kept.unshift(m)
+      budget -= len
     }
-    for (const m of conv.apiHistory) msgs.push(m)
+
+    const msgs: ChatApiMessage[] = []
+    if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt })
+    for (const m of kept) msgs.push(m)
     return msgs
   }
 
