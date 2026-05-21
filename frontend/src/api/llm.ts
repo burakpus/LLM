@@ -63,6 +63,7 @@ export type StreamEvent =
   | { type: 'tool_call'; id: string; name: string; args: Record<string, unknown> }
   | { type: 'stats';     ttft: number | null; tokens: number; finishReason: string | null }
   | { type: 'error';     message: string }
+  | { type: 'warning';   text: string }
 
 // ── Completion parameters ────────────────────────────────────────────────────
 export type ChatContent =
@@ -155,6 +156,16 @@ export async function* streamCompletion(
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => resp.statusText)
+    // 503 = model warming up → friendly warning, not a hard error
+    if (resp.status === 503) {
+      let msg = '⏳ Model henüz yükleniyor, lütfen birkaç saniye sonra tekrar deneyin.'
+      try {
+        const parsed = JSON.parse(errText)
+        if (parsed?.message) msg = `⏳ ${parsed.message}`
+      } catch { /* use default */ }
+      yield { type: 'warning', text: msg } as any
+      return
+    }
     yield { type: 'error', message: `HTTP ${resp.status}: ${errText.slice(0, 500)}` }
     return
   }

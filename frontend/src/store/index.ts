@@ -26,6 +26,7 @@ export interface Message {
   tokens?:    number
   ts:         number
   truncated?: boolean
+  isWarning?: boolean
   /** Image attached to user message (data URL) */
   image?:     string
   /** Tool call info, when role === 'tool_call' or message represents one */

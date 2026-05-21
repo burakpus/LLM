@@ -183,6 +183,17 @@ export default function MessageList({
             )
           }
 
+          // warning (model warming up)
+          if (m.isWarning) {
+            return (
+              <div key={m.id} className="flex gap-2 items-start px-1 py-2 rounded-xl text-sm"
+                   style={{ background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', color: '#fbbf24' }}>
+                <span className="shrink-0 text-base">⏳</span>
+                <span>{m.content.replace(/^⏳\s*/, '')}</span>
+              </div>
+            )
+          }
+
           // assistant
           const isLastAssistant = idx === lastAssistantIdx
           return (

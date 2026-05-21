@@ -227,6 +227,11 @@ export function useGeneration() {
               if (ev.ttft != null) ttft = ev.ttft
               if (ev.tokens > totalTokens) totalTokens = ev.tokens
               finishReason = ev.finishReason
+            } else if (ev.type === 'warning') {
+              store.updateMessage(convId, assistantMsgId, {
+                content: ev.text,
+                isWarning: true,
+              })
             } else if (ev.type === 'error') {
               errorOccurred = true
               store.updateMessage(convId, assistantMsgId, {

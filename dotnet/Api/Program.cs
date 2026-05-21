@@ -716,6 +716,40 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
     using var resp = await client.SendAsync(req,
         HttpCompletionOption.ResponseHeadersRead, ct);
 
+    // ── Warming-up detection ──────────────────────────────────────────────────
+    // LiteLLM returns 500 with "Connection error" when the vLLM container is
+    // still loading the model. Convert this to a 503 with a friendly message
+    // so the frontend can show a warning instead of a hard error.
+    if (!resp.IsSuccessStatusCode)
+    {
+        var errBody = await resp.Content.ReadAsStringAsync(ct);
+        var isWarmingUp =
+            errBody.Contains("Connection error", StringComparison.OrdinalIgnoreCase) ||
+            errBody.Contains("No fallback model group", StringComparison.OrdinalIgnoreCase) ||
+            errBody.Contains("ServiceUnavailable", StringComparison.OrdinalIgnoreCase) ||
+            errBody.Contains("health check", StringComparison.OrdinalIgnoreCase);
+
+        if (isWarmingUp)
+        {
+            app.Logger.LogWarning("Model warming up – LiteLLM error for user {User}: {Error}",
+                username, errBody[..Math.Min(300, errBody.Length)]);
+            return Results.Json(
+                new { error = "warming_up", message = "Model henüz yükleniyor, lütfen birkaç saniye sonra tekrar deneyin." },
+                statusCode: 503);
+        }
+
+        // Other non-success: proxy as-is
+        http.Response.StatusCode = (int)resp.StatusCode;
+        foreach (var h in resp.Headers)
+            if (!h.Key.StartsWith("Transfer", StringComparison.OrdinalIgnoreCase))
+                http.Response.Headers[h.Key] = h.Value.ToArray();
+        foreach (var h in resp.Content.Headers)
+            http.Response.Headers[h.Key] = h.Value.ToArray();
+        http.Response.ContentType = "application/json";
+        await http.Response.WriteAsync(errBody, ct);
+        return Results.Empty;
+    }
+
     http.Response.StatusCode = (int)resp.StatusCode;
     foreach (var h in resp.Headers)
         if (!h.Key.StartsWith("Transfer", StringComparison.OrdinalIgnoreCase))
