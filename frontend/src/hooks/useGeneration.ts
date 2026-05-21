@@ -210,11 +210,13 @@ export function useGeneration() {
         } else {
           // ── Direct mode (uses /api/llm/completions or active vLLM baseUrl) ─
           const token = store.auth.token ?? localStorage.getItem('setllm-token') ?? ''
-          // Don't send tools when there's an image — vision + tool_choice breaks Gemma
-          const hasImage = conv.apiHistory.some(
-            m => Array.isArray(m.content) && (m.content as any[]).some((c: any) => c.type === 'image_url')
-          )
-          const tools = (conv.settings.agenticEnabled && !hasImage)
+          // Don't send tools when the LATEST user message contains an image —
+          // vision + tool_choice=auto breaks Gemma (doesn't support tool calling).
+          // Only the current turn matters; later turns without images can use tools.
+          const lastUserMsg = [...conv.apiHistory].reverse().find(m => m.role === 'user')
+          const lastMsgHasImage = Array.isArray(lastUserMsg?.content) &&
+            (lastUserMsg!.content as any[]).some((c: any) => c.type === 'image_url')
+          const tools = (conv.settings.agenticEnabled && !lastMsgHasImage)
             ? buildToolList(conv.settings.customTools)
             : undefined
 
