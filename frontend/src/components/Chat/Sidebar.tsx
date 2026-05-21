@@ -154,6 +154,25 @@ export default function Sidebar() {
           boxShadow: store.historyOpen ? '4px 0 24px rgba(0,0,0,0.3)' : 'none',
         }}
       >
+      {/* Mobile header — close button */}
+      {!isTablet && (
+        <div className="flex items-center justify-between px-3 pt-3 pb-1 shrink-0">
+          <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--mute)' }}>
+            Menü
+          </span>
+          <button
+            onClick={store.toggleHistory}
+            className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer transition text-lg font-light"
+            style={{ color: 'var(--mute)' }}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+            title="Kapat"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {/* Top controls */}
       <div className="p-3 space-y-2 shrink-0">
         <button
