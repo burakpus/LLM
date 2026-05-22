@@ -6,10 +6,11 @@ import {
   deleteDocument, listSkills, getSkill, uploadSkills, deleteSkill,
   getUsageUsers, getUsageModels, getUsageLogs,
   listTemplates, createTemplate, updateTemplate, deleteTemplate,
+  getRatingStats,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
-  UserSpend, ModelSpend, SpendLog, PromptTemplate,
+  UserSpend, ModelSpend, SpendLog, PromptTemplate, RatingStats,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 
@@ -669,17 +670,18 @@ function SkillsTab() {
 function UsageTab() {
   const [users,  setUsers]  = useState<UserSpend[]>([])
   const [models, setModels] = useState<ModelSpend[]>([])
-  const [logs,   setLogs]   = useState<SpendLog[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error,   setError]   = useState<string | null>(null)
+  const [logs,    setLogs]    = useState<SpendLog[]>([])
+  const [ratings, setRatings] = useState<RatingStats | null>(null)
+  const [loading,  setLoading]  = useState(true)
+  const [error,    setError]    = useState<string | null>(null)
 
   const load = async () => {
     setLoading(true); setError(null)
     try {
-      const [u, m, l] = await Promise.all([
-        getUsageUsers(), getUsageModels(), getUsageLogs(50)
+      const [u, m, l, r] = await Promise.all([
+        getUsageUsers(), getUsageModels(), getUsageLogs(50), getRatingStats().catch(() => null)
       ])
-      setUsers(u); setModels(m); setLogs(l)
+      setUsers(u); setModels(m); setLogs(l); setRatings(r)
     } catch (e: any) {
       setError(e.message ?? String(e))
     } finally {
@@ -823,6 +825,61 @@ function UsageTab() {
               </tbody>
             </table>
           </div>
+
+          {/* Yanıt Puanlaması */}
+          {ratings && (
+            <div className="rounded-xl overflow-hidden md:col-span-2"
+                 style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+              <div className="px-4 py-3 flex items-center gap-4"
+                   style={{ borderBottom: '1px solid var(--border)' }}>
+                <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--mute)' }}>
+                  Yanıt Puanlaması
+                </span>
+                <span className="text-sm font-bold" style={{ color: '#34a853' }}>👍 {ratings.ups}</span>
+                <span className="text-sm font-bold" style={{ color: '#ea4335' }}>👎 {ratings.downs}</span>
+                <span className="text-xs ml-auto" style={{ color: 'var(--mute)' }}>
+                  Toplam {ratings.total} puan
+                  {ratings.total > 0 && ` — %${Math.round((ratings.ups / ratings.total) * 100)} olumlu`}
+                </span>
+              </div>
+              {/* By model */}
+              {ratings.byModel.length > 0 && (
+                <div className="px-4 py-3 flex gap-6 flex-wrap"
+                     style={{ borderBottom: '1px solid var(--border)' }}>
+                  {ratings.byModel.map(bm => (
+                    <div key={bm.model} className="text-xs">
+                      <span className="font-medium" style={{ color: 'var(--text)' }}>{bm.model}</span>
+                      <span className="ml-2" style={{ color: '#34a853' }}>👍{bm.ups}</span>
+                      <span className="ml-1" style={{ color: '#ea4335' }}>👎{bm.downs}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Recent */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--mute)' }}>
+                      <th className="px-4 py-2 text-left font-medium">Kullanıcı</th>
+                      <th className="px-4 py-2 text-left font-medium">Puan</th>
+                      <th className="px-4 py-2 text-left font-medium">Model</th>
+                      <th className="px-4 py-2 text-left font-medium">Zaman</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ratings.recent.map((r, i) => (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td className="px-4 py-2" style={{ color: 'var(--text)' }}>{r.username}</td>
+                        <td className="px-4 py-2 text-lg">{r.rating === 1 ? '👍' : '👎'}</td>
+                        <td className="px-4 py-2" style={{ color: 'var(--mute)' }}>{r.model}</td>
+                        <td className="px-4 py-2" style={{ color: 'var(--mute)' }}>{formatDate(r.createdAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Son istekler */}
           <div className="rounded-xl overflow-hidden md:col-span-2"

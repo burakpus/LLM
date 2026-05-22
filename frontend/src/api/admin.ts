@@ -212,3 +212,15 @@ export const getUsageUsers  = (): Promise<UserSpend[]>  => usageGet('/api/admin/
   })))
 export const getUsageModels = (): Promise<ModelSpend[]> => usageGet('/api/admin/usage/models')
 export const getUsageLogs   = (limit = 50): Promise<SpendLog[]> => usageGet(`/api/admin/usage/logs?limit=${limit}`)
+
+// ── Rating stats ─────────────────────────────────────────────────────────────
+export interface RatingStats {
+  total: number; ups: number; downs: number
+  byModel: { model: string; total: number; ups: number; downs: number }[]
+  recent:  { username: string; rating: number; model: string; createdAt: string }[]
+}
+export async function getRatingStats(): Promise<RatingStats> {
+  const r = await fetch('/api/admin/ratings/stats', { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}

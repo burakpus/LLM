@@ -118,6 +118,16 @@ var app = builder.Build();
     await using var c0  = await ds0.OpenConnectionAsync();
     await using var cmd0 = c0.CreateCommand();
     cmd0.CommandText = @"
+        CREATE TABLE IF NOT EXISTS message_ratings (
+            id          SERIAL PRIMARY KEY,
+            username    VARCHAR(100) NOT NULL,
+            conv_id     VARCHAR(100) NOT NULL,
+            message_id  VARCHAR(100) NOT NULL,
+            rating      SMALLINT     NOT NULL,
+            model       VARCHAR(100),
+            created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            UNIQUE (username, message_id)
+        );
         CREATE TABLE IF NOT EXISTS prompt_templates (
             id          SERIAL PRIMARY KEY,
             name        VARCHAR(200) NOT NULL,
@@ -217,6 +227,79 @@ app.MapPost("/api/files/extract", [Authorize] async (HttpContext http, Cancellat
     if (truncated) text = text[..MaxChars];
 
     return Results.Ok(new { filename = file.FileName, text, truncated });
+});
+
+// =============================================================================
+// ─── Ratings ─────────────────────────────────────────────────────────────────
+
+// POST /api/ratings — submit or update a rating (all authenticated users)
+app.MapPost("/api/ratings", [Authorize] async (
+    [FromBody] RatingRequest req,
+    ClaimsPrincipal user,
+    NpgsqlDataSource ds,
+    CancellationToken ct) =>
+{
+    if (req.Rating != 1 && req.Rating != -1)
+        return Results.BadRequest(new { error = "Rating must be 1 or -1" });
+
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "anonymous";
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"
+        INSERT INTO message_ratings (username, conv_id, message_id, rating, model)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (username, message_id)
+        DO UPDATE SET rating = $4, model = $5";
+    cmd.Parameters.AddWithValue(username);
+    cmd.Parameters.AddWithValue(req.ConvId);
+    cmd.Parameters.AddWithValue(req.MessageId);
+    cmd.Parameters.AddWithValue((short)req.Rating);
+    cmd.Parameters.AddWithValue(string.IsNullOrEmpty(req.Model) ? (object)DBNull.Value : req.Model);
+    await cmd.ExecuteNonQueryAsync(ct);
+    return Results.Ok(new { ok = true });
+});
+
+// GET /api/admin/ratings/stats — rating statistics (admin only)
+app.MapGet("/api/admin/ratings/stats", [Authorize("AdminOnly")] async (
+    NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+
+    // Overall totals
+    await using var c1 = conn.CreateCommand();
+    c1.CommandText = @"SELECT COUNT(*),
+                              COALESCE(SUM(CASE WHEN rating=1  THEN 1 ELSE 0 END),0),
+                              COALESCE(SUM(CASE WHEN rating=-1 THEN 1 ELSE 0 END),0)
+                       FROM message_ratings";
+    await using var r1 = await c1.ExecuteReaderAsync(ct);
+    await r1.ReadAsync(ct);
+    var total = r1.GetInt64(0); var ups = r1.GetInt64(1); var downs = r1.GetInt64(2);
+    await r1.CloseAsync();
+
+    // By model
+    await using var c2 = conn.CreateCommand();
+    c2.CommandText = @"SELECT COALESCE(model,'unknown'),
+                              COUNT(*),
+                              COALESCE(SUM(CASE WHEN rating=1  THEN 1 ELSE 0 END),0),
+                              COALESCE(SUM(CASE WHEN rating=-1 THEN 1 ELSE 0 END),0)
+                       FROM message_ratings
+                       GROUP BY model ORDER BY COUNT(*) DESC";
+    await using var r2 = await c2.ExecuteReaderAsync(ct);
+    var byModel = new List<object>();
+    while (await r2.ReadAsync(ct))
+        byModel.Add(new { model = r2.GetString(0), total = r2.GetInt64(1), ups = r2.GetInt64(2), downs = r2.GetInt64(3) });
+    await r2.CloseAsync();
+
+    // Recent 20
+    await using var c3 = conn.CreateCommand();
+    c3.CommandText = @"SELECT username, rating, COALESCE(model,'?'), created_at
+                       FROM message_ratings ORDER BY created_at DESC LIMIT 20";
+    await using var r3 = await c3.ExecuteReaderAsync(ct);
+    var recent = new List<object>();
+    while (await r3.ReadAsync(ct))
+        recent.Add(new { username = r3.GetString(0), rating = (int)r3.GetInt16(1), model = r3.GetString(2), createdAt = r3.GetDateTime(3) });
+
+    return Results.Ok(new { total, ups, downs, byModel, recent });
 });
 
 // =============================================================================
@@ -1114,6 +1197,7 @@ app.Run();
 
 public sealed record LoginRequest(string Username, string Password, string Domain);
 public sealed record TemplateUpsertRequest(string Name, string Content, string? Collection);
+public sealed record RatingRequest(string MessageId, string ConvId, int Rating, string? Model);
 
 public sealed record ApiChatRequest(
     string    SessionId,

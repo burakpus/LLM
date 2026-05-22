@@ -178,6 +178,18 @@ export async function getModelCapabilities(): Promise<Record<string, ModelCapabi
   return apiGet('/api/models/capabilities')
 }
 
+// ── Ratings ───────────────────────────────────────────────────────────────────
+
+/** Submit or update a 👍/👎 rating for an assistant message. Upserts by (user, messageId). */
+export async function rateMessage(
+  messageId: string,
+  convId:    string,
+  rating:    1 | -1,
+  model?:    string | null,
+): Promise<void> {
+  await apiPost('/api/ratings', { messageId, convId, rating, model })
+}
+
 // ── File extract ─────────────────────────────────────────────────────────────
 
 export interface ExtractResult {

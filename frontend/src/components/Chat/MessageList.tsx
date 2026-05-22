@@ -7,6 +7,7 @@ import { useShallow } from 'zustand/react/shallow'
 import type { Message } from '../../store'
 import { t, useStore } from '../../store'
 import { writeFile } from '../../api/project'
+import { rateMessage } from '../../api'
 import { computeDiff } from './DiffView'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallBlock from './ToolCallBlock'
@@ -161,6 +162,8 @@ interface ItemProps {
   m:               Message
   idx:             number
   isLastAssistant: boolean
+  convId:          string
+  activeModel:     string
   onContinue?:     (i: number) => void
   copy:            (t: string) => void
   downloadTxt:     (m: Message) => void
@@ -168,7 +171,7 @@ interface ItemProps {
 }
 
 const MessageItem = memo(function MessageItem({
-  m, idx, isLastAssistant, onContinue, copy, downloadTxt, downloadCode,
+  m, idx, isLastAssistant, convId, activeModel, onContinue, copy, downloadTxt, downloadCode,
 }: ItemProps) {
   if (m.role === 'tool_call' && m.toolCall) {
     return (
@@ -205,6 +208,7 @@ const MessageItem = memo(function MessageItem({
   return (
     <AssistantMessage
       m={m} idx={idx} isLastAssistant={isLastAssistant}
+      convId={convId} activeModel={activeModel}
       onContinue={onContinue} copy={copy} downloadTxt={downloadTxt} downloadCode={downloadCode}
     />
   )
@@ -212,7 +216,7 @@ const MessageItem = memo(function MessageItem({
 
 // Separate component so ReactMarkdown re-renders don't bubble up
 const AssistantMessage = memo(function AssistantMessage({
-  m, idx, isLastAssistant, onContinue, copy, downloadTxt, downloadCode,
+  m, idx, isLastAssistant, convId, activeModel, onContinue, copy, downloadTxt, downloadCode,
 }: ItemProps) {
   return (
     <div className="group flex gap-3 w-full">
@@ -247,7 +251,7 @@ const AssistantMessage = memo(function AssistantMessage({
           </button>
         )}
         {m.content && !m.streaming && (
-          <MessageActions m={m} isLast={isLastAssistant}
+          <MessageActions m={m} isLast={isLastAssistant} convId={convId} activeModel={activeModel}
             copy={copy} downloadTxt={downloadTxt} downloadCode={downloadCode} />
         )}
       </div>
@@ -256,16 +260,66 @@ const AssistantMessage = memo(function AssistantMessage({
 })
 
 // Action bar extracted to prevent hover state from affecting parent
-const MessageActions = memo(function MessageActions({ m, copy, downloadTxt, downloadCode }: {
-  m: Message; isLast: boolean
+const MessageActions = memo(function MessageActions({ m, convId, activeModel, copy, downloadTxt, downloadCode }: {
+  m: Message; isLast: boolean; convId: string; activeModel: string
   copy: (t: string) => void; downloadTxt: (m: Message) => void; downloadCode: (m: Message) => void
 }) {
+  const [rating, setRating]   = useState<1 | -1 | 0>(0)
+  const [rateBusy, setRateBusy] = useState(false)
+
+  const onRate = async (val: 1 | -1) => {
+    if (rateBusy) return
+    const next: 1 | -1 | 0 = rating === val ? 0 : val  // toggle off if same
+    setRating(next)
+    if (next === 0) return  // toggled off — no API call needed
+    setRateBusy(true)
+    try {
+      await rateMessage(m.id, convId, next, activeModel)
+    } catch { /* silent — rating is best-effort */ }
+    finally { setRateBusy(false) }
+  }
+
   return (
     <div className="mt-2 flex items-center gap-0.5 text-[11px] opacity-0 group-hover:opacity-100 transition-opacity"
          style={{ color: 'var(--mute)' }}>
       {m.kbHits != null && m.kbHits > 0 && (
         <span className="mr-2 opacity-100" style={{ color: 'var(--accent)' }}>{m.kbHits} refs</span>
       )}
+
+      {/* 👍 */}
+      <button
+        onClick={() => onRate(1)}
+        disabled={rateBusy}
+        title="İyi yanıt"
+        className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer disabled:opacity-40"
+        style={{ background: rating === 1 ? 'rgba(52,168,83,0.15)' : 'transparent',
+                 color:      rating === 1 ? '#34a853' : 'var(--mute)' }}
+        onMouseEnter={e => { if (rating !== 1) (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)' }}
+        onMouseLeave={e => { if (rating !== 1) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+      >
+        <svg className="w-3.5 h-3.5" fill={rating === 1 ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M14 10h4.764a2 2 0 011.789 2.894l-3.5 7A2 2 0 0115.263 21h-4.017c-.163 0-.326-.02-.485-.06L7 20m7-10V5a2 2 0 00-2-2h-.095c-.5 0-.905.405-.905.905a3.61 3.61 0 01-.608 2.006L7 11v9m7-10h-2M7 20H5a2 2 0 01-2-2v-6a2 2 0 012-2h2.5" />
+        </svg>
+      </button>
+
+      {/* 👎 */}
+      <button
+        onClick={() => onRate(-1)}
+        disabled={rateBusy}
+        title="Kötü yanıt"
+        className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer disabled:opacity-40"
+        style={{ background: rating === -1 ? 'rgba(234,67,53,0.12)' : 'transparent',
+                 color:      rating === -1 ? '#ea4335' : 'var(--mute)' }}
+        onMouseEnter={e => { if (rating !== -1) (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)' }}
+        onMouseLeave={e => { if (rating !== -1) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+      >
+        <svg className="w-3.5 h-3.5" fill={rating === -1 ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M10 14H5.236a2 2 0 01-1.789-2.894l3.5-7A2 2 0 018.736 3h4.018c.163 0 .326.02.485.06L17 4m-7 10v5a2 2 0 002 2h.095c.5 0 .905-.405.905-.905 0-.71.232-1.4.654-1.962L17 13V4m-7 10h2m5-10h2a2 2 0 012 2v6a2 2 0 01-2 2h-2.5" />
+        </svg>
+      </button>
+
+      <div className="w-px h-3 mx-1" style={{ background: 'var(--border)' }} />
+
       <button onClick={() => copy(m.content)}
               className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer" title={t('copy')}
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
@@ -300,6 +354,10 @@ const MessageActions = memo(function MessageActions({ m, copy, downloadTxt, down
 export default function MessageList({
   messages, generating, onRegenerate, onContinue,
 }: Props) {
+  const { currentId, activeModel } = useStore(s => ({
+    currentId:   s.currentId ?? '',
+    activeModel: s.activeModel ?? 'chat',
+  }))
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -374,6 +432,8 @@ export default function MessageList({
             m={m}
             idx={idx}
             isLastAssistant={idx === lastAssistantIdx}
+            convId={currentId}
+            activeModel={activeModel}
             onContinue={onContinue}
             copy={copy}
             downloadTxt={downloadTxt}
