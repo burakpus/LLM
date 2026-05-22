@@ -157,13 +157,21 @@ public sealed class LdapAuthService : ILdapAuthService
     /// </summary>
     public bool IsAdmin(string domain, string username, string password)
     {
-        if (_opts.Bypass) return true;
+        // Bypass only skips LDAP — AdminUsers/AdminGroups still checked via config
+        // (Bypass=true means anyone can login, but admin is still config-controlled)
 
-        // Direct username override (fallback when group lookup fails or isn't needed)
+        // Direct username override — always checked first, even in bypass mode
         if (_opts.AdminUserSet.Contains(username))
         {
             _log.LogInformation("Admin access granted: {User}@{Domain} via AdminUsers config", username, domain);
             return true;
+        }
+
+        // In bypass mode, skip LDAP group lookup (LDAP not available)
+        if (_opts.Bypass)
+        {
+            _log.LogDebug("LDAP bypass — skipping group lookup for {User}@{Domain}", username, domain);
+            return false;
         }
 
         if (!_opts.Domains.TryGetValue(domain.ToUpperInvariant(), out var cfg))
