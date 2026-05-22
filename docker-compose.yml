@@ -24,6 +24,7 @@ volumes:
   pg-data:
   prom-data:
   grafana-data:
+  loki-data:
 
 secrets:
   hf_token:
@@ -277,7 +278,32 @@ services:
       - grafana-data:/var/lib/grafana
       - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/dgx-llm.json:ro
-    depends_on: [prometheus]
+    depends_on: [prometheus, loki]
+
+  loki:
+    image: grafana/loki:3.2.0
+    container_name: loki
+    profiles: ["default", "reasoning", "infra"]
+    restart: unless-stopped
+    networks: [llm-net]
+    ports: ["3100:3100"]
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+
+  promtail:
+    image: grafana/promtail:3.2.0
+    container_name: promtail
+    profiles: ["default", "reasoning", "infra"]
+    restart: unless-stopped
+    networks: [llm-net]
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [loki]
 
   dcgm-exporter:
     image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.7-3.5.0-ubuntu22.04
