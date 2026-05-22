@@ -340,14 +340,6 @@ export default function MessageList({
     URL.revokeObjectURL(url)
   }, [])
 
-  const downloadTxt = (msg: Message) => {
-    const blob = new Blob([msg.content], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = `response-${msg.id.slice(0, 8)}.txt`; a.click()
-    URL.revokeObjectURL(url)
-  }
-
   if (messages.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center px-6">
