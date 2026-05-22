@@ -493,13 +493,28 @@ export function useGeneration() {
 
   const autoCompleteLoop = useCallback(
     async (convId: string) => {
+      const MAX_AUTO = 5
       const store = useStore.getState()
-      for (let i = 0; i < 6; i++) {
+
+      for (let i = 0; i < MAX_AUTO; i++) {
         const conv = store.getConv(convId)
         if (!conv) return
         const last = [...conv.messages].reverse().find(m => m.role === 'assistant')
-        if (!last || !last.truncated) return
+        if (!last || !last.truncated) return   // tamamlandı, döngü bitsin
         await doContinue(convId, conv.messages.indexOf(last))
+      }
+
+      // 5 otomatik devam sonrası hâlâ kesiliyorsa uyarı ver
+      const convFinal = store.getConv(convId)
+      if (!convFinal) return
+      const lastFinal = [...convFinal.messages].reverse().find(m => m.role === 'assistant')
+      if (lastFinal?.truncated) {
+        store.addMessage(convId, {
+          role:      'assistant',
+          content:   '⚠️ Yanıt 5 kez otomatik devam ettirildi ancak hâlâ kesildi. Devam ettirmek için mesaj altındaki "⬆ limit" butonuna basabilirsiniz.',
+          streaming: false,
+          isWarning: true,
+        })
       }
     },
     [doContinue],
@@ -555,10 +570,8 @@ export function useGeneration() {
           store.renameConversation(convId, text.slice(0, 60))
         }
 
-        // Auto-complete loop
-        if (cAfter?.settings.autoComplete) {
-          await autoCompleteLoop(convId)
-        }
+        // Auto-continue if truncated (up to 5 times, warning on 6th)
+        await autoCompleteLoop(convId)
       } finally {
         store.setGenerating(convId, false)
         abortRef.current = null
@@ -600,11 +613,12 @@ export function useGeneration() {
       } else {
         await runOne(convId, assistantId)
       }
+      await autoCompleteLoop(convId)
     } finally {
       store.setGenerating(convId, false)
       abortRef.current = null
     }
-  }, [runOne, runAgenticLoop])
+  }, [runOne, runAgenticLoop, autoCompleteLoop])
 
   const continueResponse = useCallback(
     async (msgIdx: number) => {

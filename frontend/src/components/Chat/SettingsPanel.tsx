@@ -170,8 +170,6 @@ export default function SettingsPanel() {
             </div>
           )}
 
-          <ToggleRow label={t('autoComplete')} checked={settings.autoComplete}
-                     onChange={v => setPatch({ autoComplete: v })} />
 
           {/* ── Bilgi ─────────────────────────────────────────────── */}
           <SectionLabel>Hesap</SectionLabel>
