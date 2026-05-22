@@ -230,14 +230,14 @@ export default function Header({ skills, statusOk }: Props) {
         <span className="text-[11px]" style={{ color: 'var(--mute)' }}>
           {store.auth.username}
         </span>
-        {/* Tooltip */}
+        {/* Tooltip — aşağıda göster (header'da yukarı yer yok) */}
         {statusTooltip && (
-          <div className="absolute bottom-full left-0 mb-2 px-2.5 py-1.5 rounded-lg text-[11px] whitespace-nowrap z-50 pointer-events-none"
+          <div className="absolute top-full left-0 mt-2 px-2.5 py-1.5 rounded-lg text-[11px] whitespace-nowrap z-50 pointer-events-none"
                style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text)', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
+            {/* Arrow pointing up */}
+            <div className="absolute bottom-full left-3 w-0 h-0"
+                 style={{ borderLeft: '4px solid transparent', borderRight: '4px solid transparent', borderBottom: '4px solid var(--border)' }} />
             {statusDetail}
-            {/* Arrow */}
-            <div className="absolute top-full left-3 w-0 h-0"
-                 style={{ borderLeft: '4px solid transparent', borderRight: '4px solid transparent', borderTop: '4px solid var(--border)' }} />
           </div>
         )}
       </div>
