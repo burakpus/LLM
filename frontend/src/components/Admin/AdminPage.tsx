@@ -29,13 +29,42 @@ async function pingProxy(): Promise<boolean> {
 // =============================================================================
 
 export default function AdminPage() {
-  const { auth } = useStore()
-  const [tab, setTab] = useState<Tab>('upload')
+  const store = useStore()
+  const { auth } = store
+  const [tab,      setTab]      = useState<Tab>('upload')
+  const [checking, setChecking] = useState(!auth.isAdmin)
 
   useEffect(() => {
     const stored = localStorage.getItem('setllm-theme')
     document.documentElement.setAttribute('data-theme', stored === 'light' ? 'light' : 'dark')
   }, [])
+
+  // Re-check admin status from server on every /admin visit.
+  // Fixes stale JWT tokens that were issued before AdminUsers config was added.
+  useEffect(() => {
+    if (auth.isAdmin) { setChecking(false); return }
+    const tok = localStorage.getItem('setllm-token')
+    if (!tok) { setChecking(false); return }
+    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${tok}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.isAdmin) {
+          store.setAuth({ ...auth, isAdmin: true })
+        }
+      })
+      .catch(() => {})
+      .finally(() => setChecking(false))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  if (checking) {
+    return (
+      <div className="min-h-dvh flex items-center justify-center"
+           style={{ background: 'var(--bg)', color: 'var(--mute)' }}>
+        <span className="text-sm">Yetki kontrol ediliyor…</span>
+      </div>
+    )
+  }
 
   // Guard: non-admin users who navigate directly to /admin see a 403 page
   if (!auth.isAdmin) {
