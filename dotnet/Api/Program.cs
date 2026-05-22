@@ -678,6 +678,109 @@ app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema", [Authorize("Adm
     }
 });
 
+// GET /api/admin/sql-connections/{id}/tables — list tables with columns + row count
+app.MapGet("/api/admin/sql-connections/{id:int}/tables", [Authorize("AdminOnly")] async (
+    int id, ISqlConnectionService svc, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    var (dbType, connStr) = await LoadConnectionAsync(id, svc, ds, ct);
+    if (connStr is null) return Results.NotFound();
+
+    try
+    {
+        var tables = await SqlDataSampler.ListTablesAsync(dbType, connStr, ct);
+        return Results.Ok(tables.Select(t => new {
+            schema        = t.Schema,
+            name          = t.Name,
+            estimatedRows = t.EstimatedRows,
+            columns       = t.Columns.Select(c => new { name = c.Name, dataType = c.DataType, isPII = c.IsPII }),
+        }));
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+// POST /api/admin/sql-connections/{id}/ingest-data — sample selected tables into RAG
+app.MapPost("/api/admin/sql-connections/{id:int}/ingest-data", [Authorize("AdminOnly")] async (
+    int id,
+    [FromBody] DataIngestRequest req,
+    ISqlConnectionService svc,
+    IDocumentIngestion ingestion,
+    ClaimsPrincipal user,
+    NpgsqlDataSource ds,
+    CancellationToken ct) =>
+{
+    var (dbType, connStr) = await LoadConnectionAsync(id, svc, ds, ct);
+    if (connStr is null) return Results.NotFound();
+
+    var username   = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    var collection = string.IsNullOrWhiteSpace(req.Collection) ? "sql-data" : req.Collection.Trim();
+    var defaultLimit = req.DefaultLimit > 0 ? req.DefaultLimit : 1000;
+
+    if (req.Tables is null || req.Tables.Length == 0)
+        return Results.BadRequest(new { error = "At least one table required" });
+
+    var success = 0;
+    var totalRows = 0;
+    var totalChunks = 0;
+    var failures = new List<object>();
+
+    foreach (var t in req.Tables)
+    {
+        ct.ThrowIfCancellationRequested();
+        var sampleReq = new TableSampleRequest(
+            t.Schema, t.Name,
+            t.Limit > 0 ? t.Limit : defaultLimit,
+            t.Where);
+
+        try
+        {
+            var (cols, rows) = await SqlDataSampler.SampleAsync(dbType, connStr, sampleReq, ct);
+            if (rows.Count == 0)
+            {
+                failures.Add(new { name = $"{t.Schema}.{t.Name}", error = "no rows returned" });
+                continue;
+            }
+
+            var md     = SqlDataSampler.FormatAsMarkdown(t.Schema, t.Name, cols, rows);
+            var source = $"sql://{dbType.ToString().ToLower()}/conn-{id}/data/{t.Schema}.{t.Name}";
+            var title  = $"DATA {t.Schema}.{t.Name} ({rows.Count} rows)";
+            var meta   = $"{{\"db_type\":\"{dbType.ToString().ToLower()}\",\"object_type\":\"data\",\"schema\":\"{t.Schema}\",\"name\":\"{t.Name}\",\"rows\":{rows.Count},\"connection_id\":{id}}}";
+
+            // Idempotent: remove old chunks first
+            await ingestion.DeleteSourceAsync(collection, source, ct);
+
+            var result = await ingestion.IngestAsync(new IngestRequest
+            {
+                Collection = collection, Source = source, Title = title,
+                Content    = md, Metadata = meta,
+                ChunkSize  = 2000, ChunkOverlap = 100,
+            }, ct);
+
+            success++;
+            totalRows   += rows.Count;
+            totalChunks += result.ChunksCreated;
+        }
+        catch (Exception ex)
+        {
+            failures.Add(new { name = $"{t.Schema}.{t.Name}", error = ex.Message });
+        }
+    }
+
+    _ = LogActivity(ds, username, "sql.ingest.data", $"conn-{id}",
+        $"collection={collection} tables={req.Tables.Length} success={success} rows={totalRows}");
+
+    return Results.Ok(new {
+        success,
+        total = req.Tables.Length,
+        rows  = totalRows,
+        chunks = totalChunks,
+        failures,
+        collection,
+    });
+});
+
 // POST /api/admin/sql-connections/{id}/sync-schema — incremental update (only changed/new)
 app.MapPost("/api/admin/sql-connections/{id:int}/sync-schema", [Authorize("AdminOnly")] async (
     int id,
@@ -2062,6 +2165,12 @@ public sealed record SqlConnectionUpsertRequest(
 public sealed record SchemaIngestRequest(
     string?   Collection,
     string[]? IncludeTypes);  // ["table","view","procedure","function","trigger"]
+
+public sealed record TableSampleSpec(string Schema, string Name, int Limit, string? Where);
+public sealed record DataIngestRequest(
+    string?            Collection,
+    int                DefaultLimit,
+    TableSampleSpec[]? Tables);
 
 public sealed record ApiChatRequest(
     string    SessionId,

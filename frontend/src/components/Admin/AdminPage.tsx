@@ -12,12 +12,14 @@ import {
   listSqlConnections, createSqlConnection, updateSqlConnection,
   deleteSqlConnection, testSqlConnection, testSqlCredentials,
   listSqlObjects, ingestSqlSchema, syncSqlSchema,
+  listSqlTables, ingestSqlData,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
   UserSpend, ModelSpend, SpendLog, PromptTemplate, RatingStats, SkillExample,
   ActivityPage, SqlConnection, SqlConnectionUpsert, SqlDbType,
   SqlObjectSummary, SqlIngestResult, SqlSyncResult,
+  SqlTable, SqlTableSpec, SqlDataIngestResult,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 
@@ -1390,6 +1392,16 @@ function SqlConnectionsTab() {
   const [syncConn,    setSyncConn]    = useState<SqlConnection | null>(null)
   const [syncRunning, setSyncRunning] = useState(false)
   const [syncResult,  setSyncResult]  = useState<SqlSyncResult | null>(null)
+  // Data sampling modal
+  const [dataConn,        setDataConn]        = useState<SqlConnection | null>(null)
+  const [dataTables,      setDataTables]      = useState<SqlTable[] | null>(null)
+  const [dataLoading,     setDataLoading]     = useState(false)
+  const [dataFilter,      setDataFilter]      = useState('')
+  const [dataSelected,    setDataSelected]    = useState<Set<string>>(new Set())
+  const [dataLimit,       setDataLimit]       = useState(1000)
+  const [dataCollection,  setDataCollection]  = useState('')
+  const [dataRunning,     setDataRunning]     = useState(false)
+  const [dataResult,      setDataResult]      = useState<SqlDataIngestResult | null>(null)
 
   const load = async () => {
     setLoading(true); setError(null)
@@ -1488,6 +1500,49 @@ function SqlConnectionsTab() {
       setError(e.message)
     } finally {
       setIngestRunning(false)
+    }
+  }
+
+  const openData = async (c: SqlConnection) => {
+    setDataConn(c); setDataTables(null); setDataResult(null)
+    setDataSelected(new Set()); setDataFilter(''); setDataLimit(1000)
+    setDataCollection(`sql-data-${c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`)
+    setDataLoading(true)
+    try {
+      const tables = await listSqlTables(c.id)
+      setDataTables(tables)
+    } catch (e: any) {
+      setError(`Tablo listesi hatası: ${e.message}`)
+      setDataConn(null)
+    } finally {
+      setDataLoading(false)
+    }
+  }
+
+  const toggleDataSel = (key: string) => {
+    setDataSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key); else next.add(key)
+      return next
+    })
+  }
+
+  const onDataRun = async () => {
+    if (!dataConn || !dataTables) return
+    const specs: SqlTableSpec[] = []
+    for (const key of dataSelected) {
+      const [schema, name] = key.split('|')
+      specs.push({ schema, name, limit: dataLimit, where: null })
+    }
+    if (specs.length === 0) return
+    setDataRunning(true)
+    try {
+      const result = await ingestSqlData(dataConn.id, dataCollection.trim(), dataLimit, specs)
+      setDataResult(result)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setDataRunning(false)
     }
   }
 
@@ -1662,6 +1717,12 @@ function SqlConnectionsTab() {
                             style={{ background: 'rgba(52,168,83,0.15)', color: '#34a853', border: '1px solid rgba(52,168,83,0.3)' }}
                             title="Sadece değişen/yeni objeleri güncelle">
                       🔄 Sync
+                    </button>
+                    <button onClick={() => openData(c)}
+                            className="px-2 py-1 rounded text-xs cursor-pointer"
+                            style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}
+                            title="Tablo verilerini seçip RAG'a aktar">
+                      💾 Veri
                     </button>
                     <button onClick={() => openEdit(c)}
                             className="px-2 py-1 rounded text-xs cursor-pointer"
@@ -1947,6 +2008,166 @@ function SqlConnectionsTab() {
                       className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
                       style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
                 Kapat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Data Sampling Modal */}
+      {dataConn && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+             style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+             onClick={e => { if (e.target === e.currentTarget && !dataRunning) setDataConn(null) }}>
+          <div className="w-full max-w-3xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+               style={{ background: 'var(--bg)', border: '1px solid var(--border)', maxHeight: '85vh' }}>
+            <div className="px-5 py-4 flex items-center gap-3 shrink-0"
+                 style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
+              <span className="text-2xl">💾</span>
+              <div className="flex-1">
+                <div className="font-semibold" style={{ color: 'var(--text)' }}>Veri Örnekleme — {dataConn.name}</div>
+                <div className="text-xs" style={{ color: 'var(--mute)' }}>
+                  Seçili tabloların ilk N satırı Markdown tablo olarak RAG'a yazılır. PII içeren kolonlar otomatik maskelenir.
+                </div>
+              </div>
+              <button onClick={() => !dataRunning && setDataConn(null)} disabled={dataRunning}
+                      className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer disabled:opacity-30"
+                      style={{ color: 'var(--mute)' }}>×</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              {/* Loading */}
+              {dataLoading && (
+                <div className="text-center py-8">
+                  <div className="text-3xl mb-2 animate-pulse">⏳</div>
+                  <div className="text-sm" style={{ color: 'var(--text-2)' }}>Tablolar yükleniyor…</div>
+                </div>
+              )}
+
+              {/* Running */}
+              {dataRunning && !dataResult && (
+                <div className="text-center py-8">
+                  <div className="text-3xl mb-2 animate-pulse">💾</div>
+                  <div className="text-sm" style={{ color: 'var(--text-2)' }}>
+                    {dataSelected.size} tablodan veri çekiliyor ve RAG'a yazılıyor…
+                  </div>
+                </div>
+              )}
+
+              {/* Result */}
+              {dataResult && (
+                <>
+                  <div className="rounded-xl p-4 grid grid-cols-3 gap-3 text-center"
+                       style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                    <div>
+                      <div className="text-2xl font-bold" style={{ color: '#f59e0b' }}>{dataResult.success}</div>
+                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Tablo</div>
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold" style={{ color: 'var(--accent-hi)' }}>{dataResult.rows.toLocaleString()}</div>
+                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Satır</div>
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold" style={{ color: 'var(--text)' }}>{dataResult.chunks}</div>
+                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Chunk</div>
+                    </div>
+                  </div>
+                  <div className="text-xs" style={{ color: 'var(--mute)' }}>
+                    Koleksiyon: <span className="font-mono" style={{ color: 'var(--text)' }}>{dataResult.collection}</span>
+                  </div>
+                  {dataResult.failures.length > 0 && (
+                    <div className="rounded-xl overflow-hidden" style={{ background: 'rgba(234,67,53,0.08)', border: '1px solid rgba(234,67,53,0.3)' }}>
+                      <div className="px-3 py-2 text-xs font-semibold" style={{ color: '#ea4335', borderBottom: '1px solid rgba(234,67,53,0.3)' }}>
+                        Hatalı ({dataResult.failures.length})
+                      </div>
+                      <div className="max-h-32 overflow-y-auto">
+                        {dataResult.failures.map((f, i) => (
+                          <div key={i} className="px-3 py-1 text-xs">
+                            <span className="font-mono" style={{ color: 'var(--text)' }}>{f.name}</span> — <span style={{ color: 'var(--mute)' }}>{f.error}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Table picker */}
+              {dataTables && !dataResult && !dataRunning && (
+                <>
+                  <div className="grid grid-cols-3 gap-3">
+                    <label className="block col-span-2">
+                      <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>Koleksiyon</div>
+                      <input value={dataCollection} onChange={e => setDataCollection(e.target.value)}
+                             className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                             style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                    </label>
+                    <label className="block">
+                      <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>Tablo başına satır</div>
+                      <input type="number" value={dataLimit} onChange={e => setDataLimit(parseInt(e.target.value) || 1000)}
+                             min={1} max={10000}
+                             className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                             style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                    </label>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input value={dataFilter} onChange={e => setDataFilter(e.target.value)}
+                           placeholder="Tablo ara…"
+                           className="flex-1 rounded-md px-3 py-2 text-sm outline-none"
+                           style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                    <span className="text-xs" style={{ color: 'var(--mute)' }}>
+                      <strong style={{ color: 'var(--accent-hi)' }}>{dataSelected.size}</strong> / {dataTables.length} seçili
+                    </span>
+                  </div>
+
+                  <div className="rounded-xl overflow-hidden" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                    <div className="max-h-80 overflow-y-auto">
+                      {dataTables
+                        .filter(t => !dataFilter || `${t.schema}.${t.name}`.toLowerCase().includes(dataFilter.toLowerCase()))
+                        .map((t, i) => {
+                          const key = `${t.schema}|${t.name}`
+                          const selected = dataSelected.has(key)
+                          const piiCount = t.columns.filter(c => c.isPII).length
+                          return (
+                            <label key={key} className="flex items-center gap-3 px-3 py-2 cursor-pointer"
+                                   style={{ borderBottom: '1px solid var(--border)',
+                                            background: selected ? 'rgba(245,158,11,0.08)' : 'transparent' }}>
+                              <input type="checkbox" checked={selected} onChange={() => toggleDataSel(key)} />
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm font-medium truncate" style={{ color: 'var(--text)' }}>
+                                  {t.schema}.{t.name}
+                                </div>
+                                <div className="text-[10px]" style={{ color: 'var(--mute)' }}>
+                                  {t.columns.length} kolon
+                                  {piiCount > 0 && <span style={{ color: '#ea4335' }}> · {piiCount} PII maskelenecek</span>}
+                                </div>
+                              </div>
+                              <span className="text-[10px] font-mono" style={{ color: 'var(--mute)' }}>
+                                ~{t.estimatedRows.toLocaleString()} satır
+                              </span>
+                            </label>
+                          )
+                        })}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="px-5 py-4 flex gap-2 shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+              {!dataResult && dataTables && (
+                <button onClick={onDataRun}
+                        disabled={dataRunning || dataSelected.size === 0 || !dataCollection.trim()}
+                        className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50"
+                        style={{ background: '#f59e0b', color: '#0b1929' }}>
+                  {dataRunning ? 'Çalışıyor…' : `🚀 ${dataSelected.size} Tablodan Veri Çek`}
+                </button>
+              )}
+              <button onClick={() => setDataConn(null)} disabled={dataRunning}
+                      className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
+                      style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                {dataResult ? 'Kapat' : 'İptal'}
               </button>
             </div>
           </div>

@@ -400,6 +400,58 @@ export async function syncSqlSchema(connId: number): Promise<SqlSyncResult> {
   return r.json()
 }
 
+// ── Data sampling (Phase 3) ──────────────────────────────────────────────────
+
+export interface SqlTable {
+  schema:        string
+  name:          string
+  estimatedRows: number
+  columns:       { name: string; dataType: string; isPII: boolean }[]
+}
+
+export interface SqlTableSpec {
+  schema: string
+  name:   string
+  limit:  number
+  where:  string | null
+}
+
+export interface SqlDataIngestResult {
+  success:    number
+  total:      number
+  rows:       number
+  chunks:     number
+  collection: string
+  failures:   { name: string; error: string }[]
+}
+
+export async function listSqlTables(connId: number): Promise<SqlTable[]> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/tables`, { headers: authHeaders() })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
+export async function ingestSqlData(
+  connId:       number,
+  collection:   string,
+  defaultLimit: number,
+  tables:       SqlTableSpec[],
+): Promise<SqlDataIngestResult> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/ingest-data`, {
+    method:  'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify({ collection, defaultLimit, tables }),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
 // ── Activity log ─────────────────────────────────────────────────────────────
 
 export interface ActivityEntry {
