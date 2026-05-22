@@ -164,6 +164,16 @@ export function useGeneration() {
     }
 
     if (effectiveSystem) msgs.push({ role: 'system', content: effectiveSystem })
+
+    // Few-shot examples: inject as user/assistant pairs after system prompt, before history
+    const examples = conv.settings.skillExamples ?? []
+    for (const ex of examples) {
+      if (ex.user?.trim() && ex.assistant?.trim()) {
+        msgs.push({ role: 'user',      content: ex.user })
+        msgs.push({ role: 'assistant', content: ex.assistant })
+      }
+    }
+
     for (const m of kept) msgs.push(m)
     return msgs
   }

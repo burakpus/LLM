@@ -4,6 +4,7 @@ import { logout } from '../../api'
 import type { Skill } from '../../api'
 import SetLogo from '../SetLogo'
 import HelpModal from './HelpModal'
+import { listSkillExamples } from '../../api/admin'
 
 const MAX_SKILL_CHARS = 12000 // ~3000 tokens — keep context window headroom
 
@@ -42,16 +43,21 @@ function SkillSelector({ skills }: { skills: Skill[] }) {
   const activeName = conv?.settings.skillName ?? store.activeSkillName
 
   const setSkill = async (id: string | null, name: string | null, collection?: string | null) => {
-    // Load skill system prompt so direct mode also benefits
     let systemPrompt = ''
+    let skillExamples: { user: string; assistant: string }[] = []
     if (id) {
-      systemPrompt = await fetchSkillPrompt(id).catch(() => '')
+      [systemPrompt] = await Promise.all([
+        fetchSkillPrompt(id).catch(() => ''),
+      ])
+      const rawExamples = await listSkillExamples(id).catch(() => [])
+      skillExamples = rawExamples.map(e => ({ user: e.userMessage, assistant: e.assistantMessage }))
     }
     if (conv) store.updateConvSettings(conv.id, {
       skillId:         id,
       skillName:       name,
       skillCollection: collection ?? null,
       systemPrompt,
+      skillExamples,
     })
     store.setSkill(id, name)
     setOpen(false)
@@ -70,6 +76,13 @@ function SkillSelector({ skills }: { skills: Skill[] }) {
         <span>{activeId ? activeName : t('skill')}</span>
         {activeId && conv?.settings.skillCollection && (
           <span className="text-[10px] opacity-60 ml-0.5">· {conv.settings.skillCollection}</span>
+        )}
+        {activeId && (conv?.settings.skillExamples?.length ?? 0) > 0 && (
+          <span className="text-[9px] px-1 py-0.5 rounded-full ml-0.5"
+                style={{ background: 'rgba(138,180,248,0.25)', color: 'var(--accent-hi)' }}
+                title={`${conv?.settings.skillExamples?.length} few-shot örnek`}>
+            {conv?.settings.skillExamples?.length}✦
+          </span>
         )}
         {activeId && (
           <svg

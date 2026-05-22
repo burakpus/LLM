@@ -65,6 +65,7 @@ export interface ConvSettings {
   agentMode:      boolean
   projectId:       string | null  // linked project (null = no project)
   outputFormat:    OutputFormat   // response format hint injected into system prompt
+  skillExamples:   { user: string; assistant: string }[]  // few-shot pairs for active skill
 }
 
 export const defaultSettings: ConvSettings = {
@@ -83,6 +84,7 @@ export const defaultSettings: ConvSettings = {
   agentMode:      false,
   projectId:       null,
   outputFormat:    'free',
+  skillExamples:   [],
 }
 
 export interface Conversation {

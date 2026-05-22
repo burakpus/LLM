@@ -132,6 +132,47 @@ export async function deleteSkill(id: string): Promise<{ deleted: string }> {
   return r.json()
 }
 
+// ── Skill Examples (Few-Shot) ─────────────────────────────────────────────────
+
+export interface SkillExample {
+  id:               number
+  userMessage:      string
+  assistantMessage: string
+  sortOrder:        number
+}
+
+export async function listSkillExamples(skillId: string): Promise<SkillExample[]> {
+  const r = await fetch(`/api/skills/${encodeURIComponent(skillId)}/examples`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export async function createSkillExample(skillId: string, userMessage: string, assistantMessage: string): Promise<{ id: number; sortOrder: number }> {
+  const r = await fetch(`/api/admin/skills/${encodeURIComponent(skillId)}/examples`, {
+    method:  'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify({ userMessage, assistantMessage }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export async function updateSkillExample(skillId: string, exId: number, userMessage: string, assistantMessage: string): Promise<void> {
+  const r = await fetch(`/api/admin/skills/${encodeURIComponent(skillId)}/examples/${exId}`, {
+    method:  'PUT',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify({ userMessage, assistantMessage }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+}
+
+export async function deleteSkillExample(skillId: string, exId: number): Promise<void> {
+  const r = await fetch(`/api/admin/skills/${encodeURIComponent(skillId)}/examples/${exId}`, {
+    method: 'DELETE', headers: authHeaders(),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+}
+
 // ── Prompt Templates ─────────────────────────────────────────────────────────
 
 export interface PromptTemplate {

@@ -118,6 +118,14 @@ var app = builder.Build();
     await using var c0  = await ds0.OpenConnectionAsync();
     await using var cmd0 = c0.CreateCommand();
     cmd0.CommandText = @"
+        CREATE TABLE IF NOT EXISTS skill_examples (
+            id                SERIAL PRIMARY KEY,
+            skill_id          VARCHAR(200) NOT NULL,
+            user_message      TEXT         NOT NULL,
+            assistant_message TEXT         NOT NULL,
+            sort_order        INTEGER      NOT NULL DEFAULT 0,
+            created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        );
         CREATE TABLE IF NOT EXISTS message_ratings (
             id          SERIAL PRIMARY KEY,
             username    VARCHAR(100) NOT NULL,
@@ -457,6 +465,71 @@ app.MapGet("/api/skills/{id}", [Authorize] (string id, SkillRegistry registry) =
 {
     var prompt = registry.GetSystemPrompt("default", id);
     return Results.Text(prompt, "text/plain; charset=utf-8");
+});
+
+// =============================================================================
+// ─── Skill Examples (Few-Shot) ────────────────────────────────────────────────
+
+// GET /api/skills/{id}/examples — list examples (all authenticated users)
+app.MapGet("/api/skills/{id}/examples", [Authorize] async (
+    string id, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"SELECT id, user_message, assistant_message, sort_order
+                        FROM skill_examples WHERE skill_id=$1 ORDER BY sort_order, id";
+    cmd.Parameters.AddWithValue(id);
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    var rows = new List<object>();
+    while (await r.ReadAsync(ct))
+        rows.Add(new { id = r.GetInt32(0), userMessage = r.GetString(1), assistantMessage = r.GetString(2), sortOrder = r.GetInt32(3) });
+    return Results.Ok(rows);
+});
+
+// POST /api/admin/skills/{id}/examples — add example (admin only)
+app.MapPost("/api/admin/skills/{id}/examples", [Authorize("AdminOnly")] async (
+    string id, [FromBody] SkillExampleRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"INSERT INTO skill_examples (skill_id, user_message, assistant_message, sort_order)
+                        VALUES ($1, $2, $3, (SELECT COALESCE(MAX(sort_order)+1, 0) FROM skill_examples WHERE skill_id=$1))
+                        RETURNING id, sort_order";
+    cmd.Parameters.AddWithValue(id);
+    cmd.Parameters.AddWithValue(req.UserMessage);
+    cmd.Parameters.AddWithValue(req.AssistantMessage);
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    await r.ReadAsync(ct);
+    return Results.Ok(new { id = r.GetInt32(0), sortOrder = r.GetInt32(1) });
+});
+
+// PUT /api/admin/skills/{id}/examples/{exId} — update example (admin only)
+app.MapPut("/api/admin/skills/{id}/examples/{exId:int}", [Authorize("AdminOnly")] async (
+    string id, int exId, [FromBody] SkillExampleRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"UPDATE skill_examples SET user_message=$1, assistant_message=$2
+                        WHERE id=$3 AND skill_id=$4";
+    cmd.Parameters.AddWithValue(req.UserMessage);
+    cmd.Parameters.AddWithValue(req.AssistantMessage);
+    cmd.Parameters.AddWithValue(exId);
+    cmd.Parameters.AddWithValue(id);
+    var rows = await cmd.ExecuteNonQueryAsync(ct);
+    return rows == 0 ? Results.NotFound() : Results.Ok(new { ok = true });
+});
+
+// DELETE /api/admin/skills/{id}/examples/{exId} — delete example (admin only)
+app.MapDelete("/api/admin/skills/{id}/examples/{exId:int}", [Authorize("AdminOnly")] async (
+    string id, int exId, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = "DELETE FROM skill_examples WHERE id=$1 AND skill_id=$2";
+    cmd.Parameters.AddWithValue(exId);
+    cmd.Parameters.AddWithValue(id);
+    await cmd.ExecuteNonQueryAsync(ct);
+    return Results.NoContent();
 });
 
 // =============================================================================
@@ -1198,6 +1271,7 @@ app.Run();
 public sealed record LoginRequest(string Username, string Password, string Domain);
 public sealed record TemplateUpsertRequest(string Name, string Content, string? Collection);
 public sealed record RatingRequest(string MessageId, string ConvId, int Rating, string? Model);
+public sealed record SkillExampleRequest(string UserMessage, string AssistantMessage);
 
 public sealed record ApiChatRequest(
     string    SessionId,

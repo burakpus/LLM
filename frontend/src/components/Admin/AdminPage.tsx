@@ -7,10 +7,11 @@ import {
   getUsageUsers, getUsageModels, getUsageLogs,
   listTemplates, createTemplate, updateTemplate, deleteTemplate,
   getRatingStats,
+  listSkillExamples, createSkillExample, updateSkillExample, deleteSkillExample,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
-  UserSpend, ModelSpend, SpendLog, PromptTemplate, RatingStats,
+  UserSpend, ModelSpend, SpendLog, PromptTemplate, RatingStats, SkillExample,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 
@@ -512,14 +513,31 @@ function SkillsTab() {
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState<string | null>(null)
   const [uploadMsg, setUploadMsg] = useState<string | null>(null)
+  // Few-shot examples state
+  const [examples,    setExamples]    = useState<SkillExample[]>([])
+  const [exLoading,   setExLoading]   = useState(false)
+  const [showExForm,  setShowExForm]  = useState(false)
+  const [editEx,      setEditEx]      = useState<SkillExample | null>(null)
+  const [exUser,      setExUser]      = useState('')
+  const [exAssistant, setExAssistant] = useState('')
+  const [exSaving,    setExSaving]    = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const reload = () => listSkills().then(setSkills).catch(e => setError(e.message ?? String(e)))
 
   useEffect(() => { reload() }, [])
 
+  const loadExamples = async (id: string) => {
+    setExLoading(true)
+    try { setExamples(await listSkillExamples(id)) }
+    catch { setExamples([]) }
+    finally { setExLoading(false) }
+  }
+
   const openSkill = async (id: string) => {
     setSelected(id)
+    setShowExForm(false); setEditEx(null); setExUser(''); setExAssistant('')
+    loadExamples(id)
     setLoading(true)
     setError(null)
     try {
@@ -654,12 +672,148 @@ function SkillsTab() {
             {loading && <span>Loading…</span>}
           </div>
           <pre className="flex-1 overflow-auto p-4 text-xs whitespace-pre-wrap font-mono"
-               style={{ color: 'var(--text-2)' }}>
+               style={{ color: 'var(--text-2)', maxHeight: '40vh' }}>
             {content || (selected ? '' : 'No skill selected.')}
           </pre>
+
+          {/* ── Few-Shot Examples Panel ──────────────────────────────── */}
+          {selected && (
+            <div style={{ borderTop: '1px solid var(--border)' }}>
+              <div className="px-3 py-2 flex items-center justify-between"
+                   style={{ borderBottom: examples.length > 0 || showExForm ? '1px solid var(--border)' : 'none' }}>
+                <span className="text-xs font-semibold" style={{ color: 'var(--mute)' }}>
+                  FEW-SHOT ÖRNEKLER {examples.length > 0 && `(${examples.length})`}
+                </span>
+                {!showExForm && !editEx && (
+                  <button onClick={() => { setShowExForm(true); setExUser(''); setExAssistant('') }}
+                          className="text-[10px] px-2 py-0.5 rounded cursor-pointer"
+                          style={{ background: 'var(--accent)', color: '#0b1929' }}>
+                    + Ekle
+                  </button>
+                )}
+              </div>
+
+              {/* Example list */}
+              {exLoading ? (
+                <div className="px-3 py-3 text-xs" style={{ color: 'var(--mute)' }}>Yükleniyor…</div>
+              ) : (
+                <div className="max-h-64 overflow-y-auto scrollbar-thin">
+                  {examples.map((ex, i) => (
+                    editEx?.id === ex.id ? (
+                      // Inline edit form
+                      <ExampleForm key={ex.id}
+                        userVal={exUser} assistantVal={exAssistant}
+                        saving={exSaving}
+                        onUserChange={setExUser} onAssistantChange={setExAssistant}
+                        onSave={async () => {
+                          if (!exUser.trim() || !exAssistant.trim()) return
+                          setExSaving(true)
+                          try {
+                            await updateSkillExample(selected, ex.id, exUser, exAssistant)
+                            setEditEx(null); loadExamples(selected)
+                          } catch (e: any) { setError(e.message) }
+                          finally { setExSaving(false) }
+                        }}
+                        onCancel={() => setEditEx(null)}
+                      />
+                    ) : (
+                      <div key={ex.id} className="px-3 py-2 group flex gap-2 items-start text-xs"
+                           style={{ borderBottom: i < examples.length-1 ? '1px solid var(--border)' : 'none' }}>
+                        <span className="shrink-0 w-4 text-center font-bold" style={{ color: 'var(--mute)' }}>{i+1}</span>
+                        <div className="flex-1 min-w-0 space-y-1">
+                          <div className="flex items-start gap-1">
+                            <span className="shrink-0 text-[9px] uppercase font-semibold px-1 rounded mt-0.5"
+                                  style={{ background: 'rgba(138,180,248,0.15)', color: 'var(--accent-hi)' }}>U</span>
+                            <span className="truncate" style={{ color: 'var(--text-2)' }}>{ex.userMessage}</span>
+                          </div>
+                          <div className="flex items-start gap-1">
+                            <span className="shrink-0 text-[9px] uppercase font-semibold px-1 rounded mt-0.5"
+                                  style={{ background: 'rgba(52,168,83,0.15)', color: '#34a853' }}>A</span>
+                            <span className="truncate" style={{ color: 'var(--text-2)' }}>{ex.assistantMessage}</span>
+                          </div>
+                        </div>
+                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 shrink-0">
+                          <button onClick={() => { setEditEx(ex); setExUser(ex.userMessage); setExAssistant(ex.assistantMessage); setShowExForm(false) }}
+                                  className="px-1.5 py-0.5 rounded text-[10px] cursor-pointer"
+                                  style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>✏️</button>
+                          <button onClick={async () => {
+                                    if (!confirm('Bu örneği sil?')) return
+                                    await deleteSkillExample(selected, ex.id).catch(e => setError(e.message))
+                                    loadExamples(selected)
+                                  }}
+                                  className="px-1.5 py-0.5 rounded text-[10px] cursor-pointer"
+                                  style={{ color: '#ea4335' }}>✕</button>
+                        </div>
+                      </div>
+                    )
+                  ))}
+                  {examples.length === 0 && !showExForm && (
+                    <div className="px-3 py-4 text-xs text-center" style={{ color: 'var(--mute)' }}>
+                      Henüz örnek yok. + Ekle ile başlayın.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* New example form */}
+              {showExForm && (
+                <ExampleForm
+                  userVal={exUser} assistantVal={exAssistant} saving={exSaving}
+                  onUserChange={setExUser} onAssistantChange={setExAssistant}
+                  onSave={async () => {
+                    if (!exUser.trim() || !exAssistant.trim()) return
+                    setExSaving(true)
+                    try {
+                      await createSkillExample(selected, exUser, exAssistant)
+                      setShowExForm(false); setExUser(''); setExAssistant('')
+                      loadExamples(selected)
+                    } catch (e: any) { setError(e.message) }
+                    finally { setExSaving(false) }
+                  }}
+                  onCancel={() => { setShowExForm(false); setExUser(''); setExAssistant('') }}
+                />
+              )}
+            </div>
+          )}
         </div>
       </div>
     </section>
+  )
+}
+
+function ExampleForm({ userVal, assistantVal, saving, onUserChange, onAssistantChange, onSave, onCancel }: {
+  userVal: string; assistantVal: string; saving: boolean
+  onUserChange: (v: string) => void; onAssistantChange: (v: string) => void
+  onSave: () => void; onCancel: () => void
+}) {
+  return (
+    <div className="px-3 py-3 space-y-2" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+      <div>
+        <div className="text-[10px] font-semibold mb-1 uppercase" style={{ color: 'var(--accent-hi)' }}>Kullanıcı mesajı</div>
+        <textarea value={userVal} onChange={e => onUserChange(e.target.value)} rows={2}
+                  placeholder="Örnek kullanıcı sorusu…"
+                  className="w-full rounded px-2 py-1.5 text-xs outline-none resize-none"
+                  style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+      </div>
+      <div>
+        <div className="text-[10px] font-semibold mb-1 uppercase" style={{ color: '#34a853' }}>Asistan yanıtı</div>
+        <textarea value={assistantVal} onChange={e => onAssistantChange(e.target.value)} rows={3}
+                  placeholder="Beklenen örnek yanıt…"
+                  className="w-full rounded px-2 py-1.5 text-xs outline-none resize-none"
+                  style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+      </div>
+      <div className="flex gap-2">
+        <button onClick={onSave} disabled={saving || !userVal.trim() || !assistantVal.trim()}
+                className="flex-1 py-1 rounded text-xs font-semibold cursor-pointer disabled:opacity-50"
+                style={{ background: 'var(--accent)', color: '#0b1929' }}>
+          {saving ? 'Kaydediliyor…' : '✓ Kaydet'}
+        </button>
+        <button onClick={onCancel} className="px-3 py-1 rounded text-xs cursor-pointer"
+                style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+          İptal
+        </button>
+      </div>
+    </div>
   )
 }
 
