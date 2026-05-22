@@ -14,6 +14,7 @@ import {
   listSqlObjects, ingestSqlSchema, syncSqlSchema,
   listSqlTables, ingestSqlData,
   getLatestJobForConnection,
+  getSqlIngestedStats,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
@@ -21,7 +22,7 @@ import type {
   ActivityPage, SqlConnection, SqlConnectionUpsert, SqlDbType,
   SqlObjectSummary, SqlIngestResult, SqlSyncResult,
   SqlTable, SqlTableSpec, SqlDataIngestResult,
-  JobInfo,
+  JobInfo, SqlIngestedStats,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 import JobProgressModal from './JobProgressModal'
@@ -1387,6 +1388,7 @@ function SqlConnectionsTab() {
   // Schema ingest modal
   const [ingestConn,    setIngestConn]    = useState<SqlConnection | null>(null)
   const [ingestPreview, setIngestPreview] = useState<SqlObjectSummary | null>(null)
+  const [ingestStats,   setIngestStats]   = useState<SqlIngestedStats | null>(null)
   const [ingestTypes,   setIngestTypes]   = useState<string[]>([...OBJ_TYPES])
   const [ingestCollection, setIngestCollection] = useState('')
   const [ingestRunning, setIngestRunning] = useState(false)
@@ -1477,12 +1479,18 @@ function SqlConnectionsTab() {
 
   const openIngest = async (c: SqlConnection) => {
     setIngestConn(c)
-    setIngestPreview(null)
+    setIngestPreview(null); setIngestStats(null)
     setIngestTypes([...OBJ_TYPES])
     setIngestCollection(`sql-${c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`)
     try {
-      const preview = await listSqlObjects(c.id)
+      const [preview, stats] = await Promise.all([
+        listSqlObjects(c.id),
+        getSqlIngestedStats(c.id).catch(() => null),
+      ])
       setIngestPreview(preview)
+      setIngestStats(stats)
+      // If RAG already has data, prefer its existing collection name
+      if (stats?.collection) setIngestCollection(stats.collection)
     } catch (e: any) {
       setError(`Önizleme hatası: ${e.message}`)
       setIngestConn(null)
@@ -1816,16 +1824,55 @@ function SqlConnectionsTab() {
 
               {ingestPreview && (
                 <>
-                  <div className="rounded-xl p-4" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
-                    <div className="text-xs font-semibold mb-2" style={{ color: 'var(--mute)' }}>BULUNAN OBJELER</div>
-                    <div className="text-2xl font-bold" style={{ color: 'var(--accent-hi)' }}>{ingestPreview.total}</div>
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      {ingestPreview.byType.map(t => (
-                        <span key={t.type} className="px-2 py-1 rounded text-xs"
-                              style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>
-                          {t.type}: <strong style={{ color: 'var(--text)' }}>{t.count}</strong>
-                        </span>
-                      ))}
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* Kaynak DB */}
+                    <div className="rounded-xl p-4" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+                      <div className="text-xs font-semibold mb-2" style={{ color: 'var(--mute)' }}>KAYNAK DB</div>
+                      <div className="text-2xl font-bold" style={{ color: 'var(--accent-hi)' }}>{ingestPreview.total.toLocaleString()}</div>
+                      <div className="text-[10px] mt-0.5" style={{ color: 'var(--mute)' }}>obje</div>
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {ingestPreview.byType.map(t => (
+                          <span key={t.type} className="px-1.5 py-0.5 rounded text-[10px]"
+                                style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>
+                            {t.type}: <strong style={{ color: 'var(--text)' }}>{t.count}</strong>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* RAG'daki mevcut */}
+                    <div className="rounded-xl p-4"
+                         style={{ background: ingestStats && ingestStats.total > 0 ? 'rgba(52,168,83,0.08)' : 'var(--surface-2)',
+                                  border: `1px solid ${ingestStats && ingestStats.total > 0 ? 'rgba(52,168,83,0.3)' : 'var(--border)'}` }}>
+                      <div className="text-xs font-semibold mb-2" style={{ color: 'var(--mute)' }}>RAG'DAKİ MEVCUT</div>
+                      {ingestStats && ingestStats.total > 0 ? (
+                        <>
+                          <div className="text-2xl font-bold" style={{ color: '#34a853' }}>{ingestStats.total.toLocaleString()}</div>
+                          <div className="text-[10px] mt-0.5" style={{ color: 'var(--mute)' }}>
+                            obje · {ingestStats.chunks.toLocaleString()} chunk
+                          </div>
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {ingestStats.byType.map(t => (
+                              <span key={t.type} className="px-1.5 py-0.5 rounded text-[10px]"
+                                    style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>
+                                {t.type}: <strong style={{ color: 'var(--text)' }}>{t.count}</strong>
+                              </span>
+                            ))}
+                          </div>
+                          {ingestStats.lastIngestedAt && (
+                            <div className="text-[10px] mt-2" style={{ color: 'var(--mute)' }}>
+                              Son: {new Date(ingestStats.lastIngestedAt).toLocaleString()}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-2xl font-bold" style={{ color: 'var(--mute)' }}>0</div>
+                          <div className="text-[10px] mt-0.5" style={{ color: 'var(--mute)' }}>
+                            Henüz çıkarım yapılmamış
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
 

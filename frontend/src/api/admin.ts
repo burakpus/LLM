@@ -351,6 +351,20 @@ export interface SqlIngestResult {
   failures:   { name: string; error: string }[]
 }
 
+export interface SqlIngestedStats {
+  total:          number
+  chunks:         number
+  byType:         { type: string; count: number; chunks: number }[]
+  lastIngestedAt: string | null
+  collection:     string | null
+}
+
+export async function getSqlIngestedStats(connId: number): Promise<SqlIngestedStats> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/ingested-stats`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
 export async function listSqlObjects(connId: number): Promise<SqlObjectSummary> {
   const r = await fetch(`/api/admin/sql-connections/${connId}/list-objects`, {
     method: 'POST', headers: authHeaders(),

@@ -565,6 +565,38 @@ app.MapPost("/api/admin/sql-connections/{id:int}/test", [Authorize("AdminOnly")]
         : Results.Ok(new { ok = false, error = err });
 });
 
+// GET /api/admin/sql-connections/{id}/ingested-stats — what's currently in RAG for this connection
+app.MapGet("/api/admin/sql-connections/{id:int}/ingested-stats", [Authorize("AdminOnly")] async (
+    int id, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"
+        SELECT object_type, COUNT(*) AS cnt, SUM(chunks_count) AS chunks, MAX(last_ingested_at) AS last_at,
+               MAX(collection) AS coll
+        FROM sql_ingested_objects WHERE connection_id=$1
+        GROUP BY object_type ORDER BY object_type";
+    cmd.Parameters.AddWithValue(id);
+
+    var byType = new List<object>();
+    long total = 0; long totalChunks = 0;
+    DateTime? lastIngestedAt = null; string? collection = null;
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    while (await r.ReadAsync(ct))
+    {
+        var t = r.GetString(0);
+        var c = r.GetInt64(1);
+        var ch = r.GetInt64(2);
+        var d = r.IsDBNull(3) ? (DateTime?)null : r.GetDateTime(3);
+        var col = r.IsDBNull(4) ? null : r.GetString(4);
+        byType.Add(new { type = t, count = c, chunks = ch });
+        total += c; totalChunks += ch;
+        if (d.HasValue && (!lastIngestedAt.HasValue || d > lastIngestedAt)) lastIngestedAt = d;
+        if (collection is null && col is not null) collection = col;
+    }
+    return Results.Ok(new { total, chunks = totalChunks, byType, lastIngestedAt, collection });
+});
+
 // POST /api/admin/sql-connections/{id}/list-objects — preview before ingest
 app.MapPost("/api/admin/sql-connections/{id:int}/list-objects", [Authorize("AdminOnly")] async (
     int id, ISqlConnectionService svc, NpgsqlDataSource ds, CancellationToken ct) =>
