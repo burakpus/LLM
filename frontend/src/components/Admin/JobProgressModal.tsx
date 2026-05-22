@@ -15,6 +15,15 @@ export default function JobProgressModal({ jobId, title, subtitle, onClose, rend
   const [job, setJob] = useState<JobInfo | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const tick = useRef<number | null>(null)
+  const notified = useRef(false)
+  const startSnap = useRef<{ time: number; cur: number } | null>(null)
+
+  // Request browser notification permission on mount
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -23,8 +32,21 @@ export default function JobProgressModal({ jobId, title, subtitle, onClose, rend
         const j = await getJob(jobId)
         if (cancelled) return
         setJob(j)
+        // Snapshot first running progress for ETA
+        if (j.status === 'running' && !startSnap.current && j.progressCur > 0)
+          startSnap.current = { time: Date.now(), cur: j.progressCur }
+
         if (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled') {
           if (tick.current) { window.clearInterval(tick.current); tick.current = null }
+          // Browser notification
+          if (!notified.current && 'Notification' in window && Notification.permission === 'granted') {
+            const ok = j.status === 'completed'
+            new Notification(`${ok ? '✓' : '✕'} ${title}`, {
+              body: ok ? 'İşlem başarıyla tamamlandı' : `Başarısız: ${j.error?.slice(0, 100) ?? ''}`,
+              icon: '/favicon.ico',
+            })
+            notified.current = true
+          }
         }
       } catch (e: any) {
         if (!cancelled) setErr(e.message)
@@ -36,10 +58,24 @@ export default function JobProgressModal({ jobId, title, subtitle, onClose, rend
       cancelled = true
       if (tick.current) window.clearInterval(tick.current)
     }
-  }, [jobId])
+  }, [jobId, title])
 
   const closable = !job || job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'
   const pct      = job && job.progressTot > 0 ? Math.round((job.progressCur / job.progressTot) * 100) : 0
+
+  // ETA estimation
+  let eta: string | null = null
+  if (job?.status === 'running' && startSnap.current && job.progressCur > startSnap.current.cur && job.progressTot > 0) {
+    const elapsedMs = Date.now() - startSnap.current.time
+    const delta     = job.progressCur - startSnap.current.cur
+    const rate      = delta / (elapsedMs / 1000)            // items/sec
+    const remaining = job.progressTot - job.progressCur
+    const remSec    = Math.round(remaining / rate)
+    if (remSec > 0 && remSec < 36000) {
+      const m = Math.floor(remSec / 60), s = remSec % 60
+      eta = m > 0 ? `~${m}d ${s}s` : `~${s}s`
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -92,7 +128,9 @@ export default function JobProgressModal({ jobId, title, subtitle, onClose, rend
                       {job.status === 'queued' ? 'Kuyrukta bekliyor…' : (job.message || 'İşlem sürüyor…')}
                     </span>
                     <span className="font-mono" style={{ color: 'var(--text-2)' }}>
-                      {job.progressCur} / {job.progressTot}{job.progressTot > 0 && ` (${pct}%)`}
+                      {job.progressCur.toLocaleString()} / {job.progressTot.toLocaleString()}
+                      {job.progressTot > 0 && ` (${pct}%)`}
+                      {eta && <span className="ml-2" style={{ color: 'var(--accent-hi)' }}>kalan {eta}</span>}
                     </span>
                   </div>
                   <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--surface-hi)' }}>

@@ -44,6 +44,28 @@ public sealed class JobWorker : BackgroundService
     {
         await Task.Delay(2000, stoppingToken);  // wait for DB ready
 
+        // Recovery: any job left in 'running' state from a previous crash → re-queue
+        try
+        {
+            await using var scope = _services.CreateAsyncScope();
+            var ds = scope.ServiceProvider.GetRequiredService<Npgsql.NpgsqlDataSource>();
+            await using var conn = await ds.OpenConnectionAsync(stoppingToken);
+            await using var cmd  = conn.CreateCommand();
+            cmd.CommandText = @"UPDATE jobs SET status='queued', started_at=NULL,
+                                                 message='Sunucu yeniden başladı — kuyruğa geri alındı'
+                                WHERE status='running' RETURNING id";
+            await using var r = await cmd.ExecuteReaderAsync(stoppingToken);
+            var recovered = new List<long>();
+            while (await r.ReadAsync(stoppingToken)) recovered.Add(r.GetInt64(0));
+            if (recovered.Count > 0)
+                _log.LogWarning("Recovered {N} stranded running jobs: {Ids}",
+                    recovered.Count, string.Join(", ", recovered));
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Failed to recover stranded jobs on startup");
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
