@@ -52,29 +52,9 @@ jobs:
           # ── Deploy ────────────────────────────────────────────────────────────
           cp -r $ROOT/dotnet/Api/Skills /tmp/setllm-publish/
 
-          # Keep server's appsettings.json (has secrets), but merge any NEW top-level keys
-          # from git version so config additions (like AdminUsers) are not silently ignored.
+          # Merge server appsettings.json (secrets preserved) with git version (new keys added)
           if [ -f ~/setllm-api/appsettings.json ]; then
-            python3 - <<'PYEOF'
-import json, sys
-git_cfg  = json.load(open('/tmp/setllm-publish/appsettings.json'))
-srv_cfg  = json.load(open(os.path.expanduser('~/setllm-api/appsettings.json')))
-import os
-# Deep merge: git values are defaults, server values take precedence at top level
-# but missing keys from git are added to server config
-def merge(base, override):
-    result = dict(base)
-    for k, v in override.items():
-        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-            result[k] = merge(result[k], v)
-        else:
-            result[k] = v
-    return result
-merged = merge(git_cfg, srv_cfg)
-with open('/tmp/setllm-publish/appsettings.json', 'w') as f:
-    json.dump(merged, f, indent=2, ensure_ascii=False)
-print('appsettings.json merged OK')
-PYEOF
+            python3 $ROOT/scripts/merge_appsettings.py
           fi
 
           rm -rf ~/setllm-api
