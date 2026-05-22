@@ -16,8 +16,18 @@ public sealed class LdapOptions
     /// <summary>Set true to skip LDAP and accept any credentials (dev/test).</summary>
     public bool Bypass { get; init; } = false;
 
+    /// <summary>
+    /// Comma-separated AD group names whose members get admin access.
+    /// Example: "Set Management,Set AIAdmin"
+    /// </summary>
+    public string AdminGroups { get; init; } = "Set Management,Set AIAdmin";
+
     public IReadOnlyList<string> DomainList =>
         DomainNames.Split(';', StringSplitOptions.RemoveEmptyEntries);
+
+    public IReadOnlySet<string> AdminGroupSet =>
+        AdminGroups.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed class LdapDomainConfig
@@ -31,16 +41,6 @@ public interface ILdapAuthService
     bool Authenticate(string domain, string username, string password);
     bool IsAdmin(string domain, string username, string password);
     IReadOnlyList<string> GetDomains();
-}
-
-/// <summary>AD groups whose members are granted admin access to the LLM platform.</summary>
-public static class AdminGroups
-{
-    public static readonly HashSet<string> Names = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Set Management",
-        "Set AIAdmin",
-    };
 }
 
 public sealed class LdapAuthService : ILdapAuthService
@@ -96,7 +96,7 @@ public sealed class LdapAuthService : ILdapAuthService
 
     /// <summary>
     /// Checks whether the authenticated user is a member of any admin AD group.
-    /// Queries the user's 'memberOf' attribute and matches against AdminGroups.Names.
+    /// Queries the user's 'memberOf' attribute and matches against Ldap:AdminGroups config.
     /// On bypass mode always returns true so developers can access admin panel.
     /// </summary>
     public bool IsAdmin(string domain, string username, string password)
@@ -138,7 +138,7 @@ public sealed class LdapAuthService : ILdapAuthService
                     p.TrimStart().StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
                     ?.Substring(3).Trim();
 
-                if (cn != null && AdminGroups.Names.Contains(cn))
+                if (cn != null && _opts.AdminGroupSet.Contains(cn))
                 {
                     _log.LogInformation("Admin access granted: {User}@{Domain} via group '{Group}'", username, domain, cn);
                     return true;
