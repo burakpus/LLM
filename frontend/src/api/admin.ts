@@ -254,6 +254,30 @@ export const getUsageUsers  = (): Promise<UserSpend[]>  => usageGet('/api/admin/
 export const getUsageModels = (): Promise<ModelSpend[]> => usageGet('/api/admin/usage/models')
 export const getUsageLogs   = (limit = 50): Promise<SpendLog[]> => usageGet(`/api/admin/usage/logs?limit=${limit}`)
 
+// ── Activity log ─────────────────────────────────────────────────────────────
+
+export interface ActivityEntry {
+  id:        number
+  username:  string
+  action:    string
+  target:    string
+  details:   string
+  createdAt: string
+}
+export interface ActivityPage {
+  total:    number
+  page:     number
+  pageSize: number
+  items:    ActivityEntry[]
+}
+export async function getActivityLog(page = 1, pageSize = 50, action?: string): Promise<ActivityPage> {
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+  if (action) params.set('action', action)
+  const r = await fetch(`/api/admin/activity-log?${params}`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
 // ── Rating stats ─────────────────────────────────────────────────────────────
 export interface RatingStats {
   total: number; ups: number; downs: number

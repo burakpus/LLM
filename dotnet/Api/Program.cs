@@ -145,6 +145,14 @@ var app = builder.Build();
             created_by  VARCHAR(100) NOT NULL DEFAULT '',
             created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id          SERIAL PRIMARY KEY,
+            username    VARCHAR(100) NOT NULL,
+            action      VARCHAR(100) NOT NULL,
+            target      VARCHAR(500) NOT NULL DEFAULT '',
+            details     TEXT         NOT NULL DEFAULT '',
+            created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         )";
     await cmd0.ExecuteNonQueryAsync();
 }
@@ -328,6 +336,69 @@ app.MapPost("/api/files/extract", [Authorize] async (HttpContext http, Cancellat
 });
 
 // =============================================================================
+// ─── Activity Log ─────────────────────────────────────────────────────────────
+
+// Helper — fire-and-forget activity insert (non-blocking, swallows errors)
+async Task LogActivity(NpgsqlDataSource ds, string username, string action, string target, string details = "")
+{
+    try
+    {
+        await using var conn = await ds.OpenConnectionAsync();
+        await using var cmd  = conn.CreateCommand();
+        cmd.CommandText = "INSERT INTO activity_log (username, action, target, details) VALUES ($1,$2,$3,$4)";
+        cmd.Parameters.AddWithValue(username);
+        cmd.Parameters.AddWithValue(action);
+        cmd.Parameters.AddWithValue(target);
+        cmd.Parameters.AddWithValue(details);
+        await cmd.ExecuteNonQueryAsync();
+    }
+    catch { /* non-critical, never fail the request */ }
+}
+
+// GET /api/admin/activity-log?page=1&pageSize=50&action=
+app.MapGet("/api/admin/activity-log", [Authorize("AdminOnly")] async (
+    int page, int pageSize, string? action,
+    NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    page     = Math.Max(1, page);
+    pageSize = Math.Clamp(pageSize, 10, 200);
+    var offset = (page - 1) * pageSize;
+
+    await using var conn = await ds.OpenConnectionAsync(ct);
+
+    await using var countCmd = conn.CreateCommand();
+    countCmd.CommandText = string.IsNullOrEmpty(action)
+        ? "SELECT COUNT(*) FROM activity_log"
+        : "SELECT COUNT(*) FROM activity_log WHERE action=$1";
+    if (!string.IsNullOrEmpty(action)) countCmd.Parameters.AddWithValue(action);
+    var total = Convert.ToInt64(await countCmd.ExecuteScalarAsync(ct));
+
+    await using var cmd = conn.CreateCommand();
+    cmd.CommandText = string.IsNullOrEmpty(action)
+        ? @"SELECT id, username, action, target, details, created_at
+            FROM activity_log ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        : @"SELECT id, username, action, target, details, created_at
+            FROM activity_log WHERE action=$3 ORDER BY created_at DESC LIMIT $1 OFFSET $2";
+    cmd.Parameters.AddWithValue(pageSize);
+    cmd.Parameters.AddWithValue(offset);
+    if (!string.IsNullOrEmpty(action)) cmd.Parameters.AddWithValue(action);
+
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    var items = new List<object>();
+    while (await r.ReadAsync(ct))
+        items.Add(new {
+            id        = r.GetInt64(0),
+            username  = r.GetString(1),
+            action    = r.GetString(2),
+            target    = r.GetString(3),
+            details   = r.GetString(4),
+            createdAt = r.GetDateTime(5),
+        });
+
+    return Results.Ok(new { total, page, pageSize, items });
+});
+
+// =============================================================================
 // ─── Ratings ─────────────────────────────────────────────────────────────────
 
 // POST /api/ratings — submit or update a rating (all authenticated users)
@@ -457,6 +528,7 @@ app.MapPost("/api/admin/templates", [Authorize("AdminOnly")] async (
     cmd.Parameters.AddWithValue(req.Collection?.Trim() ?? "");
     cmd.Parameters.AddWithValue(username);
     var id = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+    _ = LogActivity(ds, username, "template.create", req.Name.Trim(), $"collection={req.Collection ?? ""}");
     return Results.Ok(new { id, name = req.Name.Trim(), variables = vars });
 });
 
@@ -464,11 +536,13 @@ app.MapPost("/api/admin/templates", [Authorize("AdminOnly")] async (
 app.MapPut("/api/admin/templates/{id:int}", [Authorize("AdminOnly")] async (
     int id,
     [FromBody] TemplateUpsertRequest req,
+    ClaimsPrincipal user,
     NpgsqlDataSource ds,
     CancellationToken ct) =>
 {
     var vars     = ExtractTemplateVars(req.Content);
     var varsJson = JsonSerializer.Serialize(vars);
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
 
     await using var conn = await ds.OpenConnectionAsync(ct);
     await using var cmd  = conn.CreateCommand();
@@ -481,18 +555,21 @@ app.MapPut("/api/admin/templates/{id:int}", [Authorize("AdminOnly")] async (
     cmd.Parameters.AddWithValue(req.Collection?.Trim() ?? "");
     cmd.Parameters.AddWithValue(id);
     var rows = await cmd.ExecuteNonQueryAsync(ct);
+    if (rows > 0) _ = LogActivity(ds, username, "template.update", req.Name.Trim());
     return rows == 0 ? Results.NotFound() : Results.Ok(new { id, variables = vars });
 });
 
 // DELETE /api/admin/templates/{id} — delete (admin only)
 app.MapDelete("/api/admin/templates/{id:int}", [Authorize("AdminOnly")] async (
-    int id, NpgsqlDataSource ds, CancellationToken ct) =>
+    int id, ClaimsPrincipal user, NpgsqlDataSource ds, CancellationToken ct) =>
 {
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
     await using var conn = await ds.OpenConnectionAsync(ct);
     await using var cmd  = conn.CreateCommand();
     cmd.CommandText = "DELETE FROM prompt_templates WHERE id=$1";
     cmd.Parameters.AddWithValue(id);
     await cmd.ExecuteNonQueryAsync(ct);
+    _ = LogActivity(ds, username, "template.delete", $"id={id}");
     return Results.NoContent();
 });
 
@@ -725,6 +802,8 @@ app.MapDelete("/api/ingest/{collection}/{*source}", [Authorize] async (
 app.MapPost("/api/admin/upload", [Authorize("AdminOnly")] async (
     HttpContext http,
     IDocumentIngestion ingestion,
+    ClaimsPrincipal user,
+    NpgsqlDataSource ds,
     CancellationToken ct) =>
 {
     if (!http.Request.HasFormContentType)
@@ -732,6 +811,7 @@ app.MapPost("/api/admin/upload", [Authorize("AdminOnly")] async (
 
     var form       = await http.Request.ReadFormAsync(ct);
     var collection = form["collection"].FirstOrDefault() ?? "default";
+    var username   = user.FindFirstValue(ClaimTypes.Name) ?? "unknown";
     var results    = new List<object>();
 
     foreach (var file in form.Files)
@@ -760,6 +840,7 @@ app.MapPost("/api/admin/upload", [Authorize("AdminOnly")] async (
             }, ct);
 
             results.Add(new { file = file.FileName, ok = true, chunks = r.ChunksCreated, tokens = r.TokensEstimate });
+            _ = LogActivity(ds, username, "document.upload", file.FileName, $"collection={collection} chunks={r.ChunksCreated}");
         }
         catch (Exception ex)
         {
@@ -849,9 +930,14 @@ app.MapGet("/api/admin/collections", [Authorize("AdminOnly")] async (
 // DELETE /api/admin/documents/{collection}/{*source}
 app.MapDelete("/api/admin/documents/{collection}/{*source}", [Authorize("AdminOnly")] async (
     string collection, string source,
-    IDocumentIngestion ingestion, CancellationToken ct) =>
+    IDocumentIngestion ingestion,
+    ClaimsPrincipal user,
+    NpgsqlDataSource ds,
+    CancellationToken ct) =>
 {
-    var n = await ingestion.DeleteSourceAsync(collection, source, ct);
+    var n        = await ingestion.DeleteSourceAsync(collection, source, ct);
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "unknown";
+    _ = LogActivity(ds, username, "document.delete", source, $"collection={collection} chunks={n}");
     return Results.Ok(new { deleted = n });
 });
 
@@ -1019,13 +1105,16 @@ app.MapGet("/api/admin/skills/{id}", [Authorize("AdminOnly")] (string id, SkillR
 app.MapPost("/api/admin/skills", [Authorize("AdminOnly")] async (
     HttpContext http,
     SkillRegistry registry,
+    ClaimsPrincipal user,
+    NpgsqlDataSource ds,
     CancellationToken ct) =>
 {
     if (!http.Request.HasFormContentType)
         return Results.BadRequest(new { error = "multipart/form-data required" });
 
-    var form = await http.Request.ReadFormAsync(ct);
-    var results = new List<object>();
+    var form     = await http.Request.ReadFormAsync(ct);
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "unknown";
+    var results  = new List<object>();
 
     foreach (var file in form.Files)
     {
@@ -1037,10 +1126,8 @@ app.MapPost("/api/admin/skills", [Authorize("AdminOnly")] async (
 
         using var reader = new StreamReader(file.OpenReadStream());
         var content = (await reader.ReadToEndAsync(ct)).Trim();
-
         var skillId = Path.GetFileNameWithoutExtension(file.FileName);
 
-        // Write to disk if path is known
         if (registry.SkillsPath is not null)
         {
             var filePath = Path.Combine(registry.SkillsPath, file.FileName);
@@ -1049,18 +1136,20 @@ app.MapPost("/api/admin/skills", [Authorize("AdminOnly")] async (
 
         registry.Register(skillId, content);
         results.Add(new { file = file.FileName, ok = true, id = skillId });
+        _ = LogActivity(ds, username, "skill.upload", skillId, $"size={file.Length}");
     }
 
     return Results.Ok(results);
 });
 
 // DELETE /api/admin/skills/{id}
-app.MapDelete("/api/admin/skills/{id}", [Authorize("AdminOnly")] (string id, SkillRegistry registry) =>
+app.MapDelete("/api/admin/skills/{id}", [Authorize("AdminOnly")] (
+    string id, SkillRegistry registry,
+    ClaimsPrincipal user, NpgsqlDataSource ds) =>
 {
     if (!registry.All.ContainsKey(id))
         return Results.NotFound(new { error = $"Skill '{id}' not found" });
 
-    // Remove from disk
     if (registry.SkillsPath is not null)
     {
         var filePath = Path.Combine(registry.SkillsPath, id + ".md");
@@ -1068,6 +1157,8 @@ app.MapDelete("/api/admin/skills/{id}", [Authorize("AdminOnly")] (string id, Ski
     }
 
     registry.Remove(id);
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "unknown";
+    _ = LogActivity(ds, username, "skill.delete", id);
     return Results.Ok(new { deleted = id });
 });
 
