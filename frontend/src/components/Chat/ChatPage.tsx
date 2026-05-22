@@ -27,6 +27,23 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // ── Re-check isAdmin on every page load (fixes stale JWT with isAdmin=false) ──
+  useEffect(() => {
+    if (store.auth.isAdmin) return   // already admin, skip
+    const tok = localStorage.getItem('setllm-token')
+    if (!tok) return
+    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${tok}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.isAdmin && !store.auth.isAdmin) {
+          store.setAuth({ ...store.auth, isAdmin: true })
+        }
+      })
+      .catch(() => {})
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // ── Apply theme on mount ──────────────────────────────────────────────────
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', store.darkMode ? 'dark' : 'light')

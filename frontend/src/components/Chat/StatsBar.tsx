@@ -26,10 +26,13 @@ export default function StatsBar({ stats }: Props) {
       <span>{stats.tokens} tok</span>
       <span>•</span>
       <span>{elapsedSec}s</span>
-      {stats.finishReason && (
+      {/* Only show non-normal finish reasons — "stop" is expected, no need to display */}
+      {stats.finishReason && stats.finishReason !== 'stop' && (
         <>
           <span>•</span>
-          <span>{stats.finishReason}</span>
+          <span style={{ color: stats.finishReason === 'length' ? '#f59e0b' : 'var(--mute-2)' }}>
+            {stats.finishReason === 'length' ? '⚠ limit' : stats.finishReason}
+          </span>
         </>
       )}
     </div>
