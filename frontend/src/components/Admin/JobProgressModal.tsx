@@ -60,7 +60,8 @@ export default function JobProgressModal({ jobId, title, subtitle, onClose, rend
     }
   }, [jobId, title])
 
-  const closable = !job || job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'
+  // Modal is always closable — job continues in background regardless
+  const finished = job && (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled')
   const pct      = job && job.progressTot > 0 ? Math.round((job.progressCur / job.progressTot) * 100) : 0
 
   // ETA estimation
@@ -80,7 +81,7 @@ export default function JobProgressModal({ jobId, title, subtitle, onClose, rend
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
          style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
-         onClick={e => { if (e.target === e.currentTarget && closable) onClose() }}>
+         onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
            style={{ background: 'var(--bg)', border: '1px solid var(--border)', maxHeight: '85vh' }}>
 
@@ -97,9 +98,9 @@ export default function JobProgressModal({ jobId, title, subtitle, onClose, rend
               {job?.status && <span className="ml-2" style={{ color: 'var(--accent-hi)' }}>· {job.status}</span>}
             </div>
           </div>
-          <button onClick={closable ? onClose : undefined}
-                  disabled={!closable}
-                  className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer disabled:opacity-30"
+          <button onClick={onClose}
+                  title="Kapat (iş arka planda devam eder)"
+                  className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer"
                   style={{ color: 'var(--mute)' }}>×</button>
         </div>
 
@@ -177,11 +178,10 @@ export default function JobProgressModal({ jobId, title, subtitle, onClose, rend
         {/* Footer */}
         <div className="px-5 py-4 flex justify-end shrink-0"
              style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
-          <button onClick={closable ? onClose : undefined}
-                  disabled={!closable}
-                  className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
+          <button onClick={onClose}
+                  className="px-4 py-2 rounded-lg text-sm cursor-pointer"
                   style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-            {closable ? 'Kapat' : 'Çalışıyor…'}
+            {finished ? 'Kapat' : 'Arka Planda Bırak'}
           </button>
         </div>
       </div>
