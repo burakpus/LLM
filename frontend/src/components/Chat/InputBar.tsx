@@ -1,7 +1,25 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import type { KeyboardEvent, ClipboardEvent, ChangeEvent } from 'react'
 import { useStore, t, DEFAULT_ENDPOINTS } from '../../store'
+import type { OutputFormat } from '../../store'
 import { proxyRequest, extractFileText } from '../../api'
+
+// ── Format pill definitions ───────────────────────────────────────────────────
+const FORMAT_PILLS: { id: OutputFormat; label: string; title: string }[] = [
+  { id: 'free',     label: 'Serbest',  title: 'Serbest yanıt (varsayılan)'              },
+  { id: 'json',     label: 'JSON',     title: 'Yanıtı yalnızca JSON olarak döndür'      },
+  { id: 'markdown', label: 'Markdown', title: 'Yanıtı Markdown formatında yaz'          },
+  { id: 'list',     label: 'Liste',    title: 'Yanıtı madde listesi olarak ver'         },
+  { id: 'table',    label: 'Tablo',    title: 'Yanıtı Markdown tablosu olarak düzenle' },
+]
+
+// ── Token estimation (mirrors useGeneration logic) ────────────────────────────
+function estimateInputTokens(text: string, hasImage: boolean, docText?: string): number {
+  let n = Math.ceil(text.length / 4)
+  if (hasImage) n += 512
+  if (docText)  n += Math.ceil(docText.length / 4)
+  return n
+}
 
 interface Props {
   onSend:     (text: string, image?: string) => void
@@ -187,6 +205,20 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
 
   const hasText = !!input.trim() || !!attachedImage || !!attachedDoc
 
+  // ── Token counter ──────────────────────────────────────────────────────────
+  const inputTokens = useMemo(() =>
+    estimateInputTokens(input, !!attachedImage, attachedDoc?.text),
+    [input, attachedImage, attachedDoc]
+  )
+  const tokenColor = inputTokens > 5500 ? '#ef4444' : inputTokens > 3500 ? '#f59e0b' : 'var(--mute-2)'
+
+  // ── Output format ──────────────────────────────────────────────────────────
+  const outputFormat = settings?.outputFormat ?? 'free'
+  const setOutputFormat = (fmt: OutputFormat) => {
+    if (!conv) return
+    store.updateConvSettings(conv.id, { outputFormat: fmt })
+  }
+
   return (
     <div className="shrink-0 px-4 pt-2 pb-4 w-full" style={{ background: 'var(--bg)' }}>
       <div className="mx-auto" style={{ maxWidth: '760px' }}>
@@ -344,6 +376,42 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
             <span className={`status-dot ${store.statusOk ? 'ok' : store.statusOk === false ? 'bad' : ''}`} />
             <span>{store.status}</span>
           </div>
+        </div>
+
+        {/* Format + token row */}
+        <div className="mt-1.5 flex items-center gap-1 flex-wrap">
+          {/* Format pills */}
+          {FORMAT_PILLS.map(fp => {
+            const active = outputFormat === fp.id
+            return (
+              <button
+                key={fp.id}
+                onClick={() => setOutputFormat(fp.id)}
+                title={fp.title}
+                className="pill"
+                style={{
+                  background:  active ? (fp.id === 'free' ? 'var(--surface-hi)' : 'rgba(138,180,248,0.15)') : 'transparent',
+                  color:       active ? (fp.id === 'free' ? 'var(--text-2)' : 'var(--accent-hi)') : 'var(--mute)',
+                  border:      active ? `1px solid ${fp.id === 'free' ? 'var(--border)' : 'rgba(138,180,248,0.35)'}` : '1px solid transparent',
+                  fontSize:    '10px',
+                  padding:     '2px 7px',
+                }}
+              >
+                {fp.label}
+              </button>
+            )
+          })}
+
+          {/* Token counter */}
+          {inputTokens > 0 && (
+            <span
+              className="ml-auto text-[10px] tabular-nums"
+              style={{ color: tokenColor }}
+              title={`Tahmini ${inputTokens} token (6000 pencere sınırı)`}
+            >
+              ~{inputTokens.toLocaleString()} tok
+            </span>
+          )}
         </div>
       </div>
     </div>

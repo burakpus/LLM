@@ -104,6 +104,14 @@ export function useGeneration() {
     abortRef.current = null
   }, [])
 
+  // ── Format hint injected into system prompt when outputFormat is set ──────────
+  const FORMAT_HINTS: Record<string, string> = {
+    json:     'Yanıtını yalnızca geçerli JSON olarak ver. Açıklama veya ek metin ekleme, sadece JSON döndür.',
+    markdown: 'Yanıtını Markdown formatında yaz: başlıklar (##), listeler, kod blokları ve kalın/italik kullan.',
+    list:     'Yanıtını madde listesi olarak ver. Her madde yeni satırda, tire (-) veya numara ile başlasın.',
+    table:    'Yanıtını Markdown tablosu olarak düzenle. Başlık satırı ve ayraç satırı dahil.',
+  }
+
   // ── Build message list for the next LLM call ───────────────────────────────
   const buildMessages = (conv: Conversation): ChatApiMessage[] => {
     // Token budget for conversation history.
@@ -146,6 +154,13 @@ export function useGeneration() {
       effectiveSystem = effectiveSystem
         ? `${effectiveSystem}\n\n${projectPrompt}`
         : projectPrompt
+    }
+
+    // Output format hint
+    const fmt = conv.settings.outputFormat
+    if (fmt && fmt !== 'free' && FORMAT_HINTS[fmt]) {
+      const hint = `ÇIKTI FORMATI: ${FORMAT_HINTS[fmt]}`
+      effectiveSystem = effectiveSystem ? `${effectiveSystem}\n\n${hint}` : hint
     }
 
     if (effectiveSystem) msgs.push({ role: 'system', content: effectiveSystem })

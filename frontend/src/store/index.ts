@@ -47,6 +47,8 @@ export interface ConvStats {
   finishReason: string | null
 }
 
+export type OutputFormat = 'free' | 'json' | 'markdown' | 'list' | 'table'
+
 export interface ConvSettings {
   systemPrompt:   string
   temperature:    number
@@ -62,6 +64,7 @@ export interface ConvSettings {
   model:           string | null
   agentMode:      boolean
   projectId:       string | null  // linked project (null = no project)
+  outputFormat:    OutputFormat   // response format hint injected into system prompt
 }
 
 export const defaultSettings: ConvSettings = {
@@ -79,6 +82,7 @@ export const defaultSettings: ConvSettings = {
   model:          'chat',
   agentMode:      false,
   projectId:       null,
+  outputFormat:    'free',
 }
 
 export interface Conversation {
