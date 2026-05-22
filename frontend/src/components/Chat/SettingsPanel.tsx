@@ -94,83 +94,6 @@ export default function SettingsPanel() {
             </button>
           </div>
 
-          {/* ── Parametreler ──────────────────────────────────────── */}
-          <SectionLabel>{t('parameters')}</SectionLabel>
-
-          <div className="space-y-3">
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[11px]" style={{ color: 'var(--mute)' }}>{t('maxTokens')}</span>
-                <strong className="text-[11px]" style={{ color: 'var(--text)' }}>{settings.maxTokens}</strong>
-              </div>
-              <div className="flex gap-2">
-                <input
-                  type="number" min={1} max={1048576}
-                  value={settings.maxTokens}
-                  onChange={e => setPatch({ maxTokens: Math.max(1, parseInt(e.target.value || '0', 10)) })}
-                  className="flex-1 rounded-md px-3 py-1.5 text-sm outline-none"
-                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-                />
-                <button onClick={() => setPatch({ maxTokens: 32768 })}
-                        className="rounded-md px-2.5 py-1.5 text-xs cursor-pointer"
-                        style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text)' }}>
-                  MAX
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[11px]" style={{ color: 'var(--mute)' }}>{t('temperature')}</span>
-                <strong className="text-[11px]" style={{ color: 'var(--text)' }}>{settings.temperature.toFixed(2)}</strong>
-              </div>
-              <input
-                type="range" min={0} max={2} step={0.05}
-                value={settings.temperature}
-                onChange={e => setPatch({ temperature: parseFloat(e.target.value) })}
-                className="w-full"
-              />
-            </div>
-
-            <ToggleRow label={t('stream')} checked={settings.stream}
-                       onChange={v => setPatch({ stream: v })} />
-          </div>
-
-          {/* ── Otonom ────────────────────────────────────────────── */}
-          <SectionLabel>Mod</SectionLabel>
-
-          <ToggleRow label={t('agentic')} checked={settings.agenticEnabled}
-                     onChange={v => setPatch({ agenticEnabled: v })} />
-
-          {settings.agenticEnabled && (
-            <div className="mt-2 space-y-2 pl-1">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px]" style={{ color: 'var(--mute)' }}>
-                  {t('maxLoops')}: <strong style={{ color: 'var(--text)' }}>{settings.maxAgentLoops}</strong>
-                </span>
-                <input
-                  type="number" min={1} max={50}
-                  value={settings.maxAgentLoops}
-                  onChange={e => setPatch({ maxAgentLoops: Math.max(1, parseInt(e.target.value || '1', 10)) })}
-                  className="w-20 rounded-md px-2 py-1 text-xs outline-none text-right"
-                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-                />
-              </div>
-              <div>
-                <div className="text-[11px] mb-1" style={{ color: 'var(--mute)' }}>{t('customTools')} (JSON)</div>
-                <textarea
-                  value={customToolsText}
-                  onChange={e => setCustomToolsText(e.target.value)}
-                  onBlur={onSaveCustomTools}
-                  rows={4}
-                  className="w-full rounded-md px-3 py-2 text-xs outline-none font-mono scrollbar-thin"
-                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-                />
-              </div>
-            </div>
-          )}
-
-
           {/* ── Bilgi ─────────────────────────────────────────────── */}
           <SectionLabel>Hesap</SectionLabel>
 
@@ -281,6 +204,82 @@ export default function SettingsPanel() {
               </a>
             )}
           </div>
+
+          {/* ── Parametreler (gelişmiş, en altta) ─────────────────── */}
+          <SectionLabel>{t('parameters')}</SectionLabel>
+
+          <div className="space-y-3">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px]" style={{ color: 'var(--mute)' }}>{t('maxTokens')}</span>
+                <strong className="text-[11px]" style={{ color: 'var(--text)' }}>{settings.maxTokens}</strong>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="number" min={1} max={1048576}
+                  value={settings.maxTokens}
+                  onChange={e => setPatch({ maxTokens: Math.max(1, parseInt(e.target.value || '0', 10)) })}
+                  className="flex-1 rounded-md px-3 py-1.5 text-sm outline-none"
+                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                />
+                <button onClick={() => setPatch({ maxTokens: 32768 })}
+                        className="rounded-md px-2.5 py-1.5 text-xs cursor-pointer"
+                        style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                  MAX
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px]" style={{ color: 'var(--mute)' }}>{t('temperature')}</span>
+                <strong className="text-[11px]" style={{ color: 'var(--text)' }}>{settings.temperature.toFixed(2)}</strong>
+              </div>
+              <input
+                type="range" min={0} max={2} step={0.05}
+                value={settings.temperature}
+                onChange={e => setPatch({ temperature: parseFloat(e.target.value) })}
+                className="w-full"
+              />
+            </div>
+
+            <ToggleRow label={t('stream')} checked={settings.stream}
+                       onChange={v => setPatch({ stream: v })} />
+          </div>
+
+          {/* ── Mod (gelişmiş, en altta) ──────────────────────────── */}
+          <SectionLabel>Mod</SectionLabel>
+
+          <ToggleRow label={t('agentic')} checked={settings.agenticEnabled}
+                     onChange={v => setPatch({ agenticEnabled: v })} />
+
+          {settings.agenticEnabled && (
+            <div className="mt-2 space-y-2 pl-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px]" style={{ color: 'var(--mute)' }}>
+                  {t('maxLoops')}: <strong style={{ color: 'var(--text)' }}>{settings.maxAgentLoops}</strong>
+                </span>
+                <input
+                  type="number" min={1} max={50}
+                  value={settings.maxAgentLoops}
+                  onChange={e => setPatch({ maxAgentLoops: Math.max(1, parseInt(e.target.value || '1', 10)) })}
+                  className="w-20 rounded-md px-2 py-1 text-xs outline-none text-right"
+                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                />
+              </div>
+              <div>
+                <div className="text-[11px] mb-1" style={{ color: 'var(--mute)' }}>{t('customTools')} (JSON)</div>
+                <textarea
+                  value={customToolsText}
+                  onChange={e => setCustomToolsText(e.target.value)}
+                  onBlur={onSaveCustomTools}
+                  rows={4}
+                  className="w-full rounded-md px-3 py-2 text-xs outline-none font-mono scrollbar-thin"
+                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                />
+              </div>
+            </div>
+          )}
 
         </div>
       </aside>
