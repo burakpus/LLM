@@ -25,7 +25,7 @@ public sealed class TokenResult
 
 public interface IJwtTokenService
 {
-    TokenResult Generate(string username, string domain, bool isAdmin = false);
+    TokenResult Generate(string username, string domain, bool isAdmin = false, string[]? groups = null);
     ClaimsPrincipal? Validate(string token);
 }
 
