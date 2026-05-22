@@ -37,7 +37,9 @@ static class SqlConnLoader
     {
         await using var conn = await ds.OpenConnectionAsync(ct);
         await using var cmd  = conn.CreateCommand();
-        cmd.CommandText = "SELECT db_type, host, port, database, username, encrypted_password FROM sql_connections WHERE id=$1";
+        cmd.CommandText = @"SELECT db_type, host, port, database, username, encrypted_password,
+                                   COALESCE(query_timeout_sec, 120)
+                            FROM sql_connections WHERE id=$1";
         cmd.Parameters.AddWithValue(id);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         if (!await r.ReadAsync(ct)) throw new InvalidOperationException($"Connection #{id} not found");
@@ -48,7 +50,8 @@ static class SqlConnLoader
         var host = r.GetString(1); var port = r.GetInt32(2);
         var db   = r.GetString(3); var user = r.GetString(4);
         var pwd  = string.IsNullOrEmpty(r.GetString(5)) ? "" : svc.Decrypt(r.GetString(5));
-        return (dbType, svc.BuildConnectionString(dbType, host, port, db, user, pwd));
+        var qts  = r.GetInt32(6);
+        return (dbType, svc.BuildConnectionString(dbType, host, port, db, user, pwd, qts));
     }
 }
 
@@ -390,12 +393,18 @@ public sealed class SqlSyncDataJobHandler : IJobHandler
                         newMaxUpdated = row.UpdatedAt;
                 }
 
-                // Update table config: last_synced_at + last_max_updated_at
+                // Update table config: last_synced_at + last_max_updated_at + per-table status
                 await using (var upConn = await ds.OpenConnectionAsync(ct))
                 await using (var upCmd  = upConn.CreateCommand())
                 {
-                    upCmd.CommandText = "UPDATE sql_table_configs SET last_synced_at=NOW(), last_max_updated_at=$1 WHERE id=$2";
+                    upCmd.CommandText = @"UPDATE sql_table_configs
+                                          SET last_synced_at=NOW(), last_max_updated_at=$1,
+                                              last_sync_status='ok', last_sync_added=$2, last_sync_updated=$3,
+                                              last_sync_error=''
+                                          WHERE id=$4";
                     upCmd.Parameters.AddWithValue((object?)newMaxUpdated ?? DBNull.Value);
+                    upCmd.Parameters.AddWithValue(added);
+                    upCmd.Parameters.AddWithValue(updated);
                     upCmd.Parameters.AddWithValue(cfg.Id);
                     await upCmd.ExecuteNonQueryAsync(ct);
                 }
@@ -409,6 +418,19 @@ public sealed class SqlSyncDataJobHandler : IJobHandler
             catch (Exception ex)
             {
                 failures.Add(new { table = cfg.QualifiedName, error = ex.Message });
+                // Record failure on the table config too
+                try
+                {
+                    await using var upConn = await ds.OpenConnectionAsync(ct);
+                    await using var upCmd  = upConn.CreateCommand();
+                    upCmd.CommandText = @"UPDATE sql_table_configs
+                                          SET last_synced_at=NOW(),
+                                              last_sync_status='failed', last_sync_error=$1
+                                          WHERE id=$2";
+                    upCmd.Parameters.AddWithValue(ex.Message.Length > 2000 ? ex.Message[..2000] : ex.Message);
+                    upCmd.Parameters.AddWithValue(cfg.Id);
+                    await upCmd.ExecuteNonQueryAsync(ct);
+                } catch { /* swallow — primary error already recorded */ }
             }
         }
 

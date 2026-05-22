@@ -99,6 +99,7 @@ services.AddSingleton<IJobHandler, SqlSyncSchemaJobHandler>();
 services.AddSingleton<IJobHandler, SqlIngestDataJobHandler>();
 services.AddSingleton<IJobHandler, SqlSyncDataJobHandler>();
 services.AddHostedService<JobWorker>();
+services.AddHostedService<AutoSyncScheduler>();
 
 // ── LLM + VectorStore + AgentStack ───────────────────────────────────────────
 services.AddLiteLLMClient();
@@ -179,11 +180,17 @@ var app = builder.Build();
             port                INTEGER      NOT NULL DEFAULT 0,
             database            VARCHAR(200) NOT NULL,
             username            VARCHAR(200) NOT NULL,
-            encrypted_password  TEXT         NOT NULL DEFAULT '',
-            created_by          VARCHAR(100) NOT NULL DEFAULT '',
-            created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-            updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            encrypted_password     TEXT         NOT NULL DEFAULT '',
+            query_timeout_sec      INTEGER      NOT NULL DEFAULT 120,
+            auto_sync_interval_min INTEGER      NOT NULL DEFAULT 0,
+            last_auto_sync_at      TIMESTAMPTZ  NULL,
+            created_by             VARCHAR(100) NOT NULL DEFAULT '',
+            created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         );
+        ALTER TABLE sql_connections ADD COLUMN IF NOT EXISTS query_timeout_sec      INTEGER     NOT NULL DEFAULT 120;
+        ALTER TABLE sql_connections ADD COLUMN IF NOT EXISTS auto_sync_interval_min INTEGER     NOT NULL DEFAULT 0;
+        ALTER TABLE sql_connections ADD COLUMN IF NOT EXISTS last_auto_sync_at      TIMESTAMPTZ NULL;
         CREATE TABLE IF NOT EXISTS sql_ingested_objects (
             id              SERIAL PRIMARY KEY,
             connection_id   INTEGER      NOT NULL,
@@ -236,9 +243,17 @@ var app = builder.Build();
             collection           VARCHAR(100) NOT NULL DEFAULT '',
             last_synced_at       TIMESTAMPTZ,
             last_max_updated_at  TIMESTAMPTZ,
+            last_sync_status     VARCHAR(20),
+            last_sync_added      INTEGER      NOT NULL DEFAULT 0,
+            last_sync_updated    INTEGER      NOT NULL DEFAULT 0,
+            last_sync_error      TEXT         NOT NULL DEFAULT '',
             created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             UNIQUE (connection_id, schema_name, table_name)
         );
+        ALTER TABLE sql_table_configs ADD COLUMN IF NOT EXISTS last_sync_status  VARCHAR(20);
+        ALTER TABLE sql_table_configs ADD COLUMN IF NOT EXISTS last_sync_added   INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE sql_table_configs ADD COLUMN IF NOT EXISTS last_sync_updated INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE sql_table_configs ADD COLUMN IF NOT EXISTS last_sync_error   TEXT    NOT NULL DEFAULT '';
         CREATE TABLE IF NOT EXISTS sql_ingested_rows (
             id               SERIAL PRIMARY KEY,
             table_config_id  INTEGER      NOT NULL,
@@ -453,29 +468,70 @@ static string DbTypeToStr(DbType t) => t switch
     _               => "unknown",
 };
 
+// Shared projection — list element + single-record reads
+static async Task<object?> ReadSqlConnectionRecord(NpgsqlConnection conn, int id, CancellationToken ct)
+{
+    await using var cmd = conn.CreateCommand();
+    cmd.CommandText = @"SELECT id, name, db_type, host, port, database, username,
+                               COALESCE(query_timeout_sec, 120),
+                               COALESCE(auto_sync_interval_min, 0),
+                               created_by, created_at
+                        FROM sql_connections WHERE id=$1";
+    cmd.Parameters.AddWithValue(id);
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    if (!await r.ReadAsync(ct)) return null;
+    return new {
+        id                  = r.GetInt32(0),
+        name                = r.GetString(1),
+        dbType              = r.GetString(2),
+        host                = r.GetString(3),
+        port                = r.GetInt32(4),
+        database            = r.GetString(5),
+        username            = r.GetString(6),
+        queryTimeoutSec     = r.GetInt32(7),
+        autoSyncIntervalMin = r.GetInt32(8),
+        createdBy           = r.GetString(9),
+        createdAt           = r.GetDateTime(10),
+    };
+}
+
 // GET /api/admin/sql-connections — list (password not returned)
 app.MapGet("/api/admin/sql-connections", [Authorize("AdminOnly")] async (
     NpgsqlDataSource ds, CancellationToken ct) =>
 {
     await using var conn = await ds.OpenConnectionAsync(ct);
     await using var cmd  = conn.CreateCommand();
-    cmd.CommandText = @"SELECT id, name, db_type, host, port, database, username, created_by, created_at
+    cmd.CommandText = @"SELECT id, name, db_type, host, port, database, username,
+                               COALESCE(query_timeout_sec, 120),
+                               COALESCE(auto_sync_interval_min, 0),
+                               created_by, created_at
                         FROM sql_connections ORDER BY name";
     await using var r = await cmd.ExecuteReaderAsync(ct);
     var items = new List<object>();
     while (await r.ReadAsync(ct))
         items.Add(new {
-            id        = r.GetInt32(0),
-            name      = r.GetString(1),
-            dbType    = r.GetString(2),
-            host      = r.GetString(3),
-            port      = r.GetInt32(4),
-            database  = r.GetString(5),
-            username  = r.GetString(6),
-            createdBy = r.GetString(7),
-            createdAt = r.GetDateTime(8),
+            id                  = r.GetInt32(0),
+            name                = r.GetString(1),
+            dbType              = r.GetString(2),
+            host                = r.GetString(3),
+            port                = r.GetInt32(4),
+            database            = r.GetString(5),
+            username            = r.GetString(6),
+            queryTimeoutSec     = r.GetInt32(7),
+            autoSyncIntervalMin = r.GetInt32(8),
+            createdBy           = r.GetString(9),
+            createdAt           = r.GetDateTime(10),
         });
     return Results.Ok(items);
+});
+
+// GET /api/admin/sql-connections/{id} — single record (surgical refresh)
+app.MapGet("/api/admin/sql-connections/{id:int}", [Authorize("AdminOnly")] async (
+    int id, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    var rec = await ReadSqlConnectionRecord(conn, id, ct);
+    return rec == null ? Results.NotFound() : Results.Ok(rec);
 });
 
 // POST /api/admin/sql-connections — create
@@ -499,8 +555,10 @@ app.MapPost("/api/admin/sql-connections", [Authorize("AdminOnly")] async (
 
     await using var conn = await ds.OpenConnectionAsync(ct);
     await using var cmd  = conn.CreateCommand();
-    cmd.CommandText = @"INSERT INTO sql_connections (name, db_type, host, port, database, username, encrypted_password, created_by)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id";
+    cmd.CommandText = @"INSERT INTO sql_connections
+                          (name, db_type, host, port, database, username, encrypted_password,
+                           query_timeout_sec, auto_sync_interval_min, created_by)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id";
     cmd.Parameters.AddWithValue(req.Name.Trim());
     cmd.Parameters.AddWithValue(DbTypeToStr(dbType));
     cmd.Parameters.AddWithValue(req.Host.Trim());
@@ -508,10 +566,14 @@ app.MapPost("/api/admin/sql-connections", [Authorize("AdminOnly")] async (
     cmd.Parameters.AddWithValue(req.Database.Trim());
     cmd.Parameters.AddWithValue(req.Username?.Trim() ?? "");
     cmd.Parameters.AddWithValue(encrypted);
+    cmd.Parameters.AddWithValue(Math.Clamp(req.QueryTimeoutSec, 5, 3600));
+    cmd.Parameters.AddWithValue(Math.Max(0, req.AutoSyncIntervalMin));
     cmd.Parameters.AddWithValue(username);
     var id = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
     _ = LogActivity(ds, username, "sql.connection.create", req.Name.Trim(), $"db={DbTypeToStr(dbType)} host={req.Host}");
-    return Results.Ok(new { id, name = req.Name.Trim() });
+    // Return full record so frontend can patch list state without refetch
+    var rec = await ReadSqlConnectionRecord(conn, id, ct);
+    return Results.Ok(rec);
 });
 
 // PUT /api/admin/sql-connections/{id} — update (password optional)
@@ -528,26 +590,30 @@ app.MapPut("/api/admin/sql-connections/{id:int}", [Authorize("AdminOnly")] async
 
     await using var conn = await ds.OpenConnectionAsync(ct);
     await using var cmd  = conn.CreateCommand();
+    var qts = Math.Clamp(req.QueryTimeoutSec, 5, 3600);
+    var asi = Math.Max(0, req.AutoSyncIntervalMin);
     if (string.IsNullOrEmpty(req.Password))
     {
-        // Update everything except password
         cmd.CommandText = @"UPDATE sql_connections
-                            SET name=$1, db_type=$2, host=$3, port=$4, database=$5, username=$6, updated_at=NOW()
-                            WHERE id=$7";
+                            SET name=$1, db_type=$2, host=$3, port=$4, database=$5, username=$6,
+                                query_timeout_sec=$7, auto_sync_interval_min=$8, updated_at=NOW()
+                            WHERE id=$9";
         cmd.Parameters.AddWithValue(req.Name.Trim());
         cmd.Parameters.AddWithValue(DbTypeToStr(dbType));
         cmd.Parameters.AddWithValue(req.Host.Trim());
         cmd.Parameters.AddWithValue(port);
         cmd.Parameters.AddWithValue(req.Database.Trim());
         cmd.Parameters.AddWithValue(req.Username?.Trim() ?? "");
+        cmd.Parameters.AddWithValue(qts);
+        cmd.Parameters.AddWithValue(asi);
         cmd.Parameters.AddWithValue(id);
     }
     else
     {
-        // Update everything including password
         cmd.CommandText = @"UPDATE sql_connections
-                            SET name=$1, db_type=$2, host=$3, port=$4, database=$5, username=$6, encrypted_password=$7, updated_at=NOW()
-                            WHERE id=$8";
+                            SET name=$1, db_type=$2, host=$3, port=$4, database=$5, username=$6,
+                                encrypted_password=$7, query_timeout_sec=$8, auto_sync_interval_min=$9, updated_at=NOW()
+                            WHERE id=$10";
         cmd.Parameters.AddWithValue(req.Name.Trim());
         cmd.Parameters.AddWithValue(DbTypeToStr(dbType));
         cmd.Parameters.AddWithValue(req.Host.Trim());
@@ -555,13 +621,16 @@ app.MapPut("/api/admin/sql-connections/{id:int}", [Authorize("AdminOnly")] async
         cmd.Parameters.AddWithValue(req.Database.Trim());
         cmd.Parameters.AddWithValue(req.Username?.Trim() ?? "");
         cmd.Parameters.AddWithValue(svc.Encrypt(req.Password));
+        cmd.Parameters.AddWithValue(qts);
+        cmd.Parameters.AddWithValue(asi);
         cmd.Parameters.AddWithValue(id);
     }
 
     var rows = await cmd.ExecuteNonQueryAsync(ct);
     if (rows == 0) return Results.NotFound();
     _ = LogActivity(ds, username, "sql.connection.update", req.Name.Trim());
-    return Results.Ok(new { id });
+    var rec = await ReadSqlConnectionRecord(conn, id, ct);
+    return Results.Ok(rec);
 });
 
 // DELETE /api/admin/sql-connections/{id}
@@ -580,11 +649,17 @@ app.MapDelete("/api/admin/sql-connections/{id:int}", [Authorize("AdminOnly")] as
 
 // POST /api/admin/sql-connections/{id}/test — test connection using stored password
 app.MapPost("/api/admin/sql-connections/{id:int}/test", [Authorize("AdminOnly")] async (
-    int id, ISqlConnectionService svc, NpgsqlDataSource ds, CancellationToken ct) =>
+    int id, ISqlConnectionService svc, NpgsqlDataSource ds,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
+    System.Security.Claims.ClaimsPrincipal user, CancellationToken ct) =>
 {
+    var who = user.FindFirstValue(ClaimTypes.Name) ?? "anon";
+    if (!SqlConnTestRateLimit.TryAcquire(cache, who, out var retryAfter))
+        return Results.Json(new { ok = false, error = $"Çok fazla istek. {retryAfter}sn sonra tekrar deneyin." }, statusCode: 429);
+
     await using var conn = await ds.OpenConnectionAsync(ct);
     await using var cmd  = conn.CreateCommand();
-    cmd.CommandText = "SELECT db_type, host, port, database, username, encrypted_password FROM sql_connections WHERE id=$1";
+    cmd.CommandText = "SELECT db_type, host, port, database, username, encrypted_password, COALESCE(query_timeout_sec, 120) FROM sql_connections WHERE id=$1";
     cmd.Parameters.AddWithValue(id);
     await using var r = await cmd.ExecuteReaderAsync(ct);
     if (!await r.ReadAsync(ct)) return Results.NotFound();
@@ -595,9 +670,10 @@ app.MapPost("/api/admin/sql-connections/{id:int}/test", [Authorize("AdminOnly")]
     var database = r.GetString(3);
     var username = r.GetString(4);
     var password = string.IsNullOrEmpty(r.GetString(5)) ? "" : svc.Decrypt(r.GetString(5));
+    var qts      = r.GetInt32(6);
     await r.CloseAsync();
 
-    var err = await svc.TestConnectionAsync(dbType, host, port, database, username, password, ct);
+    var err = await svc.TestConnectionAsync(dbType, host, port, database, username, password, ct, qts);
     return err == null
         ? Results.Ok(new { ok = true })
         : Results.Ok(new { ok = false, error = err });
@@ -1073,7 +1149,7 @@ static async Task<(DbType dbType, string? connStr)> LoadConnectionAsync(
 {
     await using var conn = await ds.OpenConnectionAsync(ct);
     await using var cmd  = conn.CreateCommand();
-    cmd.CommandText = "SELECT db_type, host, port, database, username, encrypted_password FROM sql_connections WHERE id=$1";
+    cmd.CommandText = "SELECT db_type, host, port, database, username, encrypted_password, COALESCE(query_timeout_sec, 120) FROM sql_connections WHERE id=$1";
     cmd.Parameters.AddWithValue(id);
     await using var r = await cmd.ExecuteReaderAsync(ct);
     if (!await r.ReadAsync(ct)) return (DbType.MsSql, null);
@@ -1091,20 +1167,28 @@ static async Task<(DbType dbType, string? connStr)> LoadConnectionAsync(
     var database = r.GetString(3);
     var username = r.GetString(4);
     var password = string.IsNullOrEmpty(r.GetString(5)) ? "" : svc.Decrypt(r.GetString(5));
-    var connStr  = svc.BuildConnectionString(dbType, host, port, database, username, password);
+    var queryTimeoutSec = r.GetInt32(6);
+    var connStr  = svc.BuildConnectionString(dbType, host, port, database, username, password, queryTimeoutSec);
     return (dbType, connStr);
 }
 
 // POST /api/admin/sql-connections/test-credentials — test ad-hoc (e.g. before saving)
 app.MapPost("/api/admin/sql-connections/test-credentials", [Authorize("AdminOnly")] async (
-    [FromBody] SqlConnectionUpsertRequest req, ISqlConnectionService svc, CancellationToken ct) =>
+    [FromBody] SqlConnectionUpsertRequest req, ISqlConnectionService svc,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
+    System.Security.Claims.ClaimsPrincipal user, CancellationToken ct) =>
 {
+    var who = user.FindFirstValue(ClaimTypes.Name) ?? "anon";
+    if (!SqlConnTestRateLimit.TryAcquire(cache, who, out var retryAfter))
+        return Results.Json(new { ok = false, error = $"Çok fazla istek. {retryAfter}sn sonra tekrar deneyin." }, statusCode: 429);
+
     DbType dbType;
     try { dbType = ParseDbType(req.DbType); }
     catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
 
     var port = req.Port > 0 ? req.Port : svc.DefaultPort(dbType);
-    var err  = await svc.TestConnectionAsync(dbType, req.Host, port, req.Database, req.Username ?? "", req.Password ?? "", ct);
+    var qts  = Math.Clamp(req.QueryTimeoutSec, 5, 3600);
+    var err  = await svc.TestConnectionAsync(dbType, req.Host, port, req.Database, req.Username ?? "", req.Password ?? "", ct, qts);
     return err == null
         ? Results.Ok(new { ok = true })
         : Results.Ok(new { ok = false, error = err });
@@ -1191,7 +1275,8 @@ app.MapGet("/api/admin/sql-connections/{id:int}/table-configs", [Authorize("Admi
     await using var cmd  = conn.CreateCommand();
     cmd.CommandText = @"SELECT id, schema_name, table_name, pk_col, created_col, updated_col,
                                row_limit, where_clause, included_columns, group_id, collection,
-                               last_synced_at, last_max_updated_at
+                               last_synced_at, last_max_updated_at,
+                               last_sync_status, last_sync_added, last_sync_updated, last_sync_error
                         FROM sql_table_configs WHERE connection_id=$1 ORDER BY schema_name, table_name";
     cmd.Parameters.AddWithValue(id);
     var items = new List<object>();
@@ -1202,19 +1287,23 @@ app.MapGet("/api/admin/sql-connections/{id:int}/table-configs", [Authorize("Admi
         try { cols = System.Text.Json.JsonSerializer.Deserialize<string[]>(r.GetString(8)) ?? Array.Empty<string>(); }
         catch { cols = Array.Empty<string>(); }
         items.Add(new {
-            id           = r.GetInt32(0),
-            schema       = r.GetString(1),
-            table        = r.GetString(2),
-            pkCol        = r.GetString(3),
-            createdCol   = r.GetString(4),
-            updatedCol   = r.GetString(5),
-            rowLimit     = r.GetInt32(6),
-            whereClause  = r.GetString(7),
+            id              = r.GetInt32(0),
+            schema          = r.GetString(1),
+            table           = r.GetString(2),
+            pkCol           = r.GetString(3),
+            createdCol      = r.GetString(4),
+            updatedCol      = r.GetString(5),
+            rowLimit        = r.GetInt32(6),
+            whereClause     = r.GetString(7),
             includedColumns = cols,
-            groupId      = r.IsDBNull(9) ? (int?)null : r.GetInt32(9),
-            collection   = r.GetString(10),
-            lastSyncedAt = r.IsDBNull(11) ? (DateTime?)null : r.GetDateTime(11),
+            groupId         = r.IsDBNull(9)  ? (int?)null     : r.GetInt32(9),
+            collection      = r.GetString(10),
+            lastSyncedAt    = r.IsDBNull(11) ? (DateTime?)null : r.GetDateTime(11),
             lastMaxUpdatedAt = r.IsDBNull(12) ? (DateTime?)null : r.GetDateTime(12),
+            lastSyncStatus  = r.IsDBNull(13) ? null            : r.GetString(13),
+            lastSyncAdded   = r.GetInt32(14),
+            lastSyncUpdated = r.GetInt32(15),
+            lastSyncError   = r.GetString(16),
         });
     }
     return Results.Ok(items);
@@ -1265,6 +1354,27 @@ app.MapDelete("/api/admin/sql-connections/{id:int}/table-configs/{tid:int}", [Au
     return Results.NoContent();
 });
 
+// POST /api/admin/sql-connections/{id}/table-configs/bulk-assign-group — assign N tables to a group
+// body: { tableConfigIds: number[], groupId: number|null }
+app.MapPost("/api/admin/sql-connections/{id:int}/table-configs/bulk-assign-group",
+    [Authorize("AdminOnly")] async (
+        int id, [FromBody] BulkAssignGroupRequest req,
+        NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    if (req.TableConfigIds is null || req.TableConfigIds.Length == 0)
+        return Results.BadRequest(new { error = "tableConfigIds boş olamaz" });
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"UPDATE sql_table_configs
+                        SET group_id=$1
+                        WHERE connection_id=$2 AND id = ANY($3)";
+    cmd.Parameters.AddWithValue((object?)req.GroupId ?? DBNull.Value);
+    cmd.Parameters.AddWithValue(id);
+    cmd.Parameters.AddWithValue(req.TableConfigIds);
+    var rows = await cmd.ExecuteNonQueryAsync(ct);
+    return Results.Ok(new { updated = rows });
+});
+
 // POST /api/admin/sql-connections/{id}/sync-data — enqueue delta sync job
 app.MapPost("/api/admin/sql-connections/{id:int}/sync-data", [Authorize("AdminOnly")] async (
     int id, [FromBody] SyncDataRequest? req, IJobService jobs, ClaimsPrincipal user, CancellationToken ct) =>
@@ -1301,6 +1411,48 @@ app.MapGet("/api/jobs", [Authorize("AdminOnly")] async (
 {
     var list = await jobs.ListRecentAsync(limit ?? 20, status, ct);
     return Results.Ok(list.Select(SerializeJob));
+});
+
+// GET /api/admin/jobs?page=1&pageSize=50&type=&status= — paged list for Jobs tab
+app.MapGet("/api/admin/jobs", [Authorize("AdminOnly")] async (
+    int? page, int? pageSize, string? type, string? status,
+    IJobService jobs, CancellationToken ct) =>
+{
+    var p  = Math.Max(1, page ?? 1);
+    var ps = Math.Clamp(pageSize ?? 50, 10, 200);
+    var (items, total) = await jobs.ListFilteredAsync(ps, (p - 1) * ps, type, status, ct);
+    return Results.Ok(new {
+        items = items.Select(SerializeJob),
+        total,
+        page = p,
+        pageSize = ps,
+    });
+});
+
+// POST /api/admin/jobs/{id}/cancel — only queued jobs can be cancelled
+app.MapPost("/api/admin/jobs/{id:long}/cancel", [Authorize("AdminOnly")] async (
+    long id, IJobService jobs, NpgsqlDataSource ds, ClaimsPrincipal user, CancellationToken ct) =>
+{
+    var ok = await jobs.CancelAsync(id, ct);
+    if (ok)
+    {
+        var who = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+        _ = LogActivity(ds, who, "job.cancel", $"jobId={id}");
+        return Results.Ok(new { ok = true });
+    }
+    return Results.BadRequest(new { ok = false, error = "Yalnızca 'queued' durumdaki işler iptal edilebilir." });
+});
+
+// POST /api/admin/jobs/{id}/retry — re-enqueue a failed/cancelled job with same params
+app.MapPost("/api/admin/jobs/{id:long}/retry", [Authorize("AdminOnly")] async (
+    long id, IJobService jobs, NpgsqlDataSource ds, ClaimsPrincipal user, CancellationToken ct) =>
+{
+    var who = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    var newId = await jobs.RetryAsync(id, who, ct);
+    if (newId is null)
+        return Results.BadRequest(new { ok = false, error = "İş bulunamadı veya 'failed/cancelled' durumda değil." });
+    _ = LogActivity(ds, who, "job.retry", $"oldId={id} newId={newId}");
+    return Results.Ok(new { ok = true, newId });
 });
 
 static object SerializeJob(JobInfo j) => new {
@@ -2468,6 +2620,43 @@ app.Run();
 public sealed record LoginRequest(string Username, string Password, string Domain);
 public sealed record TemplateUpsertRequest(string Name, string Content, string? Collection);
 
+// ── Rate limit for SQL connection test endpoints ──────────────────────────────
+// Max 10 tests per user per minute. Cheap in-memory sliding bucket.
+static class SqlConnTestRateLimit
+{
+    private const int MaxPerMinute = 10;
+
+    public static bool TryAcquire(Microsoft.Extensions.Caching.Memory.IMemoryCache cache, string user, out int retryAfterSec)
+    {
+        var key = $"sqlConnTest:{user}";
+        var now = DateTimeOffset.UtcNow;
+        // entry = (windowStart, count)
+        (DateTimeOffset start, int count) entry;
+        if (cache.TryGetValue(key, out object? raw) && raw is ValueTuple<DateTimeOffset, int> cached && (now - cached.Item1).TotalSeconds < 60)
+        {
+            entry = (cached.Item1, cached.Item2);
+        }
+        else
+        {
+            entry = (now, 0);
+        }
+
+        if (entry.count >= MaxPerMinute)
+        {
+            retryAfterSec = Math.Max(1, 60 - (int)(now - entry.start).TotalSeconds);
+            return false;
+        }
+
+        entry = (entry.start, entry.count + 1);
+        using var ce = cache.CreateEntry(key);
+        ce.Value = (entry.start, entry.count);
+        ce.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2);
+        ce.Size = 1;
+        retryAfterSec = 0;
+        return true;
+    }
+}
+
 // ── Prometheus custom metrics ─────────────────────────────────────────────────
 static class LlmMetrics
 {
@@ -2494,6 +2683,8 @@ static class LlmMetrics
 }
 public sealed record RatingRequest(string MessageId, string ConvId, int Rating, string? Model);
 public sealed record SkillExampleRequest(string UserMessage, string AssistantMessage);
+public sealed record BulkAssignGroupRequest(int[] TableConfigIds, int? GroupId);
+
 public sealed record SqlConnectionUpsertRequest(
     string  Name,
     string  DbType,
@@ -2501,7 +2692,9 @@ public sealed record SqlConnectionUpsertRequest(
     int     Port,
     string  Database,
     string? Username,
-    string? Password);
+    string? Password,
+    int     QueryTimeoutSec = 120,
+    int     AutoSyncIntervalMin = 0);
 
 public sealed record SchemaIngestRequest(
     string?   Collection,

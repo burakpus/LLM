@@ -15,6 +15,7 @@ import {
   listSqlTables, ingestSqlData,
   getLatestJobForConnection,
   getSqlIngestedStats,
+  listAdminJobs, cancelJob, retryJob,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
@@ -22,13 +23,13 @@ import type {
   ActivityPage, SqlConnection, SqlConnectionUpsert, SqlDbType,
   SqlObjectSummary, SqlIngestResult, SqlSyncResult,
   SqlTable, SqlTableSpec, SqlDataIngestResult,
-  JobInfo, SqlIngestedStats,
+  JobInfo, SqlIngestedStats, JobsPage,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 import JobProgressModal from './JobProgressModal'
 import SqlDataDialog from './SqlDataDialog'
 
-type Tab = 'upload' | 'documents' | 'skills' | 'templates' | 'sql' | 'usage' | 'activity' | 'settings'
+type Tab = 'upload' | 'documents' | 'skills' | 'templates' | 'sql' | 'jobs' | 'usage' | 'activity' | 'settings'
 
 async function pingProxy(): Promise<boolean> {
   try {
@@ -137,7 +138,7 @@ export default function AdminPage() {
         <div className="flex-1" />
 
         <nav className="flex items-center gap-1">
-          {(['upload', 'documents', 'skills', 'templates', 'sql', 'usage', 'activity', 'settings'] as Tab[]).map(tb => (
+          {(['upload', 'documents', 'skills', 'templates', 'sql', 'jobs', 'usage', 'activity', 'settings'] as Tab[]).map(tb => (
             <button
               key={tb}
               onClick={() => setTab(tb)}
@@ -148,7 +149,7 @@ export default function AdminPage() {
                 border:     tab === tb ? '1px solid var(--border)' : '1px solid transparent',
               }}
             >
-              {tb === 'upload' ? 'Upload' : tb === 'documents' ? 'Documents' : tb === 'skills' ? 'Skills' : tb === 'templates' ? 'Şablonlar' : tb === 'sql' ? 'SQL' : tb === 'usage' ? 'Kullanım' : tb === 'activity' ? 'Aktivite' : '⚙ Ayarlar'}
+              {tb === 'upload' ? 'Upload' : tb === 'documents' ? 'Documents' : tb === 'skills' ? 'Skills' : tb === 'templates' ? 'Şablonlar' : tb === 'sql' ? 'SQL' : tb === 'jobs' ? 'İşler' : tb === 'usage' ? 'Kullanım' : tb === 'activity' ? 'Aktivite' : '⚙ Ayarlar'}
             </button>
           ))}
         </nav>
@@ -162,6 +163,7 @@ export default function AdminPage() {
           {tab === 'skills'    && <SkillsTab />}
           {tab === 'templates' && <TemplatesTab />}
           {tab === 'sql'       && <SqlConnectionsTab />}
+          {tab === 'jobs'      && <JobsTab />}
           {tab === 'usage'     && <UsageTab />}
           {tab === 'activity'  && <ActivityTab />}
           {tab === 'settings'  && <SettingsTab />}
@@ -862,6 +864,238 @@ function ExampleForm({ userVal, assistantVal, saving, onUserChange, onAssistantC
 }
 
 // =============================================================================
+// Tab — Jobs (background job history with filter / cancel / retry)
+// =============================================================================
+
+const JOB_TYPE_LABELS: Record<string, string> = {
+  'sql.ingest-schema':  'SQL Şema Çıkarımı',
+  'sql.sync-schema':    'SQL Şema Senkron',
+  'sql.ingest-data':    'SQL Veri Çıkarımı',
+  'sql.sync-data':      'SQL Veri Senkron',
+}
+
+const JOB_STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  queued:    { label: 'Kuyrukta',   color: '#f9ab00' },
+  running:   { label: 'Çalışıyor',  color: 'var(--accent-hi)' },
+  completed: { label: 'Tamamlandı', color: '#34a853' },
+  failed:    { label: 'Hata',       color: '#ea4335' },
+  cancelled: { label: 'İptal',      color: '#9aa0a6' },
+}
+
+function jobTypeLabel(t: string) { return JOB_TYPE_LABELS[t] ?? t }
+function fmtDuration(ms: number) {
+  if (ms < 1000) return `${ms}ms`
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}sn`
+  const m = Math.floor(s / 60)
+  const rs = s % 60
+  if (m < 60) return rs ? `${m}d ${rs}sn` : `${m}d`
+  const h = Math.floor(m / 60)
+  return `${h}sa ${m % 60}d`
+}
+
+function JobsTab() {
+  const [page,     setPage]     = useState<JobsPage | null>(null)
+  const [pageNum,  setPageNum]  = useState(1)
+  const [typeFlt,  setTypeFlt]  = useState<string>('')
+  const [statFlt,  setStatFlt]  = useState<string>('')
+  const [loading,  setLoading]  = useState(true)
+  const [busyId,   setBusyId]   = useState<number | null>(null)
+  const [error,    setError]    = useState<string | null>(null)
+  const [msg,      setMsg]      = useState<string | null>(null)
+  const [activeJob, setActiveJob] = useState<number | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null)
+    try {
+      const p = await listAdminJobs({
+        page: pageNum, pageSize: 50,
+        type:   typeFlt || undefined,
+        status: statFlt || undefined,
+      })
+      setPage(p)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }, [pageNum, typeFlt, statFlt])
+
+  useEffect(() => { load() }, [load])
+
+  // Auto-refresh every 4s when there are running/queued jobs
+  useEffect(() => {
+    if (!page) return
+    const hasLive = page.items.some(j => j.status === 'running' || j.status === 'queued')
+    if (!hasLive) return
+    const t = window.setInterval(load, 4000)
+    return () => window.clearInterval(t)
+  }, [page, load])
+
+  const onCancel = async (id: number) => {
+    setBusyId(id); setError(null); setMsg(null)
+    try {
+      const r = await cancelJob(id)
+      if (r.ok) { setMsg(`#${id} iptal edildi`); await load() }
+      else      { setError(r.error ?? 'İptal başarısız') }
+    } finally { setBusyId(null) }
+  }
+
+  const onRetry = async (id: number) => {
+    setBusyId(id); setError(null); setMsg(null)
+    try {
+      const r = await retryJob(id)
+      if (r.ok) { setMsg(`#${id} → yeni iş #${r.newId} kuyruğa alındı`); await load() }
+      else      { setError(r.error ?? 'Tekrar deneme başarısız') }
+    } finally { setBusyId(null) }
+  }
+
+  const total      = page?.total ?? 0
+  const pageSize   = page?.pageSize ?? 50
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="text-base font-semibold" style={{ color: 'var(--text)' }}>
+          Arka Plan İşleri
+        </h2>
+        <div className="flex items-center gap-2 flex-wrap">
+          <select value={typeFlt} onChange={e => { setTypeFlt(e.target.value); setPageNum(1) }}
+                  className="rounded-md px-2 py-1.5 text-xs outline-none cursor-pointer"
+                  style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+            <option value="">Tüm tipler</option>
+            {Object.entries(JOB_TYPE_LABELS).map(([k, v]) => (
+              <option key={k} value={k}>{v}</option>
+            ))}
+          </select>
+          <select value={statFlt} onChange={e => { setStatFlt(e.target.value); setPageNum(1) }}
+                  className="rounded-md px-2 py-1.5 text-xs outline-none cursor-pointer"
+                  style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+            <option value="">Tüm durumlar</option>
+            {Object.entries(JOB_STATUS_LABELS).map(([k, v]) => (
+              <option key={k} value={k}>{v.label}</option>
+            ))}
+          </select>
+          <button onClick={load} disabled={loading}
+                  className="px-3 py-1.5 rounded-md text-xs cursor-pointer disabled:opacity-50"
+                  style={{ background: 'var(--surface-hi)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>
+            {loading ? '…' : '🔄 Yenile'}
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="text-xs px-3 py-2 rounded" style={{ background: 'rgba(234,67,53,0.12)', color: '#ea4335', border: '1px solid rgba(234,67,53,0.3)' }}>{error}</div>}
+      {msg   && <div className="text-xs px-3 py-2 rounded" style={{ background: 'rgba(52,168,83,0.12)', color: '#34a853', border: '1px solid rgba(52,168,83,0.3)' }}>{msg}</div>}
+
+      <div className="rounded-lg overflow-hidden" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+        <table className="w-full text-sm">
+          <thead style={{ background: 'var(--surface-hi)', color: 'var(--mute)' }}>
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">#</th>
+              <th className="px-3 py-2 text-left font-medium">Tip</th>
+              <th className="px-3 py-2 text-left font-medium">Durum</th>
+              <th className="px-3 py-2 text-left font-medium">İlerleme</th>
+              <th className="px-3 py-2 text-left font-medium">Süre</th>
+              <th className="px-3 py-2 text-left font-medium">Kullanıcı</th>
+              <th className="px-3 py-2 text-left font-medium">Başlangıç</th>
+              <th className="px-3 py-2 text-right font-medium">İşlemler</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan={8} className="px-3 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Yükleniyor…</td></tr>}
+            {!loading && (!page || page.items.length === 0) && (
+              <tr><td colSpan={8} className="px-3 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Bu filtreye uyan iş yok.</td></tr>
+            )}
+            {!loading && page?.items.map(j => {
+              const meta = JOB_STATUS_LABELS[j.status] ?? { label: j.status, color: 'var(--mute)' }
+              const pct  = j.progressTot > 0 ? Math.round((j.progressCur / j.progressTot) * 100) : 0
+              const dur  = (() => {
+                const start = j.startedAt ? new Date(j.startedAt).getTime() : null
+                const end   = j.completedAt ? new Date(j.completedAt).getTime() : (j.status === 'running' ? Date.now() : null)
+                if (!start || !end) return '—'
+                return fmtDuration(end - start)
+              })()
+              return (
+                <tr key={j.id} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td className="px-3 py-2 font-mono text-xs" style={{ color: 'var(--text-2)' }}>{j.id}</td>
+                  <td className="px-3 py-2 text-xs" style={{ color: 'var(--text)' }}>{jobTypeLabel(j.type)}</td>
+                  <td className="px-3 py-2 text-xs">
+                    <span className="px-1.5 py-0.5 rounded font-medium" style={{ background: 'transparent', color: meta.color, border: `1px solid ${meta.color}` }}>
+                      {meta.label}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-xs" style={{ color: 'var(--mute)' }}>
+                    {j.progressTot > 0
+                      ? <span>{j.progressCur}/{j.progressTot} <span style={{ opacity: 0.6 }}>(%{pct})</span></span>
+                      : <span style={{ opacity: 0.6 }}>—</span>}
+                    {j.message && <div className="text-xs truncate max-w-xs" style={{ opacity: 0.7 }}>{j.message}</div>}
+                  </td>
+                  <td className="px-3 py-2 text-xs font-mono" style={{ color: 'var(--mute)' }}>{dur}</td>
+                  <td className="px-3 py-2 text-xs" style={{ color: 'var(--mute)' }}>{j.createdBy}</td>
+                  <td className="px-3 py-2 text-xs font-mono" style={{ color: 'var(--mute)' }}>
+                    {j.startedAt ? new Date(j.startedAt).toLocaleString() : new Date(j.createdAt).toLocaleString()}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <div className="inline-flex gap-1">
+                      <button onClick={() => setActiveJob(j.id)}
+                              className="px-2 py-1 rounded text-xs cursor-pointer"
+                              style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}
+                              title="Detay / canlı izle">
+                        🔍
+                      </button>
+                      {j.status === 'queued' && (
+                        <button onClick={() => onCancel(j.id)} disabled={busyId === j.id}
+                                className="px-2 py-1 rounded text-xs cursor-pointer disabled:opacity-50"
+                                style={{ background: 'rgba(234,67,53,0.12)', color: '#ea4335', border: '1px solid rgba(234,67,53,0.3)' }}
+                                title="İptal et">
+                          {busyId === j.id ? '…' : '🛑'}
+                        </button>
+                      )}
+                      {(j.status === 'failed' || j.status === 'cancelled') && (
+                        <button onClick={() => onRetry(j.id)} disabled={busyId === j.id}
+                                className="px-2 py-1 rounded text-xs cursor-pointer disabled:opacity-50"
+                                style={{ background: 'rgba(138,180,248,0.15)', color: 'var(--accent-hi)', border: '1px solid rgba(138,180,248,0.3)' }}
+                                title="Aynı parametrelerle tekrar dene">
+                          {busyId === j.id ? '…' : '↻'}
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      {total > pageSize && (
+        <div className="flex items-center justify-between text-xs" style={{ color: 'var(--mute)' }}>
+          <div>Toplam: <span style={{ color: 'var(--text-2)' }}>{total}</span></div>
+          <div className="flex items-center gap-2">
+            <button disabled={pageNum <= 1} onClick={() => setPageNum(n => Math.max(1, n - 1))}
+                    className="px-2 py-1 rounded cursor-pointer disabled:opacity-40"
+                    style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>‹</button>
+            <span>Sayfa {pageNum} / {totalPages}</span>
+            <button disabled={pageNum >= totalPages} onClick={() => setPageNum(n => Math.min(totalPages, n + 1))}
+                    className="px-2 py-1 rounded cursor-pointer disabled:opacity-40"
+                    style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>›</button>
+          </div>
+        </div>
+      )}
+
+      {activeJob != null && (
+        <JobProgressModal
+          jobId={activeJob}
+          title={`İş #${activeJob}`}
+          onClose={() => { setActiveJob(null); load() }} />
+      )}
+    </div>
+  )
+}
+
+// =============================================================================
 // Tab 4 — Usage
 // =============================================================================
 
@@ -1372,6 +1606,7 @@ const DB_TYPE_OPTIONS: { id: SqlDbType; label: string; defaultPort: number }[] =
 
 const EMPTY_CONN: SqlConnectionUpsert = {
   name: '', dbType: 'mssql', host: '', port: 1433, database: '', username: '', password: '',
+  queryTimeoutSec: 120, autoSyncIntervalMin: 0,
 }
 
 const OBJ_TYPES = ['table', 'view', 'procedure', 'function', 'trigger'] as const
@@ -1393,6 +1628,7 @@ function SqlConnectionsTab() {
   const [ingestTypes,   setIngestTypes]   = useState<string[]>([...OBJ_TYPES])
   const [ingestCollection, setIngestCollection] = useState('')
   const [ingestRunning, setIngestRunning] = useState(false)
+  const [ingestLastJob, setIngestLastJob] = useState<JobInfo | null>(null)
   // Data sync dialog (new — replaces old data sampling modal)
   const [dataConn, setDataConn] = useState<SqlConnection | null>(null)
   // Active background job (single shared modal)
@@ -1418,6 +1654,8 @@ function SqlConnectionsTab() {
     setDraft({
       name: c.name, dbType: c.dbType, host: c.host, port: c.port,
       database: c.database, username: c.username, password: '',
+      queryTimeoutSec: c.queryTimeoutSec ?? 120,
+      autoSyncIntervalMin: c.autoSyncIntervalMin ?? 0,
     })
     setShowForm(true); setMsg(null); setError(null)
   }
@@ -1434,13 +1672,16 @@ function SqlConnectionsTab() {
     setBusy(true); setError(null); setMsg(null)
     try {
       if (editingId == null) {
-        await createSqlConnection(draft)
-        setMsg('Bağlantı oluşturuldu.')
+        const created = await createSqlConnection(draft)
+        // Surgical: prepend new record to local state (no full list refetch)
+        setItems(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
+        setMsg(`"${created.name}" oluşturuldu.`)
       } else {
-        await updateSqlConnection(editingId, draft)
-        setMsg('Bağlantı güncellendi.')
+        const updated = await updateSqlConnection(editingId, draft)
+        // Surgical: replace just the edited record
+        setItems(prev => prev.map(c => c.id === updated.id ? updated : c))
+        setMsg(`"${updated.name}" güncellendi.`)
       }
-      await load()
       setShowForm(false); setEditingId(null); setDraft(EMPTY_CONN)
     } catch (e: any) { setError(e.message) }
     finally { setBusy(false) }
@@ -1448,8 +1689,12 @@ function SqlConnectionsTab() {
 
   const onDelete = async (c: SqlConnection) => {
     if (!confirm(`"${c.name}" bağlantısını sil?`)) return
-    try { await deleteSqlConnection(c.id); load() }
-    catch (e: any) { setError(e.message) }
+    try {
+      await deleteSqlConnection(c.id)
+      // Surgical: filter out just the deleted record
+      setItems(prev => prev.filter(x => x.id !== c.id))
+      setMsg(`"${c.name}" silindi.`)
+    } catch (e: any) { setError(e.message) }
   }
 
   const onTest = async (c: SqlConnection) => {
@@ -1474,16 +1719,18 @@ function SqlConnectionsTab() {
 
   const openIngest = async (c: SqlConnection) => {
     setIngestConn(c)
-    setIngestPreview(null); setIngestStats(null)
+    setIngestPreview(null); setIngestStats(null); setIngestLastJob(null)
     setIngestTypes([...OBJ_TYPES])
     setIngestCollection(`sql-${c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`)
     try {
-      const [preview, stats] = await Promise.all([
+      const [preview, stats, lastJob] = await Promise.all([
         listSqlObjects(c.id),
         getSqlIngestedStats(c.id).catch(() => null),
+        getLatestJobForConnection(c.id, 'sql.ingest-schema').catch(() => null),
       ])
       setIngestPreview(preview)
       setIngestStats(stats)
+      setIngestLastJob(lastJob)
       // If RAG already has data, prefer its existing collection name
       if (stats?.collection) setIngestCollection(stats.collection)
     } catch (e: any) {
@@ -1506,7 +1753,7 @@ function SqlConnectionsTab() {
       const { jobId } = await r.json()
       // Close ingest modal, open job progress modal
       const conn = ingestConn
-      setIngestConn(null); setIngestPreview(null)
+      setIngestConn(null); setIngestPreview(null); setIngestLastJob(null)
       setActiveJob({ id: jobId, title: `Şema Çıkarımı — ${conn.name}`,
         subtitle: 'Tüm CREATE script\'leri RAG\'a yazılıyor (arkada çalışıyor)' })
     } catch (e: any) {
@@ -1643,6 +1890,40 @@ function SqlConnectionsTab() {
             </label>
           </div>
 
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>
+                Sorgu Zaman Aşımı (saniye) <span style={{ opacity: 0.6 }}>— 5..3600</span>
+              </div>
+              <input type="number" min={5} max={3600} value={draft.queryTimeoutSec ?? 120}
+                     onChange={e => {
+                       const n = parseInt(e.target.value, 10)
+                       setDraft(d => ({ ...d, queryTimeoutSec: isNaN(n) ? 120 : Math.max(5, Math.min(3600, n)) }))
+                     }}
+                     className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                     style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+            </label>
+            <label className="block">
+              <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>
+                Otomatik Veri Sync (dakika) <span style={{ opacity: 0.6 }}>— 0 = kapalı</span>
+              </div>
+              <select value={draft.autoSyncIntervalMin ?? 0}
+                      onChange={e => setDraft(d => ({ ...d, autoSyncIntervalMin: parseInt(e.target.value, 10) }))}
+                      className="w-full rounded-md px-3 py-2 text-sm outline-none cursor-pointer"
+                      style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                <option value={0}>Kapalı</option>
+                <option value={15}>15 dakika</option>
+                <option value={30}>30 dakika</option>
+                <option value={60}>Saatlik (60 dk)</option>
+                <option value={180}>3 saatte bir</option>
+                <option value={360}>6 saatte bir</option>
+                <option value={720}>12 saatte bir</option>
+                <option value={1440}>Günlük (1440 dk)</option>
+                <option value={10080}>Haftalık</option>
+              </select>
+            </label>
+          </div>
+
           <div className="flex gap-2 pt-1">
             <button onClick={onSave} disabled={busy}
                     className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50"
@@ -1674,15 +1955,25 @@ function SqlConnectionsTab() {
               <th className="px-4 py-2 text-left font-medium">Sunucu</th>
               <th className="px-4 py-2 text-left font-medium">Veritabanı</th>
               <th className="px-4 py-2 text-left font-medium">Kullanıcı</th>
+              <th className="px-4 py-2 text-right font-medium" title="Sorgu Zaman Aşımı (saniye)">Timeout</th>
               <th className="px-4 py-2 text-right font-medium">İşlemler</th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={6} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Yükleniyor…</td></tr>}
-            {!loading && items.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Henüz bağlantı yok. + Yeni Bağlantı ile başlayın.</td></tr>}
+            {loading && <tr><td colSpan={7} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Yükleniyor…</td></tr>}
+            {!loading && items.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Henüz bağlantı yok. + Yeni Bağlantı ile başlayın.</td></tr>}
             {!loading && items.map(c => (
               <tr key={c.id} style={{ borderTop: '1px solid var(--border)' }}>
-                <td className="px-4 py-2 font-medium align-top" style={{ color: 'var(--text)' }}>{c.name}</td>
+                <td className="px-4 py-2 font-medium align-top" style={{ color: 'var(--text)' }}>
+                  {c.name}
+                  {(c.autoSyncIntervalMin ?? 0) > 0 && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium"
+                          title={`Otomatik sync: ${c.autoSyncIntervalMin} dakikada bir`}
+                          style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}>
+                      ⏱ {c.autoSyncIntervalMin}dk
+                    </span>
+                  )}
+                </td>
                 <td className="px-4 py-2 text-xs">
                   <span className="px-1.5 py-0.5 rounded font-mono"
                         style={{ background: 'rgba(138,180,248,0.15)', color: 'var(--accent-hi)' }}>
@@ -1692,6 +1983,7 @@ function SqlConnectionsTab() {
                 <td className="px-4 py-2 text-xs" style={{ color: 'var(--mute)' }}>{c.host}:{c.port}</td>
                 <td className="px-4 py-2 text-xs" style={{ color: 'var(--mute)' }}>{c.database}</td>
                 <td className="px-4 py-2 text-xs" style={{ color: 'var(--mute)' }}>{c.username}</td>
+                <td className="px-4 py-2 text-xs text-right font-mono" style={{ color: 'var(--mute)' }}>{c.queryTimeoutSec ?? 120}s</td>
                 <td className="px-4 py-2 text-right">
                   <div className="inline-flex gap-1">
                     <button onClick={() => onTest(c)} disabled={testing === c.id}
@@ -1766,6 +2058,60 @@ function SqlConnectionsTab() {
                   Önizleme yükleniyor…
                 </div>
               )}
+
+              {/* Last ingest job status (sync pattern) */}
+              {ingestPreview && ingestLastJob && (() => {
+                const j = ingestLastJob
+                const active = j.status === 'queued' || j.status === 'running'
+                const finished = j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled'
+                if (active) {
+                  return (
+                    <div className="rounded-xl p-3 space-y-2"
+                         style={{ background: 'rgba(138,180,248,0.08)', border: '1px solid rgba(138,180,248,0.3)' }}>
+                      <div className="flex items-center justify-between text-xs">
+                        <span style={{ color: 'var(--accent-hi)' }}>⏳ Şu an çalışıyor (Job #{j.id})</span>
+                        <span className="font-mono" style={{ color: 'var(--text-2)' }}>
+                          {j.progressCur.toLocaleString()} / {j.progressTot.toLocaleString()}
+                        </span>
+                      </div>
+                      {j.message && <div className="text-xs" style={{ color: 'var(--mute)' }}>{j.message}</div>}
+                      <button
+                        onClick={() => {
+                          const conn = ingestConn!
+                          setIngestConn(null); setIngestPreview(null); setIngestLastJob(null)
+                          setActiveJob({ id: j.id, title: `Şema Çıkarımı — ${conn.name}`, subtitle: `Job #${j.id} izleniyor` })
+                        }}
+                        className="w-full mt-1 py-1.5 rounded-md text-xs font-medium cursor-pointer"
+                        style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                        🔍 İlerlemeyi izle
+                      </button>
+                    </div>
+                  )
+                }
+                if (finished) {
+                  return (
+                    <div className="rounded-xl p-3 space-y-1"
+                         style={{ background: j.status === 'failed' ? 'rgba(234,67,53,0.08)' : 'var(--surface-2)',
+                                  border: `1px solid ${j.status === 'failed' ? 'rgba(234,67,53,0.3)' : 'var(--border)'}` }}>
+                      <div className="text-xs font-semibold" style={{ color: j.status === 'failed' ? '#ea4335' : 'var(--mute)' }}>
+                        SON İŞLEM ({j.status === 'completed' ? '✓ başarılı' : j.status === 'failed' ? '✕ başarısız' : j.status})
+                      </div>
+                      <div className="text-[10px]" style={{ color: 'var(--mute)' }}>
+                        {j.completedAt && new Date(j.completedAt).toLocaleString()}
+                        {j.startedAt && j.completedAt && (() => {
+                          const sec = Math.round((new Date(j.completedAt).getTime() - new Date(j.startedAt).getTime()) / 1000)
+                          const m = Math.floor(sec / 60), s = sec % 60
+                          return ` · süre: ${m > 0 ? `${m}d ${s}s` : `${s}s`}`
+                        })()}
+                      </div>
+                      {j.status === 'failed' && j.error && (
+                        <div className="text-xs font-mono mt-1" style={{ color: 'var(--mute)' }}>{j.error}</div>
+                      )}
+                    </div>
+                  )
+                }
+                return null
+              })()}
 
               {ingestPreview && (
                 <>
@@ -1856,16 +2202,29 @@ function SqlConnectionsTab() {
             </div>
 
             <div className="px-5 py-4 flex gap-2 shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
-              <button onClick={onIngestRun}
-                      disabled={ingestRunning || !ingestPreview || !ingestCollection.trim() || ingestTypes.length === 0}
-                      className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50"
-                      style={{ background: 'var(--accent)', color: '#0b1929' }}>
-                {ingestRunning ? 'Kuyruğa ekleniyor…' : '🚀 Arka Planda Çalıştır'}
-              </button>
+              {(() => {
+                const j = ingestLastJob
+                const active = !!j && (j.status === 'queued' || j.status === 'running')
+                const hasExisting = ingestStats != null && ingestStats.total > 0
+                const label = active
+                  ? '⏳ Zaten çalışıyor'
+                  : ingestRunning
+                    ? 'Kuyruğa ekleniyor…'
+                    : hasExisting ? '🚀 Yeni Çıkarım Başlat' : '🚀 Arka Planda Çalıştır'
+                return (
+                  <button onClick={onIngestRun}
+                          disabled={ingestRunning || active || !ingestPreview || !ingestCollection.trim() || ingestTypes.length === 0}
+                          title={active ? 'Zaten çalışan bir çıkarım var' : undefined}
+                          className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                          style={{ background: 'var(--accent)', color: '#0b1929' }}>
+                    {label}
+                  </button>
+                )
+              })()}
               <button onClick={() => setIngestConn(null)} disabled={ingestRunning}
                       className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
                       style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                İptal
+                Kapat
               </button>
             </div>
           </div>

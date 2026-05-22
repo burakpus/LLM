@@ -33,6 +33,15 @@ public interface IJobService
 
     Task<JobInfo?> GetAsync(long jobId, CancellationToken ct);
     Task<List<JobInfo>> ListRecentAsync(int limit, string? statusFilter, CancellationToken ct);
+
+    /// <summary>Cancel a queued job. Returns false if job is already running/done.</summary>
+    Task<bool> CancelAsync(long jobId, CancellationToken ct);
+
+    /// <summary>Re-enqueue a failed/cancelled job with original params. Returns new job ID, or null if source missing/ineligible.</summary>
+    Task<long?> RetryAsync(long jobId, string user, CancellationToken ct);
+
+    /// <summary>List with type + status filter and offset (for Jobs admin tab).</summary>
+    Task<(List<JobInfo> items, long total)> ListFilteredAsync(int limit, int offset, string? typeFilter, string? statusFilter, CancellationToken ct);
 }
 
 public sealed class JobService : IJobService
@@ -150,6 +159,80 @@ public sealed class JobService : IJobService
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct)) result.Add(Read(r));
         return result;
+    }
+
+    public async Task<bool> CancelAsync(long jobId, CancellationToken ct)
+    {
+        // Only safely cancel jobs that haven't started yet — running jobs would need cooperative cancellation
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var cmd  = conn.CreateCommand();
+        cmd.CommandText = @"UPDATE jobs
+                            SET status='cancelled', completed_at=NOW()
+                            WHERE id=$1 AND status='queued'";
+        cmd.Parameters.AddWithValue(jobId);
+        var rows = await cmd.ExecuteNonQueryAsync(ct);
+        return rows > 0;
+    }
+
+    public async Task<long?> RetryAsync(long jobId, string user, CancellationToken ct)
+    {
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+
+        // Read original job
+        await using var get = conn.CreateCommand();
+        get.CommandText = "SELECT job_type, params, status FROM jobs WHERE id=$1";
+        get.Parameters.AddWithValue(jobId);
+        string? jobType = null, paramsJson = null, status = null;
+        await using (var r = await get.ExecuteReaderAsync(ct))
+        {
+            if (!await r.ReadAsync(ct)) return null;
+            jobType    = r.GetString(0);
+            paramsJson = r.GetString(1);
+            status     = r.GetString(2);
+        }
+        if (status is not ("failed" or "cancelled")) return null;
+
+        // Enqueue fresh
+        await using var ins = conn.CreateCommand();
+        ins.CommandText = @"INSERT INTO jobs (job_type, status, params, created_by)
+                            VALUES ($1, 'queued', $2, $3) RETURNING id";
+        ins.Parameters.AddWithValue(jobType!);
+        ins.Parameters.AddWithValue(paramsJson!);
+        ins.Parameters.AddWithValue(user);
+        return Convert.ToInt64(await ins.ExecuteScalarAsync(ct));
+    }
+
+    public async Task<(List<JobInfo> items, long total)> ListFilteredAsync(int limit, int offset, string? typeFilter, string? statusFilter, CancellationToken ct)
+    {
+        limit  = Math.Clamp(limit, 1, 500);
+        offset = Math.Max(0, offset);
+
+        var clauses = new List<string>();
+        var args    = new List<object>();
+        if (!string.IsNullOrEmpty(typeFilter))   { args.Add(typeFilter);   clauses.Add($"job_type=${args.Count}"); }
+        if (!string.IsNullOrEmpty(statusFilter)) { args.Add(statusFilter); clauses.Add($"status=${args.Count}"); }
+        var where = clauses.Count == 0 ? "" : " WHERE " + string.Join(" AND ", clauses);
+
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+
+        await using var countCmd = conn.CreateCommand();
+        countCmd.CommandText = "SELECT COUNT(*) FROM jobs" + where;
+        foreach (var a in args) countCmd.Parameters.AddWithValue(a);
+        var total = Convert.ToInt64(await countCmd.ExecuteScalarAsync(ct));
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"SELECT id, job_type, status, progress_cur, progress_tot, message,
+                                   created_by, created_at, started_at, completed_at, error, result
+                            FROM jobs" + where +
+                          $" ORDER BY id DESC LIMIT ${args.Count + 1} OFFSET ${args.Count + 2}";
+        foreach (var a in args) cmd.Parameters.AddWithValue(a);
+        cmd.Parameters.AddWithValue(limit);
+        cmd.Parameters.AddWithValue(offset);
+
+        var items = new List<JobInfo>();
+        await using var rr = await cmd.ExecuteReaderAsync(ct);
+        while (await rr.ReadAsync(ct)) items.Add(Read(rr));
+        return (items, total);
     }
 
     static JobInfo Read(System.Data.Common.DbDataReader r) => new(

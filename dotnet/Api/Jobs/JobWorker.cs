@@ -30,14 +30,17 @@ public sealed class JobWorker : BackgroundService
     private readonly IServiceProvider _services;
     private readonly ILogger<JobWorker> _log;
     private readonly Dictionary<string, IJobHandler> _handlers;
+    private readonly int _concurrency;
 
-    public JobWorker(IServiceProvider services, IEnumerable<IJobHandler> handlers, ILogger<JobWorker> log)
+    public JobWorker(IServiceProvider services, IEnumerable<IJobHandler> handlers,
+                     IConfiguration config, ILogger<JobWorker> log)
     {
         _services = services;
         _log      = log;
         _handlers = handlers.ToDictionary(h => h.Type, h => h);
-        _log.LogInformation("JobWorker initialized with {Count} handlers: {Types}",
-            _handlers.Count, string.Join(", ", _handlers.Keys));
+        _concurrency = Math.Clamp(config.GetValue<int?>("Jobs:Workers") ?? 2, 1, 8);
+        _log.LogInformation("JobWorker initialized with {Count} handlers: {Types} | concurrency={C}",
+            _handlers.Count, string.Join(", ", _handlers.Keys), _concurrency);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -66,6 +69,15 @@ public sealed class JobWorker : BackgroundService
             _log.LogError(ex, "Failed to recover stranded jobs on startup");
         }
 
+        // Run N concurrent worker loops — ClaimNextAsync uses SKIP LOCKED so this is safe
+        var loops = Enumerable.Range(0, _concurrency)
+                              .Select(i => RunLoop(i, stoppingToken))
+                              .ToArray();
+        await Task.WhenAll(loops);
+    }
+
+    private async Task RunLoop(int workerIndex, CancellationToken stoppingToken)
+    {
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -81,7 +93,7 @@ public sealed class JobWorker : BackgroundService
                 }
 
                 var (jobId, type, paramsJson) = claimed.Value;
-                _log.LogInformation("Running job #{Id} type={Type}", jobId, type);
+                _log.LogInformation("[W{W}] Running job #{Id} type={Type}", workerIndex, jobId, type);
 
                 if (!_handlers.TryGetValue(type, out var handler))
                 {
@@ -100,7 +112,7 @@ public sealed class JobWorker : BackgroundService
                     };
                     var result = await handler.RunAsync(ctx, stoppingToken);
                     await queue.CompleteAsync(jobId, result, stoppingToken);
-                    _log.LogInformation("Job #{Id} completed", jobId);
+                    _log.LogInformation("[W{W}] Job #{Id} completed", workerIndex, jobId);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
@@ -108,14 +120,14 @@ public sealed class JobWorker : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    _log.LogError(ex, "Job #{Id} failed", jobId);
+                    _log.LogError(ex, "[W{W}] Job #{Id} failed", workerIndex, jobId);
                     await queue.FailAsync(jobId, ex.Message, CancellationToken.None);
                 }
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                _log.LogError(ex, "JobWorker loop error — sleeping 5s");
+                _log.LogError(ex, "[W{W}] JobWorker loop error — sleeping 5s", workerIndex);
                 await Task.Delay(5000, stoppingToken);
             }
         }

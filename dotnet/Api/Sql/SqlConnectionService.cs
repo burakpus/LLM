@@ -34,10 +34,10 @@ public interface ISqlConnectionService
     string Decrypt(string cipher);
 
     /// <summary>Builds an OLEDB-style connection string for the chosen DB type.</summary>
-    string BuildConnectionString(DbType dbType, string host, int port, string database, string username, string plainPassword);
+    string BuildConnectionString(DbType dbType, string host, int port, string database, string username, string plainPassword, int queryTimeoutSec = 120);
 
     /// <summary>Returns null on success, or an error message on failure.</summary>
-    Task<string?> TestConnectionAsync(DbType dbType, string host, int port, string database, string username, string plainPassword, CancellationToken ct);
+    Task<string?> TestConnectionAsync(DbType dbType, string host, int port, string database, string username, string plainPassword, CancellationToken ct, int queryTimeoutSec = 120);
 
     /// <summary>Default port for a DB type (used when user leaves it blank).</summary>
     int DefaultPort(DbType dbType);
@@ -70,8 +70,9 @@ public sealed class SqlConnectionService : ISqlConnectionService
         _               => 0,
     };
 
-    public string BuildConnectionString(DbType dbType, string host, int port, string database, string username, string password)
+    public string BuildConnectionString(DbType dbType, string host, int port, string database, string username, string password, int queryTimeoutSec = 120)
     {
+        var qt = Math.Clamp(queryTimeoutSec, 5, 3600);
         return dbType switch
         {
             DbType.MsSql    => new SqlConnectionStringBuilder
@@ -83,6 +84,7 @@ public sealed class SqlConnectionService : ISqlConnectionService
                 Encrypt                 = SqlConnectionEncryptOption.Optional,
                 TrustServerCertificate  = true,
                 ConnectTimeout          = 10,
+                CommandTimeout          = qt,
             }.ToString(),
 
             DbType.Postgres => new NpgsqlConnectionStringBuilder
@@ -93,7 +95,7 @@ public sealed class SqlConnectionService : ISqlConnectionService
                 Username         = username,
                 Password         = password,
                 Timeout          = 10,
-                CommandTimeout   = 30,
+                CommandTimeout   = qt,
             }.ToString(),
 
             DbType.MySql    => new MySqlConnectionStringBuilder
@@ -104,14 +106,14 @@ public sealed class SqlConnectionService : ISqlConnectionService
                 UserID           = username,
                 Password         = password,
                 ConnectionTimeout = 10,
-                DefaultCommandTimeout = 30,
+                DefaultCommandTimeout = (uint)qt,
             }.ToString(),
 
             DbType.Oracle   => new OracleConnectionStringBuilder
             {
-                DataSource       = $"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={host})(PORT={(port == 0 ? 1521 : port)}))(CONNECT_DATA=(SERVICE_NAME={database})))",
-                UserID           = username,
-                Password         = password,
+                DataSource        = $"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={host})(PORT={(port == 0 ? 1521 : port)}))(CONNECT_DATA=(SERVICE_NAME={database})))",
+                UserID            = username,
+                Password          = password,
                 ConnectionTimeout = 10,
             }.ToString(),
 
@@ -119,11 +121,11 @@ public sealed class SqlConnectionService : ISqlConnectionService
         };
     }
 
-    public async Task<string?> TestConnectionAsync(DbType dbType, string host, int port, string database, string username, string password, CancellationToken ct)
+    public async Task<string?> TestConnectionAsync(DbType dbType, string host, int port, string database, string username, string password, CancellationToken ct, int queryTimeoutSec = 120)
     {
         try
         {
-            var connStr = BuildConnectionString(dbType, host, port, database, username, password);
+            var connStr = BuildConnectionString(dbType, host, port, database, username, password, queryTimeoutSec);
             switch (dbType)
             {
                 case DbType.MsSql:

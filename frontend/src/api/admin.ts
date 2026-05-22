@@ -259,25 +259,29 @@ export const getUsageLogs   = (limit = 50): Promise<SpendLog[]> => usageGet(`/ap
 export type SqlDbType = 'mssql' | 'postgres' | 'mysql' | 'oracle'
 
 export interface SqlConnection {
-  id:        number
-  name:      string
-  dbType:    SqlDbType
-  host:      string
-  port:      number
-  database:  string
-  username:  string
-  createdBy: string
-  createdAt: string
+  id:                   number
+  name:                 string
+  dbType:               SqlDbType
+  host:                 string
+  port:                 number
+  database:             string
+  username:             string
+  queryTimeoutSec?:     number
+  autoSyncIntervalMin?: number   // 0 = disabled
+  createdBy:            string
+  createdAt:            string
 }
 
 export interface SqlConnectionUpsert {
-  name:     string
-  dbType:   SqlDbType
-  host:     string
-  port:     number
-  database: string
-  username: string
-  password: string  // empty string on update = keep existing
+  name:                 string
+  dbType:               SqlDbType
+  host:                 string
+  port:                 number
+  database:             string
+  username:             string
+  password:             string  // empty string on update = keep existing
+  queryTimeoutSec?:     number  // 5..3600 — defaults to 120 server-side
+  autoSyncIntervalMin?: number  // 0 = otomatik sync devre dışı
 }
 
 export async function listSqlConnections(): Promise<SqlConnection[]> {
@@ -286,7 +290,7 @@ export async function listSqlConnections(): Promise<SqlConnection[]> {
   return r.json()
 }
 
-export async function createSqlConnection(payload: SqlConnectionUpsert): Promise<{ id: number; name: string }> {
+export async function createSqlConnection(payload: SqlConnectionUpsert): Promise<SqlConnection> {
   const r = await fetch('/api/admin/sql-connections', {
     method:  'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -299,7 +303,7 @@ export async function createSqlConnection(payload: SqlConnectionUpsert): Promise
   return r.json()
 }
 
-export async function updateSqlConnection(id: number, payload: SqlConnectionUpsert): Promise<void> {
+export async function updateSqlConnection(id: number, payload: SqlConnectionUpsert): Promise<SqlConnection> {
   const r = await fetch(`/api/admin/sql-connections/${id}`, {
     method:  'PUT',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -309,6 +313,13 @@ export async function updateSqlConnection(id: number, payload: SqlConnectionUpse
     const err = await r.json().catch(() => ({ error: r.statusText }))
     throw new Error(err?.error ?? `HTTP ${r.status}`)
   }
+  return r.json()
+}
+
+export async function getSqlConnection(id: number): Promise<SqlConnection> {
+  const r = await fetch(`/api/admin/sql-connections/${id}`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
 }
 
 export async function deleteSqlConnection(id: number): Promise<void> {
@@ -470,6 +481,10 @@ export interface SqlTableConfig {
   collection:        string
   lastSyncedAt:      string | null
   lastMaxUpdatedAt:  string | null
+  lastSyncStatus:    'ok' | 'failed' | null
+  lastSyncAdded:     number
+  lastSyncUpdated:   number
+  lastSyncError:     string
 }
 
 export interface SqlTableConfigUpsert {
@@ -533,6 +548,18 @@ export async function deleteTableConfig(connId: number, tid: number): Promise<vo
     method: 'DELETE', headers: authHeaders(),
   })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
+}
+
+export async function bulkAssignTableGroup(connId: number, tableConfigIds: number[], groupId: number | null): Promise<{ updated: number }> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/table-configs/bulk-assign-group`, {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ tableConfigIds, groupId }),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
 }
 
 export async function syncSqlData(connId: number, tableConfigIds?: number[]): Promise<{ jobId: number }> {
@@ -602,6 +629,34 @@ export async function listJobs(limit = 20, status?: string): Promise<JobInfo[]> 
   if (status) p.set('status', status)
   const r = await fetch(`/api/jobs?${p}`, { headers: authHeaders() })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export interface JobsPage {
+  items:    JobInfo[]
+  total:    number
+  page:     number
+  pageSize: number
+}
+
+export async function listAdminJobs(opts: { page?: number; pageSize?: number; type?: string; status?: string } = {}): Promise<JobsPage> {
+  const p = new URLSearchParams()
+  if (opts.page)     p.set('page',     String(opts.page))
+  if (opts.pageSize) p.set('pageSize', String(opts.pageSize))
+  if (opts.type)     p.set('type',     opts.type)
+  if (opts.status)   p.set('status',   opts.status)
+  const r = await fetch(`/api/admin/jobs?${p}`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export async function cancelJob(id: number): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch(`/api/admin/jobs/${id}/cancel`, { method: 'POST', headers: authHeaders() })
+  return r.json()
+}
+
+export async function retryJob(id: number): Promise<{ ok: boolean; newId?: number; error?: string }> {
+  const r = await fetch(`/api/admin/jobs/${id}/retry`, { method: 'POST', headers: authHeaders() })
   return r.json()
 }
 
