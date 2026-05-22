@@ -475,6 +475,15 @@ export async function getJob(id: number): Promise<JobInfo> {
   return r.json()
 }
 
+export async function getLatestJobForConnection(connId: number, type?: string): Promise<JobInfo | null> {
+  const url = type
+    ? `/api/admin/sql-connections/${connId}/latest-job?type=${encodeURIComponent(type)}`
+    : `/api/admin/sql-connections/${connId}/latest-job`
+  const r = await fetch(url, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
 export async function listJobs(limit = 20, status?: string): Promise<JobInfo[]> {
   const p = new URLSearchParams({ limit: String(limit) })
   if (status) p.set('status', status)

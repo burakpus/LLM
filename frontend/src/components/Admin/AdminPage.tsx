@@ -13,6 +13,7 @@ import {
   deleteSqlConnection, testSqlConnection, testSqlCredentials,
   listSqlObjects, ingestSqlSchema, syncSqlSchema,
   listSqlTables, ingestSqlData,
+  getLatestJobForConnection,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
@@ -20,6 +21,7 @@ import type {
   ActivityPage, SqlConnection, SqlConnectionUpsert, SqlDbType,
   SqlObjectSummary, SqlIngestResult, SqlSyncResult,
   SqlTable, SqlTableSpec, SqlDataIngestResult,
+  JobInfo,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 import JobProgressModal from './JobProgressModal'
@@ -1398,6 +1400,8 @@ function SqlConnectionsTab() {
   const [dataCollection,  setDataCollection]  = useState('')
   // Active background job (single shared modal)
   const [activeJob, setActiveJob] = useState<{ id: number; title: string; subtitle?: string } | null>(null)
+  // Sync start dialog
+  const [syncDialog, setSyncDialog] = useState<{ conn: SqlConnection; lastJob: JobInfo | null; loading: boolean } | null>(null)
 
   const load = async () => {
     setLoading(true); setError(null)
@@ -1561,8 +1565,23 @@ function SqlConnectionsTab() {
     }
   }
 
+  // Sync button → open dialog showing last/current state + Start button
   const onSyncRun = async (c: SqlConnection) => {
     setError(null); setMsg(null)
+    setSyncDialog({ conn: c, lastJob: null, loading: true })
+    try {
+      const lastJob = await getLatestJobForConnection(c.id, 'sql.sync-schema')
+      setSyncDialog({ conn: c, lastJob, loading: false })
+    } catch (e: any) {
+      setError(e.message)
+      setSyncDialog(null)
+    }
+  }
+
+  // Actually start a new sync job from the dialog
+  const onSyncStart = async () => {
+    if (!syncDialog) return
+    const c = syncDialog.conn
     try {
       const r = await fetch(`/api/admin/sql-connections/${c.id}/sync-schema`, {
         method: 'POST',
@@ -1573,6 +1592,7 @@ function SqlConnectionsTab() {
         throw new Error(err?.error ?? `HTTP ${r.status}`)
       }
       const { jobId } = await r.json()
+      setSyncDialog(null)
       setActiveJob({ id: jobId, title: `Senkronizasyon — ${c.name}`,
         subtitle: 'Değişen/yeni/silinen objeler güncelleniyor (arkada çalışıyor)' })
     } catch (e: any) {
@@ -1859,6 +1879,124 @@ function SqlConnectionsTab() {
           </div>
         </div>
       )}
+
+      {/* Sync Start Dialog — shows last/current state + Start button */}
+      {syncDialog && (() => {
+        const j = syncDialog.lastJob
+        const active = j && (j.status === 'queued' || j.status === 'running')
+        const finished = j && (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled')
+        const r = j?.result as any
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+               style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+               onClick={e => { if (e.target === e.currentTarget) setSyncDialog(null) }}>
+            <div className="w-full max-w-xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+                 style={{ background: 'var(--bg)', border: '1px solid var(--border)', maxHeight: '85vh' }}>
+              <div className="px-5 py-4 flex items-center gap-3 shrink-0"
+                   style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
+                <span className="text-2xl">🔄</span>
+                <div className="flex-1">
+                  <div className="font-semibold" style={{ color: 'var(--text)' }}>
+                    Senkronizasyon — {syncDialog.conn.name}
+                  </div>
+                  <div className="text-xs" style={{ color: 'var(--mute)' }}>
+                    Değişen / yeni / silinen şema objeleri RAG'a aktarılır
+                  </div>
+                </div>
+                <button onClick={() => setSyncDialog(null)}
+                        className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer"
+                        style={{ color: 'var(--mute)' }}>×</button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-5 space-y-3">
+                {syncDialog.loading && (
+                  <div className="text-sm text-center py-6" style={{ color: 'var(--mute)' }}>
+                    Son işlem durumu sorgulanıyor…
+                  </div>
+                )}
+
+                {!syncDialog.loading && !j && (
+                  <div className="rounded-xl p-4 text-sm text-center"
+                       style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--mute)' }}>
+                    Bu bağlantı için henüz senkron çalıştırılmamış.
+                  </div>
+                )}
+
+                {!syncDialog.loading && active && j && (
+                  <div className="rounded-xl p-4 space-y-2"
+                       style={{ background: 'rgba(138,180,248,0.08)', border: '1px solid rgba(138,180,248,0.3)' }}>
+                    <div className="flex items-center justify-between text-xs">
+                      <span style={{ color: 'var(--accent-hi)' }}>
+                        ⏳ Şu an çalışıyor (Job #{j.id})
+                      </span>
+                      <span className="font-mono" style={{ color: 'var(--text-2)' }}>
+                        {j.progressCur.toLocaleString()} / {j.progressTot.toLocaleString()}
+                      </span>
+                    </div>
+                    {j.message && <div className="text-xs" style={{ color: 'var(--mute)' }}>{j.message}</div>}
+                    <button
+                      onClick={() => { setActiveJob({ id: j.id,
+                        title: `Senkronizasyon — ${syncDialog.conn.name}`,
+                        subtitle: `Job #${j.id} izleniyor` }); setSyncDialog(null) }}
+                      className="w-full mt-1 py-1.5 rounded-md text-xs font-medium cursor-pointer"
+                      style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                      🔍 İlerlemeyi izle
+                    </button>
+                  </div>
+                )}
+
+                {!syncDialog.loading && finished && j && (
+                  <div className="rounded-xl p-4 space-y-2"
+                       style={{ background: j.status === 'failed' ? 'rgba(234,67,53,0.08)' : 'var(--surface-2)',
+                                border: `1px solid ${j.status === 'failed' ? 'rgba(234,67,53,0.3)' : 'var(--border)'}` }}>
+                    <div className="text-xs font-semibold" style={{ color: j.status === 'failed' ? '#ea4335' : 'var(--mute)' }}>
+                      SON İŞLEM ({j.status === 'completed' ? '✓ başarılı' : j.status === 'failed' ? '✕ başarısız' : j.status})
+                    </div>
+                    <div className="text-[10px]" style={{ color: 'var(--mute)' }}>
+                      {j.completedAt && new Date(j.completedAt).toLocaleString()}
+                      {j.startedAt && j.completedAt && (() => {
+                        const sec = Math.round((new Date(j.completedAt).getTime() - new Date(j.startedAt).getTime()) / 1000)
+                        const m = Math.floor(sec / 60), s = sec % 60
+                        return ` · süre: ${m > 0 ? `${m}d ${s}s` : `${s}s`}`
+                      })()}
+                    </div>
+                    {j.status === 'completed' && r && (
+                      <div className="grid grid-cols-4 gap-2 mt-2 text-center text-xs">
+                        <div><strong style={{ color: '#34a853' }}>{Array.isArray(r.added) ? r.added.length : 0}</strong>
+                          <div className="text-[9px]" style={{ color: 'var(--mute)' }}>yeni</div></div>
+                        <div><strong style={{ color: '#f59e0b' }}>{Array.isArray(r.updated) ? r.updated.length : 0}</strong>
+                          <div className="text-[9px]" style={{ color: 'var(--mute)' }}>değişen</div></div>
+                        <div><strong style={{ color: 'var(--text)' }}>{r.unchanged ?? 0}</strong>
+                          <div className="text-[9px]" style={{ color: 'var(--mute)' }}>aynı</div></div>
+                        <div><strong style={{ color: '#ea4335' }}>{Array.isArray(r.removed) ? r.removed.length : 0}</strong>
+                          <div className="text-[9px]" style={{ color: 'var(--mute)' }}>silinen</div></div>
+                      </div>
+                    )}
+                    {j.status === 'failed' && (
+                      <div className="text-xs font-mono mt-1" style={{ color: 'var(--mute)' }}>{j.error}</div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="px-5 py-4 flex gap-2 shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+                <button onClick={onSyncStart}
+                        disabled={syncDialog.loading || !!active}
+                        title={active ? 'Zaten çalışan bir senkron var' : 'Yeni senkronizasyon başlat'}
+                        className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{ background: 'var(--accent)', color: '#0b1929' }}>
+                  {active ? '⏳ Zaten çalışıyor' : '🚀 Yeni Senkron Başlat'}
+                </button>
+                <button onClick={() => setSyncDialog(null)}
+                        className="px-4 py-2 rounded-lg text-sm cursor-pointer"
+                        style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                  Kapat
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Background job progress modal (shared) */}
       {activeJob && (

@@ -1051,6 +1051,27 @@ app.MapGet("/api/jobs/{id:long}", [Authorize] async (long id, IJobService jobs, 
     return Results.Ok(SerializeJob(j));
 });
 
+// GET /api/admin/sql-connections/{id}/latest-job?type=... — latest job for this connection
+app.MapGet("/api/admin/sql-connections/{id:int}/latest-job", [Authorize("AdminOnly")] async (
+    int id, string? type, IJobService jobs, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    // Find latest job whose params JSON includes this connection id
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = string.IsNullOrEmpty(type)
+        ? @"SELECT id FROM jobs WHERE params LIKE $1 ORDER BY id DESC LIMIT 1"
+        : @"SELECT id FROM jobs WHERE params LIKE $1 AND job_type=$2 ORDER BY id DESC LIMIT 1";
+    cmd.Parameters.AddWithValue($"%\"ConnectionId\":{id}%");
+    if (!string.IsNullOrEmpty(type)) cmd.Parameters.AddWithValue(type);
+
+    var result = await cmd.ExecuteScalarAsync(ct);
+    if (result is null || result == DBNull.Value) return Results.Ok((object?)null);
+
+    var jobId = Convert.ToInt64(result);
+    var job   = await jobs.GetAsync(jobId, ct);
+    return job is null ? Results.Ok((object?)null) : Results.Ok(SerializeJob(job));
+});
+
 // GET /api/jobs?limit=20&status=running
 app.MapGet("/api/jobs", [Authorize("AdminOnly")] async (
     int? limit, string? status, IJobService jobs, CancellationToken ct) =>
