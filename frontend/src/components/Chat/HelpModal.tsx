@@ -19,7 +19,9 @@ const SECTIONS: Section[] = [
 ]
 
 const ADMIN_SECTIONS: Section[] = [
-  { id: 'admin',   icon: '⚙️', label: 'Admin Paneli'   },
+  { id: 'admin',      icon: '⚙️', label: 'Admin Paneli'     },
+  { id: 'admin-sql',  icon: '🗄️', label: 'SQL Kaynakları'    },
+  { id: 'admin-jobs', icon: '⚡', label: 'Arka Plan İşleri' },
 ]
 
 // ── Small components ──────────────────────────────────────────────────────────
@@ -387,28 +389,58 @@ function ContentAdmin() {
         <Code>http://172.16.1.123:5080/admin</Code>
       </div>
 
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+        Admin panelinde 9 sekme bulunur. SQL Kaynakları ve İşler için ayrı yardım bölümleri var (sol menüde).
+      </p>
+
       {[
         { tab: 'Upload', icon: '📤', items: [
           'Collection adını girin (örn: RMGenelge, default)',
           'Dosyaları sürükle-bırak veya browse ile seçin',
           'Upload & ingest — chunk sayısı gösterilir',
-          'Desteklenen: PDF, DOCX, TXT, MD',
+          'Desteklenen: PDF, DOCX, XLSX, TXT, MD',
         ]},
         { tab: 'Documents', icon: '📄', items: [
           'Yüklü dökümanlar kaynak ve koleksiyona göre listelenir',
           'Collection dropdown ile filtreleme',
-          'Delete → Confirm ile döküman silinir',
+          'Delete → Confirm ile döküman silinir (RAG\'dan da çıkar)',
         ]},
         { tab: 'Skills', icon: '🎯', items: [
           'Mevcut skill .md dosyaları listelenir',
           '+ Skill Yükle (.md) ile yeni skill eklenebilir',
-          'Listeden seçince içerik sağda görünür',
+          'Listeden seçince içerik sağda önizlenir',
           'Hover → çöp kutusu ile silinebilir',
+          'Skill\'in name: alanı dropdown\'da gösterilir',
+        ]},
+        { tab: 'Şablonlar', icon: '📝', items: [
+          'Prompt şablonları kütüphanesi (slash command picker için)',
+          '+ Yeni → ad + içerik + koleksiyon alanları',
+          'Chat\'te / yazıp şablon seçilebilir',
+          'Few-shot örnekler skill başına ayrı yönetilir',
+        ]},
+        { tab: 'SQL', icon: '🗄️', items: [
+          'MS SQL / PostgreSQL / MySQL / Oracle bağlantıları',
+          'Detay: sol menüde "SQL Kaynakları" yardım bölümü',
+        ]},
+        { tab: 'İşler', icon: '⚡', items: [
+          'Arka plan job kuyruğu — tip/durum filtresi, iptal, tekrar dene',
+          'Detay: sol menüde "Arka Plan İşleri" yardım bölümü',
         ]},
         { tab: 'Kullanım', icon: '📊', items: [
-          'Kullanıcı bazlı token tablosu (prompt + completion)',
+          'Kullanıcı bazlı token tablosu (prompt + completion + maliyet)',
           'Model bazlı kullanım (chat / code)',
-          'Son 50 istek detayı',
+          'Son 50 istek detayı + 👍/👎 oy geri bildirimleri',
+        ]},
+        { tab: 'Aktivite', icon: '📋', items: [
+          'Tüm yönetici işlemlerinin kronolojik kaydı',
+          'Döküman/skill/şablon/SQL bağlantı eylemleri',
+          'Filtre: action tipi (örn: sql.connection.create)',
+          'Her satır: kullanıcı + tarih + hedef + detay',
+        ]},
+        { tab: '⚙ Ayarlar', icon: '⚙️', items: [
+          'Connection (LLM endpoint) ayarları',
+          'Sistem promptu — chat sırasında ilave talimat',
+          'Yalnızca admin görebilir/değiştirebilir',
         ]},
       ].map(s => (
         <div key={s.tab} className="p-3 rounded-lg space-y-1" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
@@ -418,6 +450,175 @@ function ContentAdmin() {
           <UL items={s.items} />
         </div>
       ))}
+    </div>
+  )
+}
+
+function ContentAdminSql() {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+        SQL Kaynakları sekmesi, harici veritabanlarındaki şemayı ve veriyi RAG&apos;a aktarmak için kullanılır.
+        Şifreler sunucuda DataProtection ile şifrelenerek saklanır.
+      </p>
+
+      <H>Desteklenen Veritabanları</H>
+      <UL items={[
+        'Microsoft SQL Server (varsayılan port 1433)',
+        'PostgreSQL (varsayılan port 5432)',
+        'MySQL / MariaDB (varsayılan port 3306)',
+        'Oracle (varsayılan port 1521, SERVICE_NAME kullanılır)',
+      ]} />
+
+      <H>1) Bağlantı Tanımlama</H>
+      <div className="space-y-2">
+        <Step n={1}>+ Yeni Bağlantı → tip seçin, host/port/database/kullanıcı/şifre girin</Step>
+        <Step n={2}>🔌 Test ile bağlantıyı doğrulayın (rate limit: 10/dk/kullanıcı)</Step>
+        <Step n={3}>Sorgu zaman aşımı: 5..3600 sn, varsayılan 120 sn</Step>
+        <Step n={4}>Otomatik veri sync interval seçin (kapalı / 15dk / saatlik / günlük / haftalık)</Step>
+      </div>
+
+      <H>2) Şema Çıkarımı — 📜 Şema butonu</H>
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+        Veritabanındaki tüm CREATE script&apos;lerini RAG&apos;a yazar (tablolar, view&apos;lar, procedure&apos;ler, function&apos;lar, trigger&apos;lar).
+        Bir kez yapılır, sonra "Sync" ile artımlı güncellenir.
+      </p>
+      <UL items={[
+        '📜 Şema → modal açılır, mevcut iş varsa "Şu an çalışıyor" gösterir',
+        'Koleksiyon adı + dahil edilecek obje tipleri seçilir',
+        '🚀 Arka Planda Çalıştır → job kuyruğa girer, modal kapatılabilir',
+        'İlerleme: ayrı bir progress modal\'da ETA ile gösterilir',
+      ]} />
+
+      <H>3) Şema Sync — 🔄 Sync butonu</H>
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+        İlk çıkarım sonrası kullanılır. Değişen / yeni / silinen objeleri tespit edip günceller (hash karşılaştırması).
+      </p>
+      <UL items={[
+        '🔄 Sync → son sync durumu + Yeni Senkron Başlat butonu',
+        'Aktif sync varsa "İlerlemeyi izle" butonu görünür',
+        'Sonuç: yeni / değişen / aynı / silinen sayıları',
+      ]} />
+
+      <H>4) Veri Senkronu — 💾 Veri butonu</H>
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+        Tablo satırlarını RAG&apos;a aktarır. Satır-bazlı delta sync ile sadece değişen kayıtlar ingest edilir.
+      </p>
+      <UL items={[
+        'Her tablo için PK kolonu zorunlu (composite için "col1,col2")',
+        'Created/Updated tarih kolonları seçilir — delta için Updated gerekli',
+        'WHERE filtresi (örn: aktif = 1 AND silinmis = 0)',
+        'Satır limiti (default 1000, max 100000)',
+        'Kolon seçimi: tüm kolonlar / sadece seçilenler (PII otomatik maskelenir)',
+        'Tablolar gruplara atanabilir (📁 Krediler, Ödemeler, vs.)',
+      ]} />
+
+      <H>5) Toplu İşlemler</H>
+      <UL items={[
+        'Yapılandırılmış tabloların yanındaki checkbox ile seçim',
+        'Grup başlığındaki checkbox → tüm grubu seç/bırak',
+        'Seçim varken üstte "→ gruba ata" dropdown\'u açılır',
+        'Tek tıkla seçilenler yeni gruba taşınır',
+      ]} />
+
+      <H>6) Otomatik Sync</H>
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+        Bağlantı formundaki &quot;Otomatik Veri Sync&quot; preset&apos;i seçilirse, sistem dakikada bir kontrol eder ve süresi gelen bağlantılar için
+        otomatik sync job&apos;u kuyruğa atar. Bağlantı listesinde <Code>⏱ Ndk</Code> rozeti gösterilir.
+      </p>
+
+      <H>7) Sync Geçmişi</H>
+      <UL items={[
+        'Her tablo için son sync durumu satır altında gösterilir',
+        '✓ +N / ↻M → başarılı sync (eklenen / güncellenen sayısı)',
+        '✕ son sync hata → tooltip\'te hata mesajı',
+      ]} />
+
+      <Warn>Mevcut SQL Server&apos;lar için TLS uyumluluğu otomatik (Encrypt=Optional). Eski sunucularda da çalışır.</Warn>
+    </div>
+  )
+}
+
+function ContentAdminJobs() {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+        Tüm uzun süren işlemler (şema çıkarımı, sync, veri ingest, otomatik sync) arka plan job kuyruğu üzerinden yürütülür.
+        Sunucu yeniden başlatılırsa "running" durumdaki işler otomatik olarak "queued" durumuna geri alınır.
+      </p>
+
+      <H>Job Tipleri</H>
+      <div className="space-y-2">
+        {[
+          { type: 'sql.ingest-schema', desc: 'İlk şema çıkarımı — tüm CREATE script\'leri RAG\'a' },
+          { type: 'sql.sync-schema',   desc: 'Şema artımlı sync — değişen/yeni/silinen objeler' },
+          { type: 'sql.ingest-data',   desc: 'Tablo verisi örnekleme (eski API)' },
+          { type: 'sql.sync-data',     desc: 'Satır-bazlı delta data sync' },
+        ].map(t => (
+          <div key={t.type} className="flex items-start gap-3 p-3 rounded-lg"
+               style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+            <Code>{t.type}</Code>
+            <span className="text-sm" style={{ color: 'var(--text-2)' }}>{t.desc}</span>
+          </div>
+        ))}
+      </div>
+
+      <H>İşler Sekmesi (Admin → İşler)</H>
+      <UL items={[
+        'Tip filtresi — sadece belirli job tipini göster',
+        'Durum filtresi — Kuyrukta / Çalışıyor / Tamamlandı / Hata / İptal',
+        'Çalışan veya kuyrukta iş varsa 4 saniyede bir otomatik yenilenir',
+        'Sayfa başına 50 kayıt, sayfalama',
+        'Süre, ilerleme yüzdesi, kullanıcı, mesaj sütunları',
+      ]} />
+
+      <H>İşlemler</H>
+      <div className="space-y-2">
+        <div className="flex items-start gap-3 p-3 rounded-lg"
+             style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+          <span className="text-lg">🔍</span>
+          <div>
+            <div className="font-medium text-sm" style={{ color: 'var(--text)' }}>Detay</div>
+            <div className="text-xs" style={{ color: 'var(--text-2)' }}>
+              Job progress modal&apos;ını açar — canlı ilerleme, ETA, browser bildirimi.
+            </div>
+          </div>
+        </div>
+        <div className="flex items-start gap-3 p-3 rounded-lg"
+             style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+          <span className="text-lg">🛑</span>
+          <div>
+            <div className="font-medium text-sm" style={{ color: 'var(--text)' }}>İptal</div>
+            <div className="text-xs" style={{ color: 'var(--text-2)' }}>
+              Yalnızca <Code>queued</Code> durumdaki işler iptal edilebilir. Çalışan job&apos;ları durdurmak için server&apos;ı yeniden başlatmak gerekir (sonra otomatik recovery devreye girer).
+            </div>
+          </div>
+        </div>
+        <div className="flex items-start gap-3 p-3 rounded-lg"
+             style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+          <span className="text-lg">↻</span>
+          <div>
+            <div className="font-medium text-sm" style={{ color: 'var(--text)' }}>Tekrar Dene</div>
+            <div className="text-xs" style={{ color: 'var(--text-2)' }}>
+              <Code>failed</Code> veya <Code>cancelled</Code> job&apos;lar için. Aynı parametrelerle yeni bir job oluşturulur.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <H>Eş Zamanlı İşçi (Concurrency)</H>
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+        Varsayılan 2 paralel worker. <Code>appsettings.json → Jobs:Workers</Code> ile 1..8 arası ayarlanabilir.
+        PostgreSQL&apos;in <Code>SKIP LOCKED</Code> mekanizması ile aynı işi iki worker&apos;ın almaması garantili.
+      </p>
+
+      <H>Otomatik Sync Zamanlayıcı</H>
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+        <Code>AutoSyncScheduler</Code> dakikada bir tarama yapar. Bir bağlantının <Code>auto_sync_interval_min</Code>
+        süresi geçmişse <Code>sql.sync-data</Code> job&apos;u kuyruğa atılır. Halihazırda aktif bir sync varsa atlanır.
+      </p>
+
+      <Tip>Browser bildirimleri ilk kullanımda izin ister. İzin verilirse uzun süren job tamamlandığında masaüstü bildirimi gelir.</Tip>
     </div>
   )
 }
@@ -479,15 +680,17 @@ function ContentTips() {
 }
 
 const CONTENT: Record<string, React.FC> = {
-  start:   ContentStart,
-  modes:   ContentModes,
-  skills:  ContentSkills,
-  image:   ContentImage,
-  agent:   ContentAgent,
-  project: ContentProject,
-  fav:     ContentFav,
-  admin:   ContentAdmin,
-  tips:    ContentTips,
+  start:        ContentStart,
+  modes:        ContentModes,
+  skills:       ContentSkills,
+  image:        ContentImage,
+  agent:        ContentAgent,
+  project:      ContentProject,
+  fav:          ContentFav,
+  admin:        ContentAdmin,
+  'admin-sql':  ContentAdminSql,
+  'admin-jobs': ContentAdminJobs,
+  tips:         ContentTips,
 }
 
 // ── Main modal ────────────────────────────────────────────────────────────────
