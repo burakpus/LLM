@@ -207,17 +207,6 @@ export default function Header({ skills, statusOk }: Props) {
 
       <div className="flex-1" />
 
-      {/* Model badge */}
-      {activeModel && (
-        <span
-          className="hidden md:inline rounded-full px-2.5 py-1 text-[10px] font-mono ml-1"
-          style={{ color: 'var(--mute)' }}
-          title="Active model"
-        >
-          {activeModel}
-        </span>
-      )}
-
       {/* Vertical divider */}
       <div className="h-5 mx-2" style={{ borderLeft: '1px solid var(--border)' }} />
 

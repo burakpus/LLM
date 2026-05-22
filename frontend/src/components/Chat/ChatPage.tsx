@@ -113,7 +113,7 @@ export default function ChatPage() {
             onRegenerate={regenerate}
             onContinue={continueResponse}
           />
-          <StatsBar stats={conv?.stats ?? null} />
+          <StatsBar stats={conv?.stats ?? null} model={conv?.settings?.model ?? store.activeModel} />
           <InputBar
             onSend={send}
             onStop={stop}

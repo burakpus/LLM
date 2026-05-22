@@ -1,14 +1,15 @@
 import type { ConvStats } from '../../store'
 
 interface Props {
-  stats: ConvStats | null
+  stats:  ConvStats | null
+  model?: string | null
 }
 
-export default function StatsBar({ stats }: Props) {
-  if (!stats) return null
+export default function StatsBar({ stats, model }: Props) {
+  if (!stats && !model) return null
 
-  const ttftSec = stats.ttft != null ? (Math.round(stats.ttft) / 1000).toFixed(1) : null
-  const elapsedSec = (stats.elapsed / 1000).toFixed(1)
+  const ttftSec    = stats?.ttft != null ? (Math.round(stats.ttft) / 1000).toFixed(1) : null
+  const elapsedSec = stats ? (stats.elapsed / 1000).toFixed(1) : null
 
   return (
     <div
@@ -19,20 +20,27 @@ export default function StatsBar({ stats }: Props) {
         color: 'var(--mute-2)',
       }}
     >
-      {ttftSec && <span>TTFT {ttftSec}s</span>}
-      {ttftSec && stats.tokensPerSec != null && <span>•</span>}
-      {stats.tokensPerSec != null && <span>{stats.tokensPerSec} tok/s</span>}
-      <span>•</span>
-      <span>{stats.tokens} tok</span>
-      <span>•</span>
-      <span>{elapsedSec}s</span>
-      {/* Only show non-normal finish reasons — "stop" is expected, no need to display */}
-      {stats.finishReason && stats.finishReason !== 'stop' && (
+      {stats && <>
+        {ttftSec && <span>TTFT {ttftSec}s</span>}
+        {ttftSec && stats.tokensPerSec != null && <span>•</span>}
+        {stats.tokensPerSec != null && <span>{stats.tokensPerSec} tok/s</span>}
+        <span>•</span>
+        <span>{stats.tokens} tok</span>
+        <span>•</span>
+        <span>{elapsedSec ?? '0.0'}s</span>
+        {stats.finishReason && stats.finishReason !== 'stop' && (
+          <>
+            <span>•</span>
+            <span style={{ color: stats.finishReason === 'length' ? '#f59e0b' : 'var(--mute-2)' }}>
+              {stats.finishReason === 'length' ? '⚠ limit' : stats.finishReason}
+            </span>
+          </>
+        )}
+      </>}
+      {model && (
         <>
-          <span>•</span>
-          <span style={{ color: stats.finishReason === 'length' ? '#f59e0b' : 'var(--mute-2)' }}>
-            {stats.finishReason === 'length' ? '⚠ limit' : stats.finishReason}
-          </span>
+          {stats && <span>•</span>}
+          <span className="font-mono">{model}</span>
         </>
       )}
     </div>
