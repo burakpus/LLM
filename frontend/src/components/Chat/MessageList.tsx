@@ -248,9 +248,10 @@ const AssistantMessage = memo(function AssistantMessage({
         </div>
         {m.truncated && !m.streaming && onContinue && (
           <button onClick={() => onContinue(idx)}
-                  className="mt-1 self-start rounded-full px-3 py-1.5 text-xs font-medium cursor-pointer"
+                  disabled={generating}
+                  className="mt-1 self-start rounded-full px-3 py-1.5 text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   style={{ border: '1px solid #f59e0b', color: '#f59e0b', background: 'rgba(245,158,11,0.1)' }}>
-            {t('truncated')}
+            {generating ? '⏳' : t('truncated')}
           </button>
         )}
         {m.content && !m.streaming && (

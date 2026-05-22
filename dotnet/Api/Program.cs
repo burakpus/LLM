@@ -1347,10 +1347,26 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
     foreach (var h in resp.Content.Headers)
         http.Response.Headers[h.Key] = h.Value.ToArray();
 
-    await resp.Content.CopyToAsync(http.Response.Body, ct);
-    metricsTimer.Dispose();
-    LlmMetrics.RequestsTotal.WithLabels(metricModel, "success").Inc();
-    if (debug) app.Logger.LogInformation("[VISION {Rid}] B6. response streamed", rid);
+    try
+    {
+        await resp.Content.CopyToAsync(http.Response.Body, ct);
+        if (debug) app.Logger.LogInformation("[VISION {Rid}] B6. response streamed", rid);
+        LlmMetrics.RequestsTotal.WithLabels(metricModel, "success").Inc();
+    }
+    catch (OperationCanceledException)
+    {
+        // Client disconnected — not an error
+        LlmMetrics.RequestsTotal.WithLabels(metricModel, "cancelled").Inc();
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "LLM stream error for model {Model} user {User}", metricModel, username);
+        LlmMetrics.RequestsTotal.WithLabels(metricModel, "error").Inc();
+    }
+    finally
+    {
+        metricsTimer.Dispose();
+    }
     return Results.Empty;
 });
 
