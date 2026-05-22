@@ -118,10 +118,10 @@ public sealed class LdapAuthService : ILdapAuthService
 
             // Search for the user and retrieve memberOf attribute
             var searchReq = new SearchRequest(
-                distinguishedName: string.Empty,
-                ldapFilter:        $"(sAMAccountName={username})",
-                scope:             SearchScope.Subtree,
-                attributeList:     ["memberOf"]);
+                string.Empty,
+                $"(sAMAccountName={username})",
+                SearchScope.Subtree,
+                "memberOf");
 
             var resp = (SearchResponse)conn.SendRequest(searchReq);
             if (resp.Entries.Count == 0) return false;

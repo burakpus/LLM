@@ -161,9 +161,6 @@ app.MapGet("/api/auth/me", [Authorize] (ClaimsPrincipal user) =>
         isAdmin  = user.FindFirstValue(AppClaims.IsAdmin) == "true",
     }));
 
-// Helper: require admin claim on sensitive endpoints
-bool RequireAdmin(ClaimsPrincipal user) =>
-    user.FindFirstValue(AppClaims.IsAdmin) == "true";
 
 // =============================================================================
 // ─── Skills ──────────────────────────────────────────────────────────────────
