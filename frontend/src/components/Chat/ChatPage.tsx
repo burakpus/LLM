@@ -104,6 +104,7 @@ export default function ChatPage() {
             generating={generating}
             fileContext={fileContext}
             onFileContextConsumed={() => setFileContext('')}
+            skills={skills}
           />
         </main>
 

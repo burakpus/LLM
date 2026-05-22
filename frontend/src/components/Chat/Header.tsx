@@ -213,9 +213,6 @@ export default function Header({ skills, statusOk }: Props) {
 
       <div className="flex-1" />
 
-      {/* Skill selector */}
-      <SkillSelector skills={skills} />
-
       {/* Model badge */}
       {activeModel && (
         <span
