@@ -336,6 +336,49 @@ export async function testSqlCredentials(payload: SqlConnectionUpsert): Promise<
   return r.json()
 }
 
+// ── Schema preview & ingest ──────────────────────────────────────────────────
+
+export interface SqlObjectSummary {
+  total:  number
+  byType: { type: string; count: number }[]
+}
+
+export interface SqlIngestResult {
+  total:      number
+  success:    number
+  chunks:     number
+  collection: string
+  failures:   { name: string; error: string }[]
+}
+
+export async function listSqlObjects(connId: number): Promise<SqlObjectSummary> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/list-objects`, {
+    method: 'POST', headers: authHeaders(),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
+export async function ingestSqlSchema(
+  connId:       number,
+  collection:   string,
+  includeTypes: string[],
+): Promise<SqlIngestResult> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/ingest-schema`, {
+    method:  'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify({ collection, includeTypes }),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
 // ── Activity log ─────────────────────────────────────────────────────────────
 
 export interface ActivityEntry {

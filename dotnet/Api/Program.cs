@@ -528,6 +528,140 @@ app.MapPost("/api/admin/sql-connections/{id:int}/test", [Authorize("AdminOnly")]
         : Results.Ok(new { ok = false, error = err });
 });
 
+// POST /api/admin/sql-connections/{id}/list-objects — preview before ingest
+app.MapPost("/api/admin/sql-connections/{id:int}/list-objects", [Authorize("AdminOnly")] async (
+    int id, ISqlConnectionService svc, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    var (dbType, connStr) = await LoadConnectionAsync(id, svc, ds, ct);
+    if (connStr is null) return Results.NotFound();
+
+    try
+    {
+        var provider = SqlSchemaProviderFactory.Get(dbType);
+        var objects = await provider.ListObjectsAsync(connStr, null, ct);
+        var grouped = objects.GroupBy(o => o.TypeStr)
+            .Select(g => new { type = g.Key, count = g.Count() }).ToList();
+        return Results.Ok(new { total = objects.Count, byType = grouped });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+// POST /api/admin/sql-connections/{id}/ingest-schema — pull all DDLs to RAG
+app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema", [Authorize("AdminOnly")] async (
+    int id,
+    [FromBody] SchemaIngestRequest req,
+    ISqlConnectionService svc,
+    IDocumentIngestion ingestion,
+    ClaimsPrincipal user,
+    NpgsqlDataSource ds,
+    CancellationToken ct) =>
+{
+    var (dbType, connStr) = await LoadConnectionAsync(id, svc, ds, ct);
+    if (connStr is null) return Results.NotFound();
+
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    var collection = string.IsNullOrWhiteSpace(req.Collection) ? "sql-schema" : req.Collection.Trim();
+
+    HashSet<DbObjectType>? includeTypes = null;
+    if (req.IncludeTypes is { Length: > 0 })
+    {
+        includeTypes = new HashSet<DbObjectType>();
+        foreach (var s in req.IncludeTypes)
+            if (Enum.TryParse<DbObjectType>(s, true, out var t)) includeTypes.Add(t);
+    }
+
+    try
+    {
+        var provider = SqlSchemaProviderFactory.Get(dbType);
+        var objects  = await provider.ListObjectsAsync(connStr, includeTypes, ct);
+
+        var failures = new List<object>();
+        var successCount = 0;
+        var totalChunks  = 0;
+
+        foreach (var obj in objects)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
+                if (string.IsNullOrWhiteSpace(ddl))
+                {
+                    failures.Add(new { name = obj.QualifiedName, error = "empty DDL" });
+                    continue;
+                }
+
+                var source = $"sql://{dbType.ToString().ToLower()}/conn-{id}/{obj.TypeStr}/{obj.QualifiedName}";
+                var title  = $"{obj.TypeStr.ToUpperInvariant()} {obj.QualifiedName}";
+                var meta   = $"{{\"db_type\":\"{dbType.ToString().ToLower()}\",\"object_type\":\"{obj.TypeStr}\",\"schema\":\"{obj.Schema}\",\"name\":\"{obj.Name}\",\"connection_id\":{id}}}";
+
+                var result = await ingestion.IngestAsync(new IngestRequest
+                {
+                    Collection   = collection,
+                    Source       = source,
+                    Title        = title,
+                    Content      = ddl,
+                    Metadata     = meta,
+                    ChunkSize    = 1600,
+                    ChunkOverlap = 200,
+                }, ct);
+                successCount++;
+                totalChunks += result.ChunksCreated;
+            }
+            catch (Exception ex)
+            {
+                failures.Add(new { name = obj.QualifiedName, error = ex.Message });
+            }
+        }
+
+        _ = LogActivity(ds, username, "sql.ingest.schema", $"conn-{id}",
+            $"collection={collection} total={objects.Count} success={successCount} chunks={totalChunks}");
+
+        return Results.Ok(new {
+            total       = objects.Count,
+            success     = successCount,
+            chunks      = totalChunks,
+            failures,
+            collection,
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+// Helper — loads connection by ID and returns (dbType, connectionString) or null
+static async Task<(DbType dbType, string? connStr)> LoadConnectionAsync(
+    int id, ISqlConnectionService svc, NpgsqlDataSource ds, CancellationToken ct)
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = "SELECT db_type, host, port, database, username, encrypted_password FROM sql_connections WHERE id=$1";
+    cmd.Parameters.AddWithValue(id);
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    if (!await r.ReadAsync(ct)) return (DbType.MsSql, null);
+
+    var dbType   = r.GetString(0).ToLowerInvariant() switch
+    {
+        "mssql"    => DbType.MsSql,
+        "postgres" => DbType.Postgres,
+        "mysql"    => DbType.MySql,
+        "oracle"   => DbType.Oracle,
+        _          => DbType.MsSql,
+    };
+    var host     = r.GetString(1);
+    var port     = r.GetInt32(2);
+    var database = r.GetString(3);
+    var username = r.GetString(4);
+    var password = string.IsNullOrEmpty(r.GetString(5)) ? "" : svc.Decrypt(r.GetString(5));
+    var connStr  = svc.BuildConnectionString(dbType, host, port, database, username, password);
+    return (dbType, connStr);
+}
+
 // POST /api/admin/sql-connections/test-credentials — test ad-hoc (e.g. before saving)
 app.MapPost("/api/admin/sql-connections/test-credentials", [Authorize("AdminOnly")] async (
     [FromBody] SqlConnectionUpsertRequest req, ISqlConnectionService svc, CancellationToken ct) =>
@@ -1726,6 +1860,10 @@ public sealed record SqlConnectionUpsertRequest(
     string  Database,
     string? Username,
     string? Password);
+
+public sealed record SchemaIngestRequest(
+    string?   Collection,
+    string[]? IncludeTypes);  // ["table","view","procedure","function","trigger"]
 
 public sealed record ApiChatRequest(
     string    SessionId,

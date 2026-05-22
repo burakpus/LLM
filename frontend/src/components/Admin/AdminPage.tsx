@@ -11,11 +11,13 @@ import {
   getActivityLog,
   listSqlConnections, createSqlConnection, updateSqlConnection,
   deleteSqlConnection, testSqlConnection, testSqlCredentials,
+  listSqlObjects, ingestSqlSchema,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
   UserSpend, ModelSpend, SpendLog, PromptTemplate, RatingStats, SkillExample,
   ActivityPage, SqlConnection, SqlConnectionUpsert, SqlDbType,
+  SqlObjectSummary, SqlIngestResult,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 
@@ -1365,6 +1367,8 @@ const EMPTY_CONN: SqlConnectionUpsert = {
   name: '', dbType: 'mssql', host: '', port: 1433, database: '', username: '', password: '',
 }
 
+const OBJ_TYPES = ['table', 'view', 'procedure', 'function', 'trigger'] as const
+
 function SqlConnectionsTab() {
   const [items,     setItems]     = useState<SqlConnection[]>([])
   const [loading,   setLoading]   = useState(true)
@@ -1375,6 +1379,13 @@ function SqlConnectionsTab() {
   const [showForm,  setShowForm]  = useState(false)
   const [busy,      setBusy]      = useState(false)
   const [testing,   setTesting]   = useState<number | 'draft' | null>(null)
+  // Schema ingest modal
+  const [ingestConn,    setIngestConn]    = useState<SqlConnection | null>(null)
+  const [ingestPreview, setIngestPreview] = useState<SqlObjectSummary | null>(null)
+  const [ingestTypes,   setIngestTypes]   = useState<string[]>([...OBJ_TYPES])
+  const [ingestCollection, setIngestCollection] = useState('')
+  const [ingestRunning, setIngestRunning] = useState(false)
+  const [ingestResult,  setIngestResult]  = useState<SqlIngestResult | null>(null)
 
   const load = async () => {
     setLoading(true); setError(null)
@@ -1446,6 +1457,34 @@ function SqlConnectionsTab() {
       else setError(`Bağlantı hatası: ${r.error}`)
     } catch (e: any) { setError(e.message) }
     finally { setTesting(null) }
+  }
+
+  const openIngest = async (c: SqlConnection) => {
+    setIngestConn(c)
+    setIngestPreview(null)
+    setIngestResult(null)
+    setIngestTypes([...OBJ_TYPES])
+    setIngestCollection(`sql-${c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`)
+    try {
+      const preview = await listSqlObjects(c.id)
+      setIngestPreview(preview)
+    } catch (e: any) {
+      setError(`Önizleme hatası: ${e.message}`)
+      setIngestConn(null)
+    }
+  }
+
+  const onIngestRun = async () => {
+    if (!ingestConn) return
+    setIngestRunning(true)
+    try {
+      const result = await ingestSqlSchema(ingestConn.id, ingestCollection.trim(), ingestTypes)
+      setIngestResult(result)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setIngestRunning(false)
+    }
   }
 
   return (
@@ -1577,7 +1616,7 @@ function SqlConnectionsTab() {
             {!loading && items.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Henüz bağlantı yok. + Yeni Bağlantı ile başlayın.</td></tr>}
             {!loading && items.map(c => (
               <tr key={c.id} style={{ borderTop: '1px solid var(--border)' }}>
-                <td className="px-4 py-2 font-medium" style={{ color: 'var(--text)' }}>{c.name}</td>
+                <td className="px-4 py-2 font-medium align-top" style={{ color: 'var(--text)' }}>{c.name}</td>
                 <td className="px-4 py-2 text-xs">
                   <span className="px-1.5 py-0.5 rounded font-mono"
                         style={{ background: 'rgba(138,180,248,0.15)', color: 'var(--accent-hi)' }}>
@@ -1592,7 +1631,13 @@ function SqlConnectionsTab() {
                     <button onClick={() => onTest(c)} disabled={testing === c.id}
                             className="px-2 py-1 rounded text-xs cursor-pointer disabled:opacity-50"
                             style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>
-                      {testing === c.id ? '…' : '🔌 Test'}
+                      {testing === c.id ? '…' : '🔌'}
+                    </button>
+                    <button onClick={() => openIngest(c)}
+                            className="px-2 py-1 rounded text-xs cursor-pointer"
+                            style={{ background: 'rgba(138,180,248,0.15)', color: 'var(--accent-hi)', border: '1px solid rgba(138,180,248,0.3)' }}
+                            title="Şemayı RAG'a çıkar">
+                      📜 Şema
                     </button>
                     <button onClick={() => openEdit(c)}
                             className="px-2 py-1 rounded text-xs cursor-pointer"
@@ -1611,6 +1656,158 @@ function SqlConnectionsTab() {
           </tbody>
         </table>
       </div>
+
+      {/* Schema Ingest Modal */}
+      {ingestConn && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+             style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+             onClick={e => { if (e.target === e.currentTarget && !ingestRunning) setIngestConn(null) }}>
+          <div className="w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+               style={{ background: 'var(--bg)', border: '1px solid var(--border)', maxHeight: '85vh' }}>
+            {/* Header */}
+            <div className="px-5 py-4 flex items-center gap-3 shrink-0"
+                 style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
+              <span className="text-2xl">📜</span>
+              <div className="flex-1">
+                <div className="font-semibold" style={{ color: 'var(--text)' }}>
+                  Şema Çıkarımı — {ingestConn.name}
+                </div>
+                <div className="text-xs" style={{ color: 'var(--mute)' }}>
+                  Tüm CREATE script'leri RAG koleksiyonuna eklenir (veri içeriği dahil değildir)
+                </div>
+              </div>
+              <button onClick={() => !ingestRunning && setIngestConn(null)}
+                      disabled={ingestRunning}
+                      className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer disabled:opacity-30"
+                      style={{ color: 'var(--mute)' }}>×</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              {/* Preview */}
+              {!ingestPreview && !ingestResult && (
+                <div className="text-sm text-center py-6" style={{ color: 'var(--mute)' }}>
+                  Önizleme yükleniyor…
+                </div>
+              )}
+
+              {ingestPreview && !ingestResult && (
+                <>
+                  <div className="rounded-xl p-4" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+                    <div className="text-xs font-semibold mb-2" style={{ color: 'var(--mute)' }}>BULUNAN OBJELER</div>
+                    <div className="text-2xl font-bold" style={{ color: 'var(--accent-hi)' }}>{ingestPreview.total}</div>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {ingestPreview.byType.map(t => (
+                        <span key={t.type} className="px-2 py-1 rounded text-xs"
+                              style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>
+                          {t.type}: <strong style={{ color: 'var(--text)' }}>{t.count}</strong>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <label className="block">
+                    <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>Koleksiyon adı</div>
+                    <input value={ingestCollection} onChange={e => setIngestCollection(e.target.value)}
+                           className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                           style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                  </label>
+
+                  <div>
+                    <div className="text-xs mb-2" style={{ color: 'var(--mute)' }}>Dahil edilecek obje tipleri</div>
+                    <div className="flex flex-wrap gap-2">
+                      {OBJ_TYPES.map(t => {
+                        const checked = ingestTypes.includes(t)
+                        return (
+                          <label key={t} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs cursor-pointer"
+                                 style={{ background: checked ? 'rgba(138,180,248,0.15)' : 'var(--surface-2)',
+                                          border: `1px solid ${checked ? 'rgba(138,180,248,0.35)' : 'var(--border)'}`,
+                                          color: checked ? 'var(--accent-hi)' : 'var(--text-2)' }}>
+                            <input type="checkbox" checked={checked}
+                                   onChange={e => setIngestTypes(prev =>
+                                     e.target.checked ? [...prev, t] : prev.filter(x => x !== t))}
+                                   className="cursor-pointer" />
+                            {t}
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Running */}
+              {ingestRunning && (
+                <div className="text-center py-8">
+                  <div className="text-3xl mb-2 animate-pulse">⏳</div>
+                  <div className="text-sm" style={{ color: 'var(--text-2)' }}>
+                    Script'ler çıkarılıyor ve RAG'a yazılıyor…
+                  </div>
+                </div>
+              )}
+
+              {/* Result */}
+              {ingestResult && (
+                <>
+                  <div className="rounded-xl p-4 grid grid-cols-3 gap-3 text-center"
+                       style={{ background: 'rgba(52,168,83,0.08)', border: '1px solid rgba(52,168,83,0.3)' }}>
+                    <div>
+                      <div className="text-2xl font-bold" style={{ color: '#34a853' }}>{ingestResult.success}</div>
+                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Başarılı</div>
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold" style={{ color: 'var(--accent-hi)' }}>{ingestResult.chunks}</div>
+                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Chunk</div>
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold" style={{ color: ingestResult.failures.length > 0 ? '#ea4335' : 'var(--text)' }}>
+                        {ingestResult.failures.length}
+                      </div>
+                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Hatalı</div>
+                    </div>
+                  </div>
+                  <div className="text-xs" style={{ color: 'var(--mute)' }}>
+                    Koleksiyon: <span className="font-mono" style={{ color: 'var(--text)' }}>{ingestResult.collection}</span>
+                  </div>
+
+                  {ingestResult.failures.length > 0 && (
+                    <div className="rounded-xl overflow-hidden"
+                         style={{ background: 'rgba(234,67,53,0.08)', border: '1px solid rgba(234,67,53,0.3)' }}>
+                      <div className="px-3 py-2 text-xs font-semibold" style={{ color: '#ea4335', borderBottom: '1px solid rgba(234,67,53,0.3)' }}>
+                        Hatalı objeler ({ingestResult.failures.length})
+                      </div>
+                      <div className="max-h-40 overflow-y-auto">
+                        {ingestResult.failures.map((f, i) => (
+                          <div key={i} className="px-3 py-1.5 text-xs" style={{ borderBottom: i < ingestResult.failures.length - 1 ? '1px solid rgba(234,67,53,0.2)' : 'none' }}>
+                            <div className="font-mono" style={{ color: 'var(--text)' }}>{f.name}</div>
+                            <div style={{ color: 'var(--mute)' }}>{f.error}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 py-4 flex gap-2 shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+              {!ingestResult && (
+                <button onClick={onIngestRun}
+                        disabled={ingestRunning || !ingestPreview || !ingestCollection.trim() || ingestTypes.length === 0}
+                        className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50"
+                        style={{ background: 'var(--accent)', color: '#0b1929' }}>
+                  {ingestRunning ? 'Çalışıyor…' : '🚀 Çıkar ve RAG\'a Yaz'}
+                </button>
+              )}
+              <button onClick={() => setIngestConn(null)} disabled={ingestRunning}
+                      className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
+                      style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                {ingestResult ? 'Kapat' : 'İptal'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }
