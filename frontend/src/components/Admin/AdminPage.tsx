@@ -11,13 +11,13 @@ import {
   getActivityLog,
   listSqlConnections, createSqlConnection, updateSqlConnection,
   deleteSqlConnection, testSqlConnection, testSqlCredentials,
-  listSqlObjects, ingestSqlSchema,
+  listSqlObjects, ingestSqlSchema, syncSqlSchema,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
   UserSpend, ModelSpend, SpendLog, PromptTemplate, RatingStats, SkillExample,
   ActivityPage, SqlConnection, SqlConnectionUpsert, SqlDbType,
-  SqlObjectSummary, SqlIngestResult,
+  SqlObjectSummary, SqlIngestResult, SqlSyncResult,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 
@@ -1386,6 +1386,10 @@ function SqlConnectionsTab() {
   const [ingestCollection, setIngestCollection] = useState('')
   const [ingestRunning, setIngestRunning] = useState(false)
   const [ingestResult,  setIngestResult]  = useState<SqlIngestResult | null>(null)
+  // Sync modal
+  const [syncConn,    setSyncConn]    = useState<SqlConnection | null>(null)
+  const [syncRunning, setSyncRunning] = useState(false)
+  const [syncResult,  setSyncResult]  = useState<SqlSyncResult | null>(null)
 
   const load = async () => {
     setLoading(true); setError(null)
@@ -1484,6 +1488,19 @@ function SqlConnectionsTab() {
       setError(e.message)
     } finally {
       setIngestRunning(false)
+    }
+  }
+
+  const onSyncRun = async (c: SqlConnection) => {
+    setSyncConn(c); setSyncResult(null); setSyncRunning(true); setError(null); setMsg(null)
+    try {
+      const result = await syncSqlSchema(c.id)
+      setSyncResult(result)
+    } catch (e: any) {
+      setError(e.message)
+      setSyncConn(null)
+    } finally {
+      setSyncRunning(false)
     }
   }
 
@@ -1636,8 +1653,15 @@ function SqlConnectionsTab() {
                     <button onClick={() => openIngest(c)}
                             className="px-2 py-1 rounded text-xs cursor-pointer"
                             style={{ background: 'rgba(138,180,248,0.15)', color: 'var(--accent-hi)', border: '1px solid rgba(138,180,248,0.3)' }}
-                            title="Şemayı RAG'a çıkar">
+                            title="Tüm şemayı RAG'a çıkar (ilk kez)">
                       📜 Şema
+                    </button>
+                    <button onClick={() => onSyncRun(c)}
+                            disabled={syncRunning}
+                            className="px-2 py-1 rounded text-xs cursor-pointer disabled:opacity-50"
+                            style={{ background: 'rgba(52,168,83,0.15)', color: '#34a853', border: '1px solid rgba(52,168,83,0.3)' }}
+                            title="Sadece değişen/yeni objeleri güncelle">
+                      🔄 Sync
                     </button>
                     <button onClick={() => openEdit(c)}
                             className="px-2 py-1 rounded text-xs cursor-pointer"
@@ -1803,6 +1827,126 @@ function SqlConnectionsTab() {
                       className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
                       style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
                 {ingestResult ? 'Kapat' : 'İptal'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sync Result Modal */}
+      {syncConn && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+             style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+             onClick={e => { if (e.target === e.currentTarget && !syncRunning) setSyncConn(null) }}>
+          <div className="w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+               style={{ background: 'var(--bg)', border: '1px solid var(--border)', maxHeight: '85vh' }}>
+            <div className="px-5 py-4 flex items-center gap-3 shrink-0"
+                 style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
+              <span className="text-2xl">🔄</span>
+              <div className="flex-1">
+                <div className="font-semibold" style={{ color: 'var(--text)' }}>
+                  Şema Senkronizasyonu — {syncConn.name}
+                </div>
+                <div className="text-xs" style={{ color: 'var(--mute)' }}>
+                  Sadece değişen ve yeni objeler güncellenir, silinen objeler RAG'dan kaldırılır
+                </div>
+              </div>
+              <button onClick={() => !syncRunning && setSyncConn(null)}
+                      disabled={syncRunning}
+                      className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer disabled:opacity-30"
+                      style={{ color: 'var(--mute)' }}>×</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              {syncRunning && (
+                <div className="text-center py-8">
+                  <div className="text-3xl mb-2 animate-pulse">🔄</div>
+                  <div className="text-sm" style={{ color: 'var(--text-2)' }}>
+                    Objeler karşılaştırılıyor ve değişiklikler aktarılıyor…
+                  </div>
+                </div>
+              )}
+
+              {syncResult && (
+                <>
+                  <div className="grid grid-cols-4 gap-2">
+                    <div className="rounded-xl p-3 text-center"
+                         style={{ background: 'rgba(52,168,83,0.08)', border: '1px solid rgba(52,168,83,0.3)' }}>
+                      <div className="text-2xl font-bold" style={{ color: '#34a853' }}>{syncResult.added.length}</div>
+                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Yeni</div>
+                    </div>
+                    <div className="rounded-xl p-3 text-center"
+                         style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                      <div className="text-2xl font-bold" style={{ color: '#f59e0b' }}>{syncResult.updated.length}</div>
+                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Güncellenen</div>
+                    </div>
+                    <div className="rounded-xl p-3 text-center"
+                         style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+                      <div className="text-2xl font-bold" style={{ color: 'var(--mute)' }}>{syncResult.unchanged}</div>
+                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Aynı</div>
+                    </div>
+                    <div className="rounded-xl p-3 text-center"
+                         style={{ background: 'rgba(234,67,53,0.08)', border: '1px solid rgba(234,67,53,0.3)' }}>
+                      <div className="text-2xl font-bold" style={{ color: '#ea4335' }}>{syncResult.removed.length}</div>
+                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Silinen</div>
+                    </div>
+                  </div>
+
+                  <div className="text-xs" style={{ color: 'var(--mute)' }}>
+                    Koleksiyon: <span className="font-mono" style={{ color: 'var(--text)' }}>{syncResult.collection}</span>
+                    {' '}• <span style={{ color: 'var(--accent-hi)' }}>{syncResult.chunks}</span> yeni chunk yazıldı
+                  </div>
+
+                  {(['added','updated','removed'] as const).map(k => {
+                    const list = syncResult[k]
+                    if (list.length === 0) return null
+                    const colors: Record<typeof k, string> = { added: '#34a853', updated: '#f59e0b', removed: '#ea4335' }
+                    const labels: Record<typeof k, string> = { added: 'Yeni Eklenen', updated: 'Güncellenen', removed: 'Silinen' }
+                    return (
+                      <div key={k} className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+                        <div className="px-3 py-2 text-xs font-semibold" style={{ color: colors[k], borderBottom: '1px solid var(--border)' }}>
+                          {labels[k]} ({list.length})
+                        </div>
+                        <div className="max-h-32 overflow-y-auto">
+                          {list.map((n, i) => (
+                            <div key={i} className="px-3 py-1 text-xs font-mono" style={{ color: 'var(--text-2)' }}>{n}</div>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
+
+                  {syncResult.failures.length > 0 && (
+                    <div className="rounded-xl overflow-hidden" style={{ background: 'rgba(234,67,53,0.08)', border: '1px solid rgba(234,67,53,0.3)' }}>
+                      <div className="px-3 py-2 text-xs font-semibold" style={{ color: '#ea4335', borderBottom: '1px solid rgba(234,67,53,0.3)' }}>
+                        Hatalı ({syncResult.failures.length})
+                      </div>
+                      <div className="max-h-32 overflow-y-auto">
+                        {syncResult.failures.map((f, i) => (
+                          <div key={i} className="px-3 py-1 text-xs">
+                            <span className="font-mono" style={{ color: 'var(--text)' }}>{f.name}</span>
+                            {' — '}
+                            <span style={{ color: 'var(--mute)' }}>{f.error}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {syncResult.added.length === 0 && syncResult.updated.length === 0 && syncResult.removed.length === 0 && (
+                    <div className="text-sm text-center py-4" style={{ color: 'var(--mute)' }}>
+                      ✓ Her şey güncel — hiçbir değişiklik yok
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="px-5 py-4 flex justify-end shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+              <button onClick={() => setSyncConn(null)} disabled={syncRunning}
+                      className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
+                      style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                Kapat
               </button>
             </div>
           </div>

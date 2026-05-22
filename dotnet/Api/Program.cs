@@ -174,6 +174,19 @@ var app = builder.Build();
             created_by          VARCHAR(100) NOT NULL DEFAULT '',
             created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS sql_ingested_objects (
+            id              SERIAL PRIMARY KEY,
+            connection_id   INTEGER      NOT NULL,
+            collection      VARCHAR(100) NOT NULL,
+            object_type     VARCHAR(20)  NOT NULL,
+            schema_name     VARCHAR(200) NOT NULL,
+            object_name     VARCHAR(200) NOT NULL,
+            source          VARCHAR(500) NOT NULL,
+            ddl_hash        VARCHAR(64)  NOT NULL,
+            chunks_count    INTEGER      NOT NULL DEFAULT 0,
+            last_ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (connection_id, object_type, schema_name, object_name)
         )";
     await cmd0.ExecuteNonQueryAsync();
 }
@@ -549,7 +562,15 @@ app.MapPost("/api/admin/sql-connections/{id:int}/list-objects", [Authorize("Admi
     }
 });
 
-// POST /api/admin/sql-connections/{id}/ingest-schema — pull all DDLs to RAG
+// Helper — SHA256 hex of a string
+static string Sha256(string s)
+{
+    using var sha = System.Security.Cryptography.SHA256.Create();
+    var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(s));
+    return Convert.ToHexString(bytes).ToLowerInvariant();
+}
+
+// POST /api/admin/sql-connections/{id}/ingest-schema — initial full ingest
 app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema", [Authorize("AdminOnly")] async (
     int id,
     [FromBody] SchemaIngestRequest req,
@@ -598,6 +619,9 @@ app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema", [Authorize("Adm
                 var title  = $"{obj.TypeStr.ToUpperInvariant()} {obj.QualifiedName}";
                 var meta   = $"{{\"db_type\":\"{dbType.ToString().ToLower()}\",\"object_type\":\"{obj.TypeStr}\",\"schema\":\"{obj.Schema}\",\"name\":\"{obj.Name}\",\"connection_id\":{id}}}";
 
+                // Delete any existing chunks for this source (idempotent re-ingest)
+                await ingestion.DeleteSourceAsync(collection, source, ct);
+
                 var result = await ingestion.IngestAsync(new IngestRequest
                 {
                     Collection   = collection,
@@ -608,6 +632,26 @@ app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema", [Authorize("Adm
                     ChunkSize    = 1600,
                     ChunkOverlap = 200,
                 }, ct);
+
+                // Upsert tracking record
+                var hash = Sha256(ddl);
+                await using var trackConn = await ds.OpenConnectionAsync(ct);
+                await using var trackCmd  = trackConn.CreateCommand();
+                trackCmd.CommandText = @"
+                    INSERT INTO sql_ingested_objects (connection_id, collection, object_type, schema_name, object_name, source, ddl_hash, chunks_count, last_ingested_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+                    ON CONFLICT (connection_id, object_type, schema_name, object_name) DO UPDATE
+                    SET collection=$2, source=$6, ddl_hash=$7, chunks_count=$8, last_ingested_at=NOW()";
+                trackCmd.Parameters.AddWithValue(id);
+                trackCmd.Parameters.AddWithValue(collection);
+                trackCmd.Parameters.AddWithValue(obj.TypeStr);
+                trackCmd.Parameters.AddWithValue(obj.Schema);
+                trackCmd.Parameters.AddWithValue(obj.Name);
+                trackCmd.Parameters.AddWithValue(source);
+                trackCmd.Parameters.AddWithValue(hash);
+                trackCmd.Parameters.AddWithValue(result.ChunksCreated);
+                await trackCmd.ExecuteNonQueryAsync(ct);
+
                 successCount++;
                 totalChunks += result.ChunksCreated;
             }
@@ -626,6 +670,160 @@ app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema", [Authorize("Adm
             chunks      = totalChunks,
             failures,
             collection,
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+// POST /api/admin/sql-connections/{id}/sync-schema — incremental update (only changed/new)
+app.MapPost("/api/admin/sql-connections/{id:int}/sync-schema", [Authorize("AdminOnly")] async (
+    int id,
+    ISqlConnectionService svc,
+    IDocumentIngestion ingestion,
+    ClaimsPrincipal user,
+    NpgsqlDataSource ds,
+    CancellationToken ct) =>
+{
+    var (dbType, connStr) = await LoadConnectionAsync(id, svc, ds, ct);
+    if (connStr is null) return Results.NotFound();
+
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+
+    // Load existing tracking records (collection comes from first row — assumed single per connection)
+    var existing = new Dictionary<string, (string Source, string Hash, string Collection)>();
+    string defaultCollection = "sql-schema";
+    await using (var loadConn = await ds.OpenConnectionAsync(ct))
+    await using (var loadCmd = loadConn.CreateCommand())
+    {
+        loadCmd.CommandText = "SELECT object_type, schema_name, object_name, source, ddl_hash, collection FROM sql_ingested_objects WHERE connection_id=$1";
+        loadCmd.Parameters.AddWithValue(id);
+        await using var r = await loadCmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            var key = $"{r.GetString(0)}|{r.GetString(1)}|{r.GetString(2)}";
+            existing[key] = (r.GetString(3), r.GetString(4), r.GetString(5));
+            defaultCollection = r.GetString(5);
+        }
+    }
+
+    if (existing.Count == 0)
+        return Results.BadRequest(new { error = "Bu bağlantı için henüz şema çıkarımı yapılmamış. Önce 'Şema Çıkar' kullanın." });
+
+    try
+    {
+        var provider = SqlSchemaProviderFactory.Get(dbType);
+        var currentObjects = await provider.ListObjectsAsync(connStr, null, ct);
+
+        var added    = new List<string>();
+        var updated  = new List<string>();
+        var unchanged = 0;
+        var failures = new List<object>();
+        var currentKeys = new HashSet<string>();
+        var totalChunks  = 0;
+
+        foreach (var obj in currentObjects)
+        {
+            ct.ThrowIfCancellationRequested();
+            var key = $"{obj.TypeStr}|{obj.Schema}|{obj.Name}";
+            currentKeys.Add(key);
+
+            try
+            {
+                var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
+                if (string.IsNullOrWhiteSpace(ddl))
+                {
+                    failures.Add(new { name = obj.QualifiedName, error = "empty DDL" });
+                    continue;
+                }
+
+                var hash   = Sha256(ddl);
+                var source = $"sql://{dbType.ToString().ToLower()}/conn-{id}/{obj.TypeStr}/{obj.QualifiedName}";
+                var title  = $"{obj.TypeStr.ToUpperInvariant()} {obj.QualifiedName}";
+                var meta   = $"{{\"db_type\":\"{dbType.ToString().ToLower()}\",\"object_type\":\"{obj.TypeStr}\",\"schema\":\"{obj.Schema}\",\"name\":\"{obj.Name}\",\"connection_id\":{id}}}";
+
+                if (existing.TryGetValue(key, out var prev))
+                {
+                    if (prev.Hash == hash)
+                    {
+                        unchanged++;
+                        continue;  // no change
+                    }
+                    // Changed → delete old chunks first
+                    await ingestion.DeleteSourceAsync(prev.Collection, prev.Source, ct);
+                    updated.Add(obj.QualifiedName);
+                }
+                else
+                {
+                    added.Add(obj.QualifiedName);
+                }
+
+                var collection = existing.TryGetValue(key, out var p2) ? p2.Collection : defaultCollection;
+                var result = await ingestion.IngestAsync(new IngestRequest
+                {
+                    Collection = collection, Source = source, Title = title,
+                    Content    = ddl, Metadata = meta, ChunkSize = 1600, ChunkOverlap = 200,
+                }, ct);
+                totalChunks += result.ChunksCreated;
+
+                // Upsert
+                await using var trackConn = await ds.OpenConnectionAsync(ct);
+                await using var trackCmd  = trackConn.CreateCommand();
+                trackCmd.CommandText = @"
+                    INSERT INTO sql_ingested_objects (connection_id, collection, object_type, schema_name, object_name, source, ddl_hash, chunks_count, last_ingested_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+                    ON CONFLICT (connection_id, object_type, schema_name, object_name) DO UPDATE
+                    SET ddl_hash=$7, chunks_count=$8, last_ingested_at=NOW()";
+                trackCmd.Parameters.AddWithValue(id);
+                trackCmd.Parameters.AddWithValue(collection);
+                trackCmd.Parameters.AddWithValue(obj.TypeStr);
+                trackCmd.Parameters.AddWithValue(obj.Schema);
+                trackCmd.Parameters.AddWithValue(obj.Name);
+                trackCmd.Parameters.AddWithValue(source);
+                trackCmd.Parameters.AddWithValue(hash);
+                trackCmd.Parameters.AddWithValue(result.ChunksCreated);
+                await trackCmd.ExecuteNonQueryAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                failures.Add(new { name = obj.QualifiedName, error = ex.Message });
+            }
+        }
+
+        // Detect removed: objects in tracking but not in current source
+        var removed = new List<string>();
+        foreach (var (key, val) in existing)
+        {
+            if (currentKeys.Contains(key)) continue;
+            // No longer exists in source DB — delete from RAG + tracking
+            try
+            {
+                await ingestion.DeleteSourceAsync(val.Collection, val.Source, ct);
+                var parts = key.Split('|');
+                await using var delConn = await ds.OpenConnectionAsync(ct);
+                await using var delCmd  = delConn.CreateCommand();
+                delCmd.CommandText = "DELETE FROM sql_ingested_objects WHERE connection_id=$1 AND object_type=$2 AND schema_name=$3 AND object_name=$4";
+                delCmd.Parameters.AddWithValue(id);
+                delCmd.Parameters.AddWithValue(parts[0]);
+                delCmd.Parameters.AddWithValue(parts[1]);
+                delCmd.Parameters.AddWithValue(parts[2]);
+                await delCmd.ExecuteNonQueryAsync(ct);
+                removed.Add($"{parts[1]}.{parts[2]}");
+            }
+            catch { /* swallow per-item */ }
+        }
+
+        _ = LogActivity(ds, username, "sql.sync.schema", $"conn-{id}",
+            $"added={added.Count} updated={updated.Count} unchanged={unchanged} removed={removed.Count}");
+
+        return Results.Ok(new {
+            added, updated, removed,
+            unchanged,
+            chunks   = totalChunks,
+            failures,
+            collection = defaultCollection,
         });
     }
     catch (Exception ex)

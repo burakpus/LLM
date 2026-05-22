@@ -379,6 +379,27 @@ export async function ingestSqlSchema(
   return r.json()
 }
 
+export interface SqlSyncResult {
+  added:      string[]
+  updated:    string[]
+  removed:    string[]
+  unchanged:  number
+  chunks:     number
+  collection: string
+  failures:   { name: string; error: string }[]
+}
+
+export async function syncSqlSchema(connId: number): Promise<SqlSyncResult> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/sync-schema`, {
+    method: 'POST', headers: authHeaders(),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
 // ── Activity log ─────────────────────────────────────────────────────────────
 
 export interface ActivityEntry {
