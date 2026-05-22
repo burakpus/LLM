@@ -323,7 +323,7 @@ export default function Header({ skills, statusOk }: Props) {
       </button>
     </header>
 
-    {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+    {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} isAdmin={!!store.auth.isAdmin} />}
   </>
   )
 }

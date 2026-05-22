@@ -15,8 +15,11 @@ const SECTIONS: Section[] = [
   { id: 'agent',   icon: '🤖', label: 'Otonom Mod'     },
   { id: 'project', icon: '📁', label: 'Proje Modu'     },
   { id: 'fav',     icon: '⭐', label: 'Favoriler & Arşiv' },
-  { id: 'admin',   icon: '⚙️', label: 'Admin Paneli'   },
   { id: 'tips',    icon: '💡', label: 'İpuçları'       },
+]
+
+const ADMIN_SECTIONS: Section[] = [
+  { id: 'admin',   icon: '⚙️', label: 'Admin Paneli'   },
 ]
 
 // ── Small components ──────────────────────────────────────────────────────────
@@ -488,9 +491,10 @@ const CONTENT: Record<string, React.FC> = {
 }
 
 // ── Main modal ────────────────────────────────────────────────────────────────
-export default function HelpModal({ onClose }: { onClose: () => void }) {
+export default function HelpModal({ onClose, isAdmin }: { onClose: () => void; isAdmin?: boolean }) {
   const [active, setActive] = useState('start')
   const ActiveContent = CONTENT[active] ?? ContentStart
+  const allSections = isAdmin ? [...SECTIONS, ...ADMIN_SECTIONS] : SECTIONS
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -534,13 +538,36 @@ export default function HelpModal({ onClose }: { onClose: () => void }) {
                 <span>{s.label}</span>
               </button>
             ))}
+
+            {isAdmin && (
+              <>
+                <div className="mx-3 my-2" style={{ borderTop: '1px solid var(--border)' }} />
+                <div className="px-4 pb-1 text-[10px] uppercase tracking-wider font-semibold"
+                     style={{ color: 'var(--mute)' }}>
+                  Yönetici
+                </div>
+                {ADMIN_SECTIONS.map(s => (
+                  <button key={s.id}
+                          onClick={() => setActive(s.id)}
+                          className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm cursor-pointer transition text-left"
+                          style={{
+                            background: active === s.id ? 'var(--surface-hi)' : 'transparent',
+                            color:      active === s.id ? 'var(--accent-hi)'  : 'var(--text-2)',
+                            borderRight: active === s.id ? '2px solid var(--accent)' : '2px solid transparent',
+                          }}>
+                    <span className="shrink-0">{s.icon}</span>
+                    <span>{s.label}</span>
+                  </button>
+                ))}
+              </>
+            )}
           </nav>
 
           {/* Content */}
           <main className="flex-1 overflow-y-auto p-6">
             <h2 className="text-xl font-semibold mb-4" style={{ color: 'var(--text)' }}>
-              {SECTIONS.find(s => s.id === active)?.icon}{' '}
-              {SECTIONS.find(s => s.id === active)?.label}
+              {allSections.find(s => s.id === active)?.icon}{' '}
+              {allSections.find(s => s.id === active)?.label}
             </h2>
             <ActiveContent />
           </main>
