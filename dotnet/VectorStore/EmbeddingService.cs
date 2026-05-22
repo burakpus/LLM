@@ -1,14 +1,18 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace SetYazilim.Llm.VectorStore;
 
 /// <summary>
-/// Generates text embeddings via an OpenAI-compatible /v1/embeddings endpoint
-/// (vLLM embed container or LiteLLM proxy).
+/// Generates text embeddings via an OpenAI-compatible /v1/embeddings endpoint.
+/// Results are cached in-process (IMemoryCache) to avoid re-embedding identical
+/// query strings — typical RAG pattern where the same questions recur frequently.
 /// </summary>
 public sealed class EmbeddingService
 {
@@ -20,26 +24,48 @@ public sealed class EmbeddingService
     private readonly HttpClient _http;
     private readonly VectorStoreOptions _opts;
     private readonly ILogger<EmbeddingService> _logger;
+    private readonly IMemoryCache _cache;
+
+    // Cache settings: up to 2000 embeddings, 1 hour TTL, 30 min sliding
+    private static readonly MemoryCacheEntryOptions CacheOpts = new()
+    {
+        AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1),
+        SlidingExpiration               = TimeSpan.FromMinutes(30),
+        Size                            = 1,
+    };
 
     public EmbeddingService(
         HttpClient http,
         IOptions<VectorStoreOptions> opts,
-        ILogger<EmbeddingService> logger)
+        ILogger<EmbeddingService> logger,
+        IMemoryCache cache)
     {
         _http   = http;
         _opts   = opts.Value;
         _logger = logger;
+        _cache  = cache;
     }
 
-    /// <summary>Embeds a single text string.</summary>
+    private static string CacheKey(string text, string model) =>
+        $"emb:{model}:{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)))[..16]}";
+
+    /// <summary>Embeds a single text string (cache-first).</summary>
     public async Task<float[]> EmbedAsync(string text, CancellationToken ct = default)
     {
+        var key = CacheKey(text, _opts.EmbedModel);
+        if (_cache.TryGetValue(key, out float[]? cached))
+        {
+            _logger.LogDebug("Embedding cache hit for {Chars} chars", text.Length);
+            return cached!;
+        }
+
         var results = await EmbedBatchAsync([text], ct);
+        _cache.Set(key, results[0], CacheOpts);
         return results[0];
     }
 
     /// <summary>
-    /// Embeds multiple texts in one request.
+    /// Embeds multiple texts, using cache for already-known inputs.
     /// Returns embeddings in the same order as the input.
     /// </summary>
     public async Task<IReadOnlyList<float[]>> EmbedBatchAsync(
@@ -48,10 +74,23 @@ public sealed class EmbeddingService
     {
         if (texts.Count == 0) return [];
 
+        // Resolve from cache where possible
+        var result = new float[texts.Count][];
+        var missing = new List<(int idx, string text)>();
+        for (int i = 0; i < texts.Count; i++)
+        {
+            var key = CacheKey(texts[i], _opts.EmbedModel);
+            if (_cache.TryGetValue(key, out float[]? cached))
+                result[i] = cached!;
+            else
+                missing.Add((i, texts[i]));
+        }
+        if (missing.Count == 0) return result;
+
         var request = new EmbeddingRequest
         {
             Model = _opts.EmbedModel,
-            Input = texts
+            Input = missing.Select(m => m.text).ToList()
         };
 
         using var msg = new HttpRequestMessage(HttpMethod.Post, "/v1/embeddings")
@@ -69,13 +108,17 @@ public sealed class EmbeddingService
             throw new InvalidOperationException($"Embedding API returned {(int)resp.StatusCode}: {body}");
         }
 
-        var result = await resp.Content.ReadFromJsonAsync<EmbeddingResponse>(JsonOpts, ct)
+        var apiResult = await resp.Content.ReadFromJsonAsync<EmbeddingResponse>(JsonOpts, ct)
             ?? throw new InvalidOperationException("Embedding API returned empty response");
 
-        return result.Data
-            .OrderBy(d => d.Index)
-            .Select(d => d.Embedding)
-            .ToList();
+        var embeddings = apiResult.Data.OrderBy(d => d.Index).Select(d => d.Embedding).ToArray();
+        for (int i = 0; i < missing.Count; i++)
+        {
+            result[missing[i].idx] = embeddings[i];
+            var key = CacheKey(missing[i].text, _opts.EmbedModel);
+            _cache.Set(key, embeddings[i], CacheOpts);
+        }
+        return result;
     }
 
     /// <summary>

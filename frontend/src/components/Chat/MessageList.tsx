@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, memo, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
+import { useShallow } from 'zustand/react/shallow'
 import type { Message } from '../../store'
 import { t, useStore } from '../../store'
 import { writeFile } from '../../api/project'
@@ -32,7 +33,13 @@ function nodeToText(node: ReactNode): string {
 function CodeBlock({
   className, children,
 }: { className?: string; children?: ReactNode }) {
-  const store    = useStore()
+  const { project, setFileContent, setPendingChange, setActiveFile } =
+    useStore(useShallow(s => ({
+      project:         s.project,
+      setFileContent:  s.setFileContent,
+      setPendingChange: s.setPendingChange,
+      setActiveFile:   s.setActiveFile,
+    })))
   const [copied, setCopied]   = useState(false)
   const [saving, setSaving]   = useState(false)
   const [saved,  setSaved]    = useState(false)
@@ -42,7 +49,7 @@ function CodeBlock({
   // nodeToText handles syntax-highlighted nodes (arrays of React elements)
   const text = nodeToText(children).replace(/\n$/, '')
 
-  const hasProject = !!store.project.projectId
+  const hasProject = !!project.projectId
 
   const copy = async () => {
     try {
@@ -67,13 +74,13 @@ function CodeBlock({
     const path = fname.trim() || `snippet-${Date.now()}.${lang === 'plain' ? 'txt' : lang}`
     setSaving(true)
     try {
-      const projectId = store.project.projectId!
+      const projectId = project.projectId!
       await writeFile(projectId, path, text)
-      const original = store.project.files[path] ?? ''
+      const original = project.files[path] ?? ''
       const diffLines = computeDiff(original, text)
-      store.setFileContent(path, text)
-      store.setPendingChange({ path, originalContent: original, newContent: text, diffLines })
-      store.setActiveFile(path)
+      setFileContent(path, text)
+      setPendingChange({ path, originalContent: original, newContent: text, diffLines })
+      setActiveFile(path)
       setSaved(true)
       setShowInput(false)
       setTimeout(() => setSaved(false), 2000)
@@ -149,6 +156,147 @@ function AssistantAvatar() {
   )
 }
 
+// ── Memoized message item — only re-renders when this specific message changes ─
+interface ItemProps {
+  m:               Message
+  idx:             number
+  isLastAssistant: boolean
+  onContinue?:     (i: number) => void
+  copy:            (t: string) => void
+  downloadTxt:     (m: Message) => void
+  downloadCode:    (m: Message) => void
+}
+
+const MessageItem = memo(function MessageItem({
+  m, idx, isLastAssistant, onContinue, copy, downloadTxt, downloadCode,
+}: ItemProps) {
+  if (m.role === 'tool_call' && m.toolCall) {
+    return (
+      <div className="w-full pl-10">
+        <ToolCallBlock toolCall={m.toolCall} />
+      </div>
+    )
+  }
+
+  if (m.role === 'user') {
+    return (
+      <div className="flex justify-end w-full">
+        <div className="px-[18px] py-3 text-sm leading-relaxed whitespace-pre-wrap break-words"
+             style={{ background: 'var(--user-bubble)', color: 'var(--text)',
+                      borderRadius: '18px 18px 4px 18px', maxWidth: '70%' }}>
+          {m.image && <img src={m.image} alt="attached" className="rounded-lg mb-2 max-h-60" />}
+          {m.content}
+        </div>
+      </div>
+    )
+  }
+
+  if (m.isWarning) {
+    return (
+      <div className="flex gap-2 items-start px-1 py-2 rounded-xl text-sm"
+           style={{ background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', color: '#fbbf24' }}>
+        <span className="shrink-0 text-base">⏳</span>
+        <span>{m.content.replace(/^⏳\s*/, '')}</span>
+      </div>
+    )
+  }
+
+  // assistant
+  return (
+    <AssistantMessage
+      m={m} idx={idx} isLastAssistant={isLastAssistant}
+      onContinue={onContinue} copy={copy} downloadTxt={downloadTxt} downloadCode={downloadCode}
+    />
+  )
+})
+
+// Separate component so ReactMarkdown re-renders don't bubble up
+const AssistantMessage = memo(function AssistantMessage({
+  m, idx, isLastAssistant, onContinue, copy, downloadTxt, downloadCode,
+}: ItemProps) {
+  return (
+    <div className="group flex gap-3 w-full">
+      <AssistantAvatar />
+      <div className="flex-1 min-w-0 flex flex-col gap-1 pt-0.5">
+        {m.thinking && <ThinkingBlock text={m.thinking} streaming={m.streaming} />}
+        <div className={`text-[15px] leading-relaxed break-words ${m.streaming ? '' : 'prose'} ${m.streaming && !m.content ? 'cursor-blink' : ''}`}
+             style={{ color: 'var(--text)' }}>
+          {m.streaming ? (
+            <div className="whitespace-pre-wrap">
+              {m.content}
+              {m.content && <span className="cursor-blink" />}
+            </div>
+          ) : m.content ? (
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}
+              components={{
+                code({ className, children, ...rest }: any) {
+                  return !className
+                    ? <code className={className} {...rest}>{children}</code>
+                    : <CodeBlock className={className}>{children}</CodeBlock>
+                },
+                pre({ children }: any) { return <>{children}</> },
+              }}
+            >{m.content}</ReactMarkdown>
+          ) : null}
+        </div>
+        {m.truncated && !m.streaming && onContinue && (
+          <button onClick={() => onContinue(idx)}
+                  className="mt-1 self-start rounded-full px-3 py-1.5 text-xs font-medium cursor-pointer"
+                  style={{ border: '1px solid #f59e0b', color: '#f59e0b', background: 'rgba(245,158,11,0.1)' }}>
+            {t('truncated')}
+          </button>
+        )}
+        {m.content && !m.streaming && (
+          <MessageActions m={m} isLast={isLastAssistant}
+            copy={copy} downloadTxt={downloadTxt} downloadCode={downloadCode} />
+        )}
+      </div>
+    </div>
+  )
+})
+
+// Action bar extracted to prevent hover state from affecting parent
+const MessageActions = memo(function MessageActions({ m, copy, downloadTxt, downloadCode }: {
+  m: Message; isLast: boolean
+  copy: (t: string) => void; downloadTxt: (m: Message) => void; downloadCode: (m: Message) => void
+}) {
+  return (
+    <div className="mt-2 flex items-center gap-0.5 text-[11px] opacity-0 group-hover:opacity-100 transition-opacity"
+         style={{ color: 'var(--mute)' }}>
+      {m.kbHits != null && m.kbHits > 0 && (
+        <span className="mr-2 opacity-100" style={{ color: 'var(--accent)' }}>{m.kbHits} refs</span>
+      )}
+      <button onClick={() => copy(m.content)}
+              className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer" title={t('copy')}
+              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <rect x="9" y="9" width="13" height="13" rx="2" />
+          <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+        </svg>
+      </button>
+      <button onClick={() => downloadTxt(m)}
+              className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer" title={t('txt')}
+              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        </svg>
+      </button>
+      {hasCode(m.content) && (
+        <button onClick={() => downloadCode(m)}
+                className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer" title={t('code')}
+                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+          </svg>
+        </button>
+      )}
+    </div>
+  )
+})
+
 export default function MessageList({
   messages, generating, onRegenerate, onContinue,
 }: Props) {
@@ -174,23 +322,29 @@ export default function MessageList({
     prevLenRef.current = messages.length
   }, [messages.length])
 
-  const copy = (text: string) => navigator.clipboard.writeText(text)
-
-  const downloadTxt = (msg: Message) => {
+  const copy        = useCallback((text: string) => navigator.clipboard.writeText(text), [])
+  const downloadTxt  = useCallback((msg: Message) => {
     const blob = new Blob([msg.content], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url; a.download = `response-${msg.id.slice(0, 8)}.txt`; a.click()
     URL.revokeObjectURL(url)
-  }
-
-  const downloadCode = (msg: Message) => {
+  }, [])
+  const downloadCode = useCallback((msg: Message) => {
     const code = extractCode(msg.content)
     if (!code) return
     const blob = new Blob([code], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url; a.download = `code-${msg.id.slice(0, 8)}.txt`; a.click()
+    URL.revokeObjectURL(url)
+  }, [])
+
+  const downloadTxt = (msg: Message) => {
+    const blob = new Blob([msg.content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `response-${msg.id.slice(0, 8)}.txt`; a.click()
     URL.revokeObjectURL(url)
   }
 
@@ -222,179 +376,18 @@ export default function MessageList({
     <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
       <div className="px-5 py-8 flex flex-col gap-6 min-h-full"
            style={{ maxWidth: '760px', margin: '0 auto', width: '100%' }}>
-        {messages.map((m, idx) => {
-          if (m.role === 'tool_call' && m.toolCall) {
-            return (
-              <div key={m.id} className="w-full pl-10">
-                <ToolCallBlock toolCall={m.toolCall} />
-              </div>
-            )
-          }
-
-          if (m.role === 'user') {
-            return (
-              <div key={m.id} className="flex justify-end w-full">
-                <div
-                  className="px-[18px] py-3 text-sm leading-relaxed whitespace-pre-wrap break-words"
-                  style={{
-                    background: 'var(--user-bubble)',
-                    color: 'var(--text)',
-                    borderRadius: '18px 18px 4px 18px',
-                    maxWidth: '70%',
-                  }}
-                >
-                  {m.image && (
-                    <img src={m.image} alt="attached" className="rounded-lg mb-2 max-h-60" />
-                  )}
-                  {m.content}
-                </div>
-              </div>
-            )
-          }
-
-          // warning (model warming up)
-          if (m.isWarning) {
-            return (
-              <div key={m.id} className="flex gap-2 items-start px-1 py-2 rounded-xl text-sm"
-                   style={{ background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', color: '#fbbf24' }}>
-                <span className="shrink-0 text-base">⏳</span>
-                <span>{m.content.replace(/^⏳\s*/, '')}</span>
-              </div>
-            )
-          }
-
-          // assistant
-          const isLastAssistant = idx === lastAssistantIdx
-          return (
-            <div key={m.id} className="group flex gap-3 w-full">
-              <AssistantAvatar />
-              <div className="flex-1 min-w-0 flex flex-col gap-1 pt-0.5">
-                {/* Thinking */}
-                {m.thinking && (
-                  <ThinkingBlock text={m.thinking} streaming={m.streaming} />
-                )}
-
-                {/* Content */}
-                <div
-                  className={`text-[15px] leading-relaxed break-words ${m.streaming ? '' : 'prose'} ${m.streaming && !m.content ? 'cursor-blink' : ''}`}
-                  style={{ color: 'var(--text)' }}
-                >
-                  {m.streaming ? (
-                    <div className="whitespace-pre-wrap">
-                      {m.content}
-                      {m.content && <span className="cursor-blink" />}
-                    </div>
-                  ) : m.content ? (
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      rehypePlugins={[rehypeHighlight]}
-                      components={{
-                        code({ className, children, ...rest }: any) {
-                          const inline = !className
-                          if (inline) {
-                            return <code className={className} {...rest}>{children}</code>
-                          }
-                          return <CodeBlock className={className}>{children}</CodeBlock>
-                        },
-                        pre({ children }: any) {
-                          return <>{children}</>
-                        },
-                      }}
-                    >
-                      {m.content}
-                    </ReactMarkdown>
-                  ) : null}
-                </div>
-
-                {/* Truncated */}
-                {m.truncated && !m.streaming && onContinue && (
-                  <button
-                    onClick={() => onContinue(idx)}
-                    className="mt-1 self-start rounded-full px-3 py-1.5 text-xs font-medium cursor-pointer"
-                    style={{
-                      border: '1px solid #f59e0b',
-                      color:  '#f59e0b',
-                      background: 'rgba(245, 158, 11, 0.1)',
-                    }}
-                  >
-                    {t('truncated')}
-                  </button>
-                )}
-
-                {/* Action bar — only on hover */}
-                {m.content && !m.streaming && (
-                  <div className="mt-2 flex items-center gap-0.5 text-[11px] opacity-0 group-hover:opacity-100 transition-opacity"
-                       style={{ color: 'var(--mute)' }}>
-                    {m.kbHits != null && m.kbHits > 0 && (
-                      <span className="mr-2 opacity-100" style={{ color: 'var(--accent)' }}>
-                        {m.kbHits} refs
-                      </span>
-                    )}
-                    <button
-                      onClick={() => copy(m.content)}
-                      className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer"
-                      title={t('copy')}
-                      onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
-                      onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
-                    >
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"
-                           stroke="currentColor" strokeWidth={2}>
-                        <rect x="9" y="9" width="13" height="13" rx="2" />
-                        <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-                      </svg>
-                    </button>
-                    <button
-                      onClick={() => downloadTxt(m)}
-                      className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer"
-                      title={t('txt')}
-                      onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
-                      onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
-                    >
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"
-                           stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round"
-                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                      </svg>
-                    </button>
-                    {hasCode(m.content) && (
-                      <button
-                        onClick={() => downloadCode(m)}
-                        className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer"
-                        title={t('code')}
-                        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
-                        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round"
-                            d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                        </svg>
-                      </button>
-                    )}
-                    {isLastAssistant && onRegenerate && (
-                      <button
-                        onClick={onRegenerate}
-                        disabled={generating}
-                        className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={t('regen')}
-                        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
-                        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round"
-                            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                        </svg>
-                      </button>
-                    )}
-                    {m.tokens != null && m.tokens > 0 && <span className="ml-2 text-[10px]">{m.tokens} tok</span>}
-                    {m.meta && <span className="ml-1 text-[10px]">{m.meta}</span>}
-                  </div>
-                )}
-              </div>
-            </div>
-          )
-        })}
+        {messages.map((m, idx) => (
+          <MessageItem
+            key={m.id}
+            m={m}
+            idx={idx}
+            isLastAssistant={idx === lastAssistantIdx}
+            onContinue={onContinue}
+            copy={copy}
+            downloadTxt={downloadTxt}
+            downloadCode={downloadCode}
+          />
+        ))}
         <div ref={bottomRef} />
       </div>
     </div>

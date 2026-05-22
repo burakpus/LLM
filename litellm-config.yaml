@@ -90,6 +90,7 @@ litellm_settings:
   set_verbose: false
   json_logs: true
   request_timeout: 600
+  stream_chunk_data: true   # flush each token immediately (lower TTFT latency)
 
   success_callback: ["langfuse", "prometheus"]
   failure_callback: ["langfuse", "prometheus"]

@@ -33,6 +33,9 @@ builder.Configuration
 var cfg = builder.Configuration;
 var services = builder.Services;
 
+// ── In-process cache (embedding results, etc.) ────────────────────────────────
+services.AddMemoryCache(o => o.SizeLimit = 2000);
+
 // ── JWT ───────────────────────────────────────────────────────────────────────
 services.AddOptions<JwtOptions>()
     .BindConfiguration(JwtOptions.SectionName)

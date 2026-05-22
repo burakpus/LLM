@@ -9,13 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.13.25",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
-    "remark-gfm": "^4.0.0",
     "rehype-highlight": "^7.0.0",
-    "zustand": "^5.0.0",
-    "uuid": "^10.0.0"
+    "remark-gfm": "^4.0.0",
+    "uuid": "^10.0.0",
+    "zustand": "^5.0.13"
   },
   "devDependencies": {
     "@types/react": "^18.3.5",
