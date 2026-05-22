@@ -7,11 +7,13 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
+using Prometheus;
 using SetYazilim.Llm;
 using SetYazilim.Llm.Api.Auth;
 using SetYazilim.Llm.Context;
 using SetYazilim.Llm.Memory;
 using SetYazilim.Llm.Retrieval;
+
 
 // =============================================================================
 // Agentic AI Platform — ASP.NET Core 8 Minimal API
@@ -158,6 +160,7 @@ var app = builder.Build();
 }
 
 app.UseCors("ui");
+app.UseHttpMetrics();          // built-in: http_requests_total, http_request_duration_seconds
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -174,6 +177,7 @@ app.UseStaticFiles();
 // =============================================================================
 // ─── Health ──────────────────────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "ok", ts = DateTime.UtcNow }));
+app.MapMetrics("/metrics");    // Prometheus scrape endpoint (no auth — internal only)
 
 // =============================================================================
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -425,6 +429,7 @@ app.MapPost("/api/ratings", [Authorize] async (
     cmd.Parameters.AddWithValue((short)req.Rating);
     cmd.Parameters.AddWithValue(string.IsNullOrEmpty(req.Model) ? (object)DBNull.Value : req.Model);
     await cmd.ExecuteNonQueryAsync(ct);
+    LlmMetrics.RatingsTotal.WithLabels(req.Rating == 1 ? "up" : "down").Inc();
     return Results.Ok(new { ok = true });
 });
 
@@ -841,6 +846,7 @@ app.MapPost("/api/admin/upload", [Authorize("AdminOnly")] async (
 
             results.Add(new { file = file.FileName, ok = true, chunks = r.ChunksCreated, tokens = r.TokensEstimate });
             _ = LogActivity(ds, username, "document.upload", file.FileName, $"collection={collection} chunks={r.ChunksCreated}");
+            LlmMetrics.IngestChunksTotal.WithLabels(collection).Inc(r.ChunksCreated);
         }
         catch (Exception ex)
         {
@@ -1272,6 +1278,14 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
         if (debug) app.Logger.LogError(ex, "[VISION {Rid}] B2. JSON parse failed", rid);
     }
 
+    // Extract model name for metrics labels
+    var metricModel = "unknown";
+    try { if (System.Text.Json.JsonDocument.Parse(bodyStr).RootElement
+              .TryGetProperty("model", out var mdl)) metricModel = mdl.GetString() ?? "unknown"; }
+    catch { /* ignore */ }
+
+    var metricsTimer = LlmMetrics.DurationSeconds.WithLabels(metricModel).NewTimer();
+
     var opts      = litellmOpts.Value;
     var targetUrl = opts.BaseUrl.TrimEnd('/') + "/v1/chat/completions";
     var bearerKey = opts.ApiKey;
@@ -1305,12 +1319,16 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
         {
             app.Logger.LogWarning("Model warming up – upstream error for user {User}: {Error}",
                 username, errBody[..Math.Min(300, errBody.Length)]);
+            metricsTimer.Dispose();
+            LlmMetrics.RequestsTotal.WithLabels(metricModel, "warming").Inc();
             return Results.Json(
                 new { error = "warming_up", message = "Model henüz yükleniyor, lütfen birkaç saniye sonra tekrar deneyin." },
                 statusCode: 503);
         }
 
         // Other non-success: proxy as-is
+        metricsTimer.Dispose();
+        LlmMetrics.RequestsTotal.WithLabels(metricModel, "error").Inc();
         http.Response.StatusCode = (int)resp.StatusCode;
         foreach (var h in resp.Headers)
             if (!h.Key.StartsWith("Transfer", StringComparison.OrdinalIgnoreCase))
@@ -1330,6 +1348,8 @@ app.MapPost("/api/llm/completions", [Authorize] [RequestSizeLimit(100 * 1024 * 1
         http.Response.Headers[h.Key] = h.Value.ToArray();
 
     await resp.Content.CopyToAsync(http.Response.Body, ct);
+    metricsTimer.Dispose();
+    LlmMetrics.RequestsTotal.WithLabels(metricModel, "success").Inc();
     if (debug) app.Logger.LogInformation("[VISION {Rid}] B6. response streamed", rid);
     return Results.Empty;
 });
@@ -1451,6 +1471,31 @@ app.Run();
 
 public sealed record LoginRequest(string Username, string Password, string Domain);
 public sealed record TemplateUpsertRequest(string Name, string Content, string? Collection);
+
+// ── Prometheus custom metrics ─────────────────────────────────────────────────
+static class LlmMetrics
+{
+    public static readonly Counter RequestsTotal = Metrics.CreateCounter(
+        "setllm_llm_requests_total",
+        "Total LLM completion requests",
+        labelNames: ["model", "status"]);   // status: success | error | warming
+
+    public static readonly Histogram DurationSeconds = Metrics.CreateHistogram(
+        "setllm_llm_request_duration_seconds",
+        "LLM completion request duration in seconds",
+        labelNames: ["model"],
+        new HistogramConfiguration { Buckets = [0.5, 1, 2, 5, 10, 20, 30, 60, 120] });
+
+    public static readonly Counter IngestChunksTotal = Metrics.CreateCounter(
+        "setllm_rag_ingest_chunks_total",
+        "Total RAG document chunks ingested",
+        labelNames: ["collection"]);
+
+    public static readonly Counter RatingsTotal = Metrics.CreateCounter(
+        "setllm_ratings_total",
+        "Total message ratings",
+        labelNames: ["rating"]);            // rating: up | down
+}
 public sealed record RatingRequest(string MessageId, string ConvId, int Rating, string? Model);
 public sealed record SkillExampleRequest(string UserMessage, string AssistantMessage);
 
