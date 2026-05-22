@@ -9,15 +9,17 @@ import {
   getRatingStats,
   listSkillExamples, createSkillExample, updateSkillExample, deleteSkillExample,
   getActivityLog,
+  listSqlConnections, createSqlConnection, updateSqlConnection,
+  deleteSqlConnection, testSqlConnection, testSqlCredentials,
 } from '../../api/admin'
 import type {
   UploadResult, DocumentsPage, CollectionRow, SkillRow,
   UserSpend, ModelSpend, SpendLog, PromptTemplate, RatingStats, SkillExample,
-  ActivityPage,
+  ActivityPage, SqlConnection, SqlConnectionUpsert, SqlDbType,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 
-type Tab = 'upload' | 'documents' | 'skills' | 'templates' | 'usage' | 'activity' | 'settings'
+type Tab = 'upload' | 'documents' | 'skills' | 'templates' | 'sql' | 'usage' | 'activity' | 'settings'
 
 async function pingProxy(): Promise<boolean> {
   try {
@@ -126,7 +128,7 @@ export default function AdminPage() {
         <div className="flex-1" />
 
         <nav className="flex items-center gap-1">
-          {(['upload', 'documents', 'skills', 'templates', 'usage', 'settings'] as Tab[]).map(tb => (
+          {(['upload', 'documents', 'skills', 'templates', 'sql', 'usage', 'activity', 'settings'] as Tab[]).map(tb => (
             <button
               key={tb}
               onClick={() => setTab(tb)}
@@ -137,7 +139,7 @@ export default function AdminPage() {
                 border:     tab === tb ? '1px solid var(--border)' : '1px solid transparent',
               }}
             >
-              {tb === 'upload' ? 'Upload' : tb === 'documents' ? 'Documents' : tb === 'skills' ? 'Skills' : tb === 'templates' ? 'Şablonlar' : tb === 'usage' ? 'Kullanım' : tb === 'activity' ? 'Aktivite' : '⚙ Ayarlar'}
+              {tb === 'upload' ? 'Upload' : tb === 'documents' ? 'Documents' : tb === 'skills' ? 'Skills' : tb === 'templates' ? 'Şablonlar' : tb === 'sql' ? 'SQL' : tb === 'usage' ? 'Kullanım' : tb === 'activity' ? 'Aktivite' : '⚙ Ayarlar'}
             </button>
           ))}
         </nav>
@@ -150,6 +152,7 @@ export default function AdminPage() {
           {tab === 'documents' && <DocumentsTab />}
           {tab === 'skills'    && <SkillsTab />}
           {tab === 'templates' && <TemplatesTab />}
+          {tab === 'sql'       && <SqlConnectionsTab />}
           {tab === 'usage'     && <UsageTab />}
           {tab === 'activity'  && <ActivityTab />}
           {tab === 'settings'  && <SettingsTab />}
@@ -1344,6 +1347,271 @@ function TemplateRow({ tmpl, active, onEdit, onDelete }: {
         </svg>
       </button>
     </div>
+  )
+}
+
+// =============================================================================
+// Tab — SQL Connections (Phase 1: CRUD + Test)
+// =============================================================================
+
+const DB_TYPE_OPTIONS: { id: SqlDbType; label: string; defaultPort: number }[] = [
+  { id: 'mssql',    label: 'MS SQL Server', defaultPort: 1433 },
+  { id: 'postgres', label: 'PostgreSQL',    defaultPort: 5432 },
+  { id: 'mysql',    label: 'MySQL',         defaultPort: 3306 },
+  { id: 'oracle',   label: 'Oracle',        defaultPort: 1521 },
+]
+
+const EMPTY_CONN: SqlConnectionUpsert = {
+  name: '', dbType: 'mssql', host: '', port: 1433, database: '', username: '', password: '',
+}
+
+function SqlConnectionsTab() {
+  const [items,     setItems]     = useState<SqlConnection[]>([])
+  const [loading,   setLoading]   = useState(true)
+  const [error,     setError]     = useState<string | null>(null)
+  const [msg,       setMsg]       = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [draft,     setDraft]     = useState<SqlConnectionUpsert>(EMPTY_CONN)
+  const [showForm,  setShowForm]  = useState(false)
+  const [busy,      setBusy]      = useState(false)
+  const [testing,   setTesting]   = useState<number | 'draft' | null>(null)
+
+  const load = async () => {
+    setLoading(true); setError(null)
+    try { setItems(await listSqlConnections()) }
+    catch (e: any) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => { load() }, [])
+
+  const openNew = () => {
+    setEditingId(null); setDraft(EMPTY_CONN); setShowForm(true); setMsg(null); setError(null)
+  }
+
+  const openEdit = (c: SqlConnection) => {
+    setEditingId(c.id)
+    setDraft({
+      name: c.name, dbType: c.dbType, host: c.host, port: c.port,
+      database: c.database, username: c.username, password: '',
+    })
+    setShowForm(true); setMsg(null); setError(null)
+  }
+
+  const onDbTypeChange = (id: SqlDbType) => {
+    const def = DB_TYPE_OPTIONS.find(d => d.id === id)
+    setDraft(d => ({ ...d, dbType: id, port: def?.defaultPort ?? 0 }))
+  }
+
+  const onSave = async () => {
+    if (!draft.name.trim() || !draft.host.trim() || !draft.database.trim()) {
+      setError('Ad, sunucu ve veritabanı zorunludur'); return
+    }
+    setBusy(true); setError(null); setMsg(null)
+    try {
+      if (editingId == null) {
+        await createSqlConnection(draft)
+        setMsg('Bağlantı oluşturuldu.')
+      } else {
+        await updateSqlConnection(editingId, draft)
+        setMsg('Bağlantı güncellendi.')
+      }
+      await load()
+      setShowForm(false); setEditingId(null); setDraft(EMPTY_CONN)
+    } catch (e: any) { setError(e.message) }
+    finally { setBusy(false) }
+  }
+
+  const onDelete = async (c: SqlConnection) => {
+    if (!confirm(`"${c.name}" bağlantısını sil?`)) return
+    try { await deleteSqlConnection(c.id); load() }
+    catch (e: any) { setError(e.message) }
+  }
+
+  const onTest = async (c: SqlConnection) => {
+    setTesting(c.id); setMsg(null); setError(null)
+    try {
+      const r = await testSqlConnection(c.id)
+      if (r.ok) setMsg(`✓ "${c.name}" bağlantısı başarılı`)
+      else setError(`"${c.name}" bağlantı hatası: ${r.error}`)
+    } catch (e: any) { setError(e.message) }
+    finally { setTesting(null) }
+  }
+
+  const onTestDraft = async () => {
+    setTesting('draft'); setMsg(null); setError(null)
+    try {
+      const r = await testSqlCredentials(draft)
+      if (r.ok) setMsg('✓ Bağlantı başarılı (form üzerinden test)')
+      else setError(`Bağlantı hatası: ${r.error}`)
+    } catch (e: any) { setError(e.message) }
+    finally { setTesting(null) }
+  }
+
+  return (
+    <section className="space-y-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-medium">SQL Kaynakları</h2>
+          <p className="text-xs mt-1" style={{ color: 'var(--mute)' }}>
+            MS SQL, PostgreSQL, MySQL, Oracle — şema ve veri çıkarımı için bağlantılar.
+            Şifreler sunucuda şifrelenmiş saklanır.
+          </p>
+        </div>
+        <button onClick={openNew}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer shrink-0"
+                style={{ background: 'var(--accent)', color: '#0b1929' }}>
+          + Yeni Bağlantı
+        </button>
+      </div>
+
+      {error && <div className="rounded-md px-3 py-2 text-xs" style={{ background: 'rgba(234,67,53,0.1)', color: '#ea4335', border: '1px solid rgba(234,67,53,0.3)' }}>{error}</div>}
+      {msg   && <div className="rounded-md px-3 py-2 text-xs" style={{ background: 'rgba(52,168,83,0.1)',  color: '#34a853', border: '1px solid rgba(52,168,83,0.3)'  }}>{msg}</div>}
+
+      {/* Form */}
+      {showForm && (
+        <div className="rounded-xl p-5 space-y-3"
+             style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+          <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+            {editingId == null ? '+ Yeni Bağlantı' : `Düzenle: ${draft.name}`}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block col-span-2 md:col-span-1">
+              <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>Ad *</div>
+              <input value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+                     placeholder="Production CFS DB"
+                     className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                     style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+            </label>
+            <label className="block col-span-2 md:col-span-1">
+              <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>Tip</div>
+              <select value={draft.dbType} onChange={e => onDbTypeChange(e.target.value as SqlDbType)}
+                      className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                      style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                {DB_TYPE_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <label className="block col-span-2">
+              <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>Sunucu *</div>
+              <input value={draft.host} onChange={e => setDraft(d => ({ ...d, host: e.target.value }))}
+                     placeholder="172.16.0.10 veya db.example.com"
+                     className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                     style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+            </label>
+            <label className="block">
+              <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>Port</div>
+              <input type="number" value={draft.port} onChange={e => setDraft(d => ({ ...d, port: parseInt(e.target.value) || 0 }))}
+                     className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                     style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+            </label>
+          </div>
+
+          <label className="block">
+            <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>
+              {draft.dbType === 'oracle' ? 'Servis Adı (SERVICE_NAME) *' : 'Veritabanı *'}
+            </div>
+            <input value={draft.database} onChange={e => setDraft(d => ({ ...d, database: e.target.value }))}
+                   placeholder={draft.dbType === 'oracle' ? 'ORCLCDB' : 'CFS'}
+                   className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                   style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>Kullanıcı</div>
+              <input value={draft.username} onChange={e => setDraft(d => ({ ...d, username: e.target.value }))}
+                     placeholder="sa / postgres / system"
+                     className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                     style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+            </label>
+            <label className="block">
+              <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>
+                Şifre {editingId != null && <span style={{ opacity: 0.6 }}>(boş = değiştirme)</span>}
+              </div>
+              <input type="password" value={draft.password} onChange={e => setDraft(d => ({ ...d, password: e.target.value }))}
+                     className="w-full rounded-md px-3 py-2 text-sm outline-none"
+                     style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+            </label>
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <button onClick={onSave} disabled={busy}
+                    className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50"
+                    style={{ background: 'var(--accent)', color: '#0b1929' }}>
+              {busy ? 'Kaydediliyor…' : (editingId == null ? 'Oluştur' : 'Güncelle')}
+            </button>
+            <button onClick={onTestDraft} disabled={testing === 'draft' || !draft.host || !draft.database}
+                    className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
+                    style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+              {testing === 'draft' ? 'Test ediliyor…' : '🔌 Test'}
+            </button>
+            <button onClick={() => { setShowForm(false); setEditingId(null) }}
+                    className="px-4 py-2 rounded-lg text-sm cursor-pointer"
+                    style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--mute)' }}>
+              İptal
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* List */}
+      <div className="rounded-xl overflow-hidden"
+           style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+        <table className="w-full text-sm">
+          <thead style={{ background: 'var(--surface-hi)', color: 'var(--mute)', fontSize: 11 }}>
+            <tr>
+              <th className="px-4 py-2 text-left font-medium">Ad</th>
+              <th className="px-4 py-2 text-left font-medium">Tip</th>
+              <th className="px-4 py-2 text-left font-medium">Sunucu</th>
+              <th className="px-4 py-2 text-left font-medium">Veritabanı</th>
+              <th className="px-4 py-2 text-left font-medium">Kullanıcı</th>
+              <th className="px-4 py-2 text-right font-medium">İşlemler</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan={6} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Yükleniyor…</td></tr>}
+            {!loading && items.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-xs" style={{ color: 'var(--mute)' }}>Henüz bağlantı yok. + Yeni Bağlantı ile başlayın.</td></tr>}
+            {!loading && items.map(c => (
+              <tr key={c.id} style={{ borderTop: '1px solid var(--border)' }}>
+                <td className="px-4 py-2 font-medium" style={{ color: 'var(--text)' }}>{c.name}</td>
+                <td className="px-4 py-2 text-xs">
+                  <span className="px-1.5 py-0.5 rounded font-mono"
+                        style={{ background: 'rgba(138,180,248,0.15)', color: 'var(--accent-hi)' }}>
+                    {DB_TYPE_OPTIONS.find(o => o.id === c.dbType)?.label ?? c.dbType}
+                  </span>
+                </td>
+                <td className="px-4 py-2 text-xs" style={{ color: 'var(--mute)' }}>{c.host}:{c.port}</td>
+                <td className="px-4 py-2 text-xs" style={{ color: 'var(--mute)' }}>{c.database}</td>
+                <td className="px-4 py-2 text-xs" style={{ color: 'var(--mute)' }}>{c.username}</td>
+                <td className="px-4 py-2 text-right">
+                  <div className="inline-flex gap-1">
+                    <button onClick={() => onTest(c)} disabled={testing === c.id}
+                            className="px-2 py-1 rounded text-xs cursor-pointer disabled:opacity-50"
+                            style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>
+                      {testing === c.id ? '…' : '🔌 Test'}
+                    </button>
+                    <button onClick={() => openEdit(c)}
+                            className="px-2 py-1 rounded text-xs cursor-pointer"
+                            style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>
+                      ✏️
+                    </button>
+                    <button onClick={() => onDelete(c)}
+                            className="px-2 py-1 rounded text-xs cursor-pointer"
+                            style={{ color: '#ea4335' }}>
+                      🗑
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   )
 }
 

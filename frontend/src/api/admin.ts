@@ -254,6 +254,88 @@ export const getUsageUsers  = (): Promise<UserSpend[]>  => usageGet('/api/admin/
 export const getUsageModels = (): Promise<ModelSpend[]> => usageGet('/api/admin/usage/models')
 export const getUsageLogs   = (limit = 50): Promise<SpendLog[]> => usageGet(`/api/admin/usage/logs?limit=${limit}`)
 
+// ── SQL Connections ──────────────────────────────────────────────────────────
+
+export type SqlDbType = 'mssql' | 'postgres' | 'mysql' | 'oracle'
+
+export interface SqlConnection {
+  id:        number
+  name:      string
+  dbType:    SqlDbType
+  host:      string
+  port:      number
+  database:  string
+  username:  string
+  createdBy: string
+  createdAt: string
+}
+
+export interface SqlConnectionUpsert {
+  name:     string
+  dbType:   SqlDbType
+  host:     string
+  port:     number
+  database: string
+  username: string
+  password: string  // empty string on update = keep existing
+}
+
+export async function listSqlConnections(): Promise<SqlConnection[]> {
+  const r = await fetch('/api/admin/sql-connections', { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export async function createSqlConnection(payload: SqlConnectionUpsert): Promise<{ id: number; name: string }> {
+  const r = await fetch('/api/admin/sql-connections', {
+    method:  'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify(payload),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
+export async function updateSqlConnection(id: number, payload: SqlConnectionUpsert): Promise<void> {
+  const r = await fetch(`/api/admin/sql-connections/${id}`, {
+    method:  'PUT',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify(payload),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+}
+
+export async function deleteSqlConnection(id: number): Promise<void> {
+  const r = await fetch(`/api/admin/sql-connections/${id}`, {
+    method: 'DELETE', headers: authHeaders(),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+}
+
+export async function testSqlConnection(id: number): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch(`/api/admin/sql-connections/${id}/test`, {
+    method: 'POST', headers: authHeaders(),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export async function testSqlCredentials(payload: SqlConnectionUpsert): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch('/api/admin/sql-connections/test-credentials', {
+    method:  'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify(payload),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
 // ── Activity log ─────────────────────────────────────────────────────────────
 
 export interface ActivityEntry {

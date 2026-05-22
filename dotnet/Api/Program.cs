@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -10,6 +11,7 @@ using Npgsql;
 using Prometheus;
 using SetYazilim.Llm;
 using SetYazilim.Llm.Api.Auth;
+using SetYazilim.Llm.Api.Sql;
 using SetYazilim.Llm.Context;
 using SetYazilim.Llm.Memory;
 using SetYazilim.Llm.Retrieval;
@@ -85,6 +87,10 @@ services.AddOptions<LdapOptions>()
     .BindConfiguration(LdapOptions.SectionName);
 services.AddSingleton<ILdapAuthService, LdapAuthService>();
 
+// ── SQL external sources (Phase 1: connection mgmt + test) ────────────────────
+services.AddDataProtection().SetApplicationName("set-llm-api");
+services.AddSingleton<ISqlConnectionService, SqlConnectionService>();
+
 // ── LLM + VectorStore + AgentStack ───────────────────────────────────────────
 services.AddLiteLLMClient();
 services.AddVectorStore();
@@ -155,6 +161,19 @@ var app = builder.Build();
             target      VARCHAR(500) NOT NULL DEFAULT '',
             details     TEXT         NOT NULL DEFAULT '',
             created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS sql_connections (
+            id                  SERIAL PRIMARY KEY,
+            name                VARCHAR(200) NOT NULL,
+            db_type             VARCHAR(20)  NOT NULL,
+            host                VARCHAR(200) NOT NULL,
+            port                INTEGER      NOT NULL DEFAULT 0,
+            database            VARCHAR(200) NOT NULL,
+            username            VARCHAR(200) NOT NULL,
+            encrypted_password  TEXT         NOT NULL DEFAULT '',
+            created_by          VARCHAR(100) NOT NULL DEFAULT '',
+            created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         )";
     await cmd0.ExecuteNonQueryAsync();
 }
@@ -337,6 +356,191 @@ app.MapPost("/api/files/extract", [Authorize] async (HttpContext http, Cancellat
     if (truncated) text = text[..MaxChars];
 
     return Results.Ok(new { filename = file.FileName, text, truncated });
+});
+
+// =============================================================================
+// ─── SQL Connections (Phase 1: CRUD + Test) ──────────────────────────────────
+
+static DbType ParseDbType(string s) => s.ToLowerInvariant() switch
+{
+    "mssql"   or "sqlserver"  => DbType.MsSql,
+    "postgres" or "postgresql" => DbType.Postgres,
+    "mysql"   or "mariadb"    => DbType.MySql,
+    "oracle"                  => DbType.Oracle,
+    _                         => throw new ArgumentException($"Unsupported db type: {s}"),
+};
+static string DbTypeToStr(DbType t) => t switch
+{
+    DbType.MsSql    => "mssql",
+    DbType.Postgres => "postgres",
+    DbType.MySql    => "mysql",
+    DbType.Oracle   => "oracle",
+    _               => "unknown",
+};
+
+// GET /api/admin/sql-connections — list (password not returned)
+app.MapGet("/api/admin/sql-connections", [Authorize("AdminOnly")] async (
+    NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"SELECT id, name, db_type, host, port, database, username, created_by, created_at
+                        FROM sql_connections ORDER BY name";
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    var items = new List<object>();
+    while (await r.ReadAsync(ct))
+        items.Add(new {
+            id        = r.GetInt32(0),
+            name      = r.GetString(1),
+            dbType    = r.GetString(2),
+            host      = r.GetString(3),
+            port      = r.GetInt32(4),
+            database  = r.GetString(5),
+            username  = r.GetString(6),
+            createdBy = r.GetString(7),
+            createdAt = r.GetDateTime(8),
+        });
+    return Results.Ok(items);
+});
+
+// POST /api/admin/sql-connections — create
+app.MapPost("/api/admin/sql-connections", [Authorize("AdminOnly")] async (
+    [FromBody] SqlConnectionUpsertRequest req,
+    ClaimsPrincipal user,
+    ISqlConnectionService svc,
+    NpgsqlDataSource ds,
+    CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Name) || string.IsNullOrWhiteSpace(req.Host) || string.IsNullOrWhiteSpace(req.Database))
+        return Results.BadRequest(new { error = "Name, Host, Database are required" });
+
+    DbType dbType;
+    try { dbType = ParseDbType(req.DbType); }
+    catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    var port     = req.Port > 0 ? req.Port : svc.DefaultPort(dbType);
+    var encrypted = string.IsNullOrEmpty(req.Password) ? "" : svc.Encrypt(req.Password);
+
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"INSERT INTO sql_connections (name, db_type, host, port, database, username, encrypted_password, created_by)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id";
+    cmd.Parameters.AddWithValue(req.Name.Trim());
+    cmd.Parameters.AddWithValue(DbTypeToStr(dbType));
+    cmd.Parameters.AddWithValue(req.Host.Trim());
+    cmd.Parameters.AddWithValue(port);
+    cmd.Parameters.AddWithValue(req.Database.Trim());
+    cmd.Parameters.AddWithValue(req.Username?.Trim() ?? "");
+    cmd.Parameters.AddWithValue(encrypted);
+    cmd.Parameters.AddWithValue(username);
+    var id = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+    _ = LogActivity(ds, username, "sql.connection.create", req.Name.Trim(), $"db={DbTypeToStr(dbType)} host={req.Host}");
+    return Results.Ok(new { id, name = req.Name.Trim() });
+});
+
+// PUT /api/admin/sql-connections/{id} — update (password optional)
+app.MapPut("/api/admin/sql-connections/{id:int}", [Authorize("AdminOnly")] async (
+    int id, [FromBody] SqlConnectionUpsertRequest req,
+    ClaimsPrincipal user, ISqlConnectionService svc, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    DbType dbType;
+    try { dbType = ParseDbType(req.DbType); }
+    catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    var port     = req.Port > 0 ? req.Port : svc.DefaultPort(dbType);
+
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    if (string.IsNullOrEmpty(req.Password))
+    {
+        // Update everything except password
+        cmd.CommandText = @"UPDATE sql_connections
+                            SET name=$1, db_type=$2, host=$3, port=$4, database=$5, username=$6, updated_at=NOW()
+                            WHERE id=$7";
+        cmd.Parameters.AddWithValue(req.Name.Trim());
+        cmd.Parameters.AddWithValue(DbTypeToStr(dbType));
+        cmd.Parameters.AddWithValue(req.Host.Trim());
+        cmd.Parameters.AddWithValue(port);
+        cmd.Parameters.AddWithValue(req.Database.Trim());
+        cmd.Parameters.AddWithValue(req.Username?.Trim() ?? "");
+        cmd.Parameters.AddWithValue(id);
+    }
+    else
+    {
+        // Update everything including password
+        cmd.CommandText = @"UPDATE sql_connections
+                            SET name=$1, db_type=$2, host=$3, port=$4, database=$5, username=$6, encrypted_password=$7, updated_at=NOW()
+                            WHERE id=$8";
+        cmd.Parameters.AddWithValue(req.Name.Trim());
+        cmd.Parameters.AddWithValue(DbTypeToStr(dbType));
+        cmd.Parameters.AddWithValue(req.Host.Trim());
+        cmd.Parameters.AddWithValue(port);
+        cmd.Parameters.AddWithValue(req.Database.Trim());
+        cmd.Parameters.AddWithValue(req.Username?.Trim() ?? "");
+        cmd.Parameters.AddWithValue(svc.Encrypt(req.Password));
+        cmd.Parameters.AddWithValue(id);
+    }
+
+    var rows = await cmd.ExecuteNonQueryAsync(ct);
+    if (rows == 0) return Results.NotFound();
+    _ = LogActivity(ds, username, "sql.connection.update", req.Name.Trim());
+    return Results.Ok(new { id });
+});
+
+// DELETE /api/admin/sql-connections/{id}
+app.MapDelete("/api/admin/sql-connections/{id:int}", [Authorize("AdminOnly")] async (
+    int id, ClaimsPrincipal user, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = "DELETE FROM sql_connections WHERE id=$1";
+    cmd.Parameters.AddWithValue(id);
+    await cmd.ExecuteNonQueryAsync(ct);
+    _ = LogActivity(ds, username, "sql.connection.delete", $"id={id}");
+    return Results.NoContent();
+});
+
+// POST /api/admin/sql-connections/{id}/test — test connection using stored password
+app.MapPost("/api/admin/sql-connections/{id:int}/test", [Authorize("AdminOnly")] async (
+    int id, ISqlConnectionService svc, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = "SELECT db_type, host, port, database, username, encrypted_password FROM sql_connections WHERE id=$1";
+    cmd.Parameters.AddWithValue(id);
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    if (!await r.ReadAsync(ct)) return Results.NotFound();
+
+    var dbType   = ParseDbType(r.GetString(0));
+    var host     = r.GetString(1);
+    var port     = r.GetInt32(2);
+    var database = r.GetString(3);
+    var username = r.GetString(4);
+    var password = string.IsNullOrEmpty(r.GetString(5)) ? "" : svc.Decrypt(r.GetString(5));
+    await r.CloseAsync();
+
+    var err = await svc.TestConnectionAsync(dbType, host, port, database, username, password, ct);
+    return err == null
+        ? Results.Ok(new { ok = true })
+        : Results.Ok(new { ok = false, error = err });
+});
+
+// POST /api/admin/sql-connections/test-credentials — test ad-hoc (e.g. before saving)
+app.MapPost("/api/admin/sql-connections/test-credentials", [Authorize("AdminOnly")] async (
+    [FromBody] SqlConnectionUpsertRequest req, ISqlConnectionService svc, CancellationToken ct) =>
+{
+    DbType dbType;
+    try { dbType = ParseDbType(req.DbType); }
+    catch (Exception ex) { return Results.BadRequest(new { error = ex.Message }); }
+
+    var port = req.Port > 0 ? req.Port : svc.DefaultPort(dbType);
+    var err  = await svc.TestConnectionAsync(dbType, req.Host, port, req.Database, req.Username ?? "", req.Password ?? "", ct);
+    return err == null
+        ? Results.Ok(new { ok = true })
+        : Results.Ok(new { ok = false, error = err });
 });
 
 // =============================================================================
@@ -1514,6 +1718,14 @@ static class LlmMetrics
 }
 public sealed record RatingRequest(string MessageId, string ConvId, int Rating, string? Model);
 public sealed record SkillExampleRequest(string UserMessage, string AssistantMessage);
+public sealed record SqlConnectionUpsertRequest(
+    string  Name,
+    string  DbType,
+    string  Host,
+    int     Port,
+    string  Database,
+    string? Username,
+    string? Password);
 
 public sealed record ApiChatRequest(
     string    SessionId,
