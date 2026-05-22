@@ -87,7 +87,13 @@ public sealed class LdapAuthService : ILdapAuthService
     /// <summary>Returns all AD group CN names (e.g. "setmanagement") for the user.</summary>
     public string[] GetUserGroups(string domain, string username, string password)
     {
-        if (_opts.Bypass) return [];
+        if (_opts.Bypass)
+        {
+            // LDAP not available — synthesise groups from config for known admin users
+            return _opts.AdminUserSet.Contains(username)
+                ? _opts.AdminGroupSet.ToArray()
+                : [];
+        }
 
         if (!_opts.Domains.TryGetValue(domain.ToUpperInvariant(), out var cfg))
             return [];
