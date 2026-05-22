@@ -132,7 +132,7 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
       setDocLoading(true)
       try {
         const result = await extractFileText(f)
-        setAttachedDoc(result)
+        setAttachedDoc({ name: result.filename, text: result.text, truncated: result.truncated })
       } catch (err) {
         alert(`Dosya okunamadı: ${err instanceof Error ? err.message : 'Bilinmeyen hata'}`)
       } finally {
