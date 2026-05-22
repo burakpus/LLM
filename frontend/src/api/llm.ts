@@ -341,6 +341,34 @@ export async function* streamCompletion(
   }
 }
 
+// ── Meta-prompt: improve a user prompt via LLM ───────────────────────────────
+export async function improvePrompt(text: string, authToken: string): Promise<string> {
+  const resp = await fetch('/api/llm/completions', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+    body: JSON.stringify({
+      model:       'chat',
+      stream:      false,
+      temperature: 0.4,
+      max_tokens:  1024,
+      messages: [
+        {
+          role:    'system',
+          content: 'Sen bir prompt mühendisidir. Verilen promptu daha net, daha spesifik ve daha iyi LLM sonuçları verecek şekilde iyileştir. Sadece iyileştirilmiş promptu döndür — başka açıklama, etiket veya ek metin ekleme.',
+        },
+        {
+          role:    'user',
+          content: `Şu promptu iyileştir:\n\n${text}`,
+        },
+      ],
+    }),
+  })
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+  const json = await resp.json()
+  const result: string = json.choices?.[0]?.message?.content?.trim() ?? ''
+  return result || text
+}
+
 // ── Utilities ────────────────────────────────────────────────────────────────
 
 function approxTokens(s: string): number {

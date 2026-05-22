@@ -3,6 +3,7 @@ import type { KeyboardEvent, ClipboardEvent, ChangeEvent } from 'react'
 import { useStore, t, DEFAULT_ENDPOINTS } from '../../store'
 import type { OutputFormat } from '../../store'
 import { proxyRequest, extractFileText } from '../../api'
+import { improvePrompt } from '../../api/llm'
 
 // ── Format pill definitions ───────────────────────────────────────────────────
 const FORMAT_PILLS: { id: OutputFormat; label: string; title: string }[] = [
@@ -75,8 +76,11 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
   const conv  = store.currentConv()
   const [input, setInput] = useState('')
   const [attachedImage, setAttachedImage] = useState<string | null>(null)
-  const [attachedDoc,   setAttachedDoc]   = useState<{ name: string; text: string; truncated: boolean } | null>(null)
-  const [docLoading,    setDocLoading]    = useState(false)
+  const [attachedDoc,     setAttachedDoc]     = useState<{ name: string; text: string; truncated: boolean } | null>(null)
+  const [docLoading,      setDocLoading]      = useState(false)
+  const [improving,       setImproving]       = useState(false)
+  const [suggestion,      setSuggestion]      = useState<string | null>(null)
+  const [suggestionEdit,  setSuggestionEdit]  = useState('')
   const ref     = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -219,9 +223,81 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
     store.updateConvSettings(conv.id, { outputFormat: fmt })
   }
 
+  // ── Meta-prompt: improve current input ────────────────────────────────────
+  const onImprove = async () => {
+    const text = input.trim()
+    if (!text || improving) return
+    setImproving(true)
+    setSuggestion(null)
+    try {
+      const tok = store.auth.token ?? localStorage.getItem('setllm-token') ?? ''
+      const improved = await improvePrompt(text, tok)
+      setSuggestion(improved)
+      setSuggestionEdit(improved)
+    } catch (e) {
+      alert(`Prompt iyileştirme başarısız: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setImproving(false)
+    }
+  }
+
+  const applySuggestion = () => {
+    setInput(suggestionEdit)
+    setSuggestion(null)
+    ref.current?.focus()
+    setTimeout(resize, 0)
+  }
+
+  const dismissSuggestion = () => setSuggestion(null)
+
   return (
     <div className="shrink-0 px-4 pt-2 pb-4 w-full" style={{ background: 'var(--bg)' }}>
       <div className="mx-auto" style={{ maxWidth: '760px' }}>
+        {/* ── Meta-prompt suggestion panel ─────────────────────────────── */}
+        {suggestion !== null && (
+          <div className="mb-3 rounded-xl overflow-hidden"
+               style={{ border: '1px solid rgba(138,180,248,0.4)', background: 'var(--surface)' }}>
+            {/* Header */}
+            <div className="flex items-center gap-2 px-3 py-2"
+                 style={{ background: 'rgba(138,180,248,0.08)', borderBottom: '1px solid rgba(138,180,248,0.2)' }}>
+              <span className="text-sm">✨</span>
+              <span className="text-xs font-semibold" style={{ color: 'var(--accent-hi)' }}>
+                İyileştirilmiş Prompt
+              </span>
+              <span className="text-[10px] ml-1" style={{ color: 'var(--mute)' }}>
+                — düzenleyebilirsiniz
+              </span>
+              <button onClick={dismissSuggestion} className="ml-auto cursor-pointer text-sm leading-none"
+                      style={{ color: 'var(--mute)' }} title="Kapat">×</button>
+            </div>
+            {/* Editable suggestion */}
+            <textarea
+              value={suggestionEdit}
+              onChange={e => setSuggestionEdit(e.target.value)}
+              rows={Math.min(8, suggestionEdit.split('\n').length + 1)}
+              className="w-full px-3 py-2.5 text-sm outline-none resize-none bg-transparent scrollbar-thin"
+              style={{ color: 'var(--text)', lineHeight: 1.6 }}
+            />
+            {/* Actions */}
+            <div className="flex gap-2 px-3 pb-3">
+              <button
+                onClick={applySuggestion}
+                className="flex-1 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition"
+                style={{ background: 'var(--accent)', color: '#0b1929' }}
+              >
+                ✓ Uygula
+              </button>
+              <button
+                onClick={dismissSuggestion}
+                className="px-4 py-1.5 rounded-lg text-xs cursor-pointer transition"
+                style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}
+              >
+                İptal
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Attached image preview */}
         {attachedImage && (
           <div className="mb-2 flex items-center gap-2 p-1.5 rounded-xl w-fit"
@@ -402,10 +478,37 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
             )
           })}
 
+          {/* ✨ Improve prompt button — only when there's meaningful input */}
+          {input.trim().length > 8 && (
+            <button
+              onClick={onImprove}
+              disabled={improving}
+              title="Promptu AI ile iyileştir"
+              className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] cursor-pointer transition disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{
+                background: improving ? 'rgba(138,180,248,0.15)' : 'transparent',
+                border:     '1px solid rgba(138,180,248,0.3)',
+                color:      'var(--accent-hi)',
+              }}
+              onMouseEnter={e => { if (!improving) (e.currentTarget as HTMLElement).style.background = 'rgba(138,180,248,0.12)' }}
+              onMouseLeave={e => { if (!improving) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+            >
+              {improving ? (
+                <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+                </svg>
+              ) : (
+                <span>✨</span>
+              )}
+              {improving ? 'İyileştiriliyor…' : 'İyileştir'}
+            </button>
+          )}
+
           {/* Token counter */}
           {inputTokens > 0 && (
             <span
-              className="ml-auto text-[10px] tabular-nums"
+              className={`${input.trim().length <= 8 ? 'ml-auto' : ''} text-[10px] tabular-nums`}
               style={{ color: tokenColor }}
               title={`Tahmini ${inputTokens} token (6000 pencere sınırı)`}
             >
