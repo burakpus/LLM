@@ -178,6 +178,30 @@ export async function getModelCapabilities(): Promise<Record<string, ModelCapabi
   return apiGet('/api/models/capabilities')
 }
 
+// ── File extract ─────────────────────────────────────────────────────────────
+
+export interface ExtractResult {
+  filename:  string
+  text:      string
+  truncated: boolean
+}
+
+/** Upload a document (.docx/.xlsx/.pdf/.txt) and get extracted plain text back */
+export async function extractFileText(file: File): Promise<ExtractResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const r = await fetch('/api/files/extract', {
+    method:  'POST',
+    headers: { Authorization: `Bearer ${token()}` },
+    body:    form,
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
 // ── Health ────────────────────────────────────────────────────────────────────
 
 export async function health(): Promise<boolean> {

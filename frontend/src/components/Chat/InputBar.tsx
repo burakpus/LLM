@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import type { KeyboardEvent, ClipboardEvent, ChangeEvent } from 'react'
 import { useStore, t, DEFAULT_ENDPOINTS } from '../../store'
-import { proxyRequest } from '../../api'
+import { proxyRequest, extractFileText } from '../../api'
 
 interface Props {
   onSend:     (text: string, image?: string) => void
@@ -57,6 +57,8 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
   const conv  = store.currentConv()
   const [input, setInput] = useState('')
   const [attachedImage, setAttachedImage] = useState<string | null>(null)
+  const [attachedDoc,   setAttachedDoc]   = useState<{ name: string; text: string; truncated: boolean } | null>(null)
+  const [docLoading,    setDocLoading]    = useState(false)
   const ref     = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -71,17 +73,26 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
 
   const submit = () => {
     const text = input.trim()
-    if ((!text && !attachedImage) || generating) return
+    if ((!text && !attachedImage && !attachedDoc) || generating) return
     if (attachedImage && visionDebug()) {
       const rid = Math.random().toString(36).slice(2, 8)
       ;(window as any).__visionRid = rid
       console.log(`[VISION ${rid}] 1. submit() — text="${text.slice(0, 40)}" image=${attachedImage.length} chars`)
     }
+
+    // Prepend document content to message as context block
+    let fullText = text
+    if (attachedDoc) {
+      const truncNote = attachedDoc.truncated ? '\n...(dosya çok uzundu, ilk kısım alındı)' : ''
+      fullText = `${text ? text + '\n\n' : ''}[Dosya eki: ${attachedDoc.name}]\n${attachedDoc.text}${truncNote}`
+    }
+
     setInput('')
+    setAttachedDoc(null)
     const img = attachedImage ?? undefined
     setAttachedImage(null)
     if (ref.current) ref.current.style.height = 'auto'
-    onSend(text, img)
+    onSend(fullText, img)
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -110,9 +121,24 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
   const onFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
     if (!f) return
-    const dataUrl = await fileToDataUrl(f)
-    setAttachedImage(dataUrl)
     e.target.value = ''
+
+    if (f.type.startsWith('image/')) {
+      // Image — attach as base64 for vision models
+      const dataUrl = await fileToDataUrl(f)
+      setAttachedImage(dataUrl)
+    } else {
+      // Document — extract text via backend
+      setDocLoading(true)
+      try {
+        const result = await extractFileText(f)
+        setAttachedDoc(result)
+      } catch (err) {
+        alert(`Dosya okunamadı: ${err instanceof Error ? err.message : 'Bilinmeyen hata'}`)
+      } finally {
+        setDocLoading(false)
+      }
+    }
   }
 
   const resize = () => {
@@ -159,7 +185,7 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
   const caps = store.modelCapabilities[activeModelId]
   const modelSupportsVision = caps ? caps.supportsVision : true
 
-  const hasText = !!input.trim() || !!attachedImage
+  const hasText = !!input.trim() || !!attachedImage || !!attachedDoc
 
   return (
     <div className="shrink-0 px-4 pt-2 pb-4 w-full" style={{ background: 'var(--bg)' }}>
@@ -176,38 +202,70 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-2)'}
               onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
             >
-              × Remove
+              × Kaldır
             </button>
+          </div>
+        )}
+
+        {/* Attached document chip */}
+        {attachedDoc && (
+          <div className="mb-2 flex items-center gap-2 p-1.5 rounded-xl w-fit"
+               style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)' }}>
+            <span style={{ fontSize: 18, lineHeight: 1 }}>📄</span>
+            <div className="flex flex-col min-w-0">
+              <span className="text-xs font-medium truncate" style={{ color: 'var(--text)', maxWidth: 200 }}
+                    title={attachedDoc.name}>
+                {attachedDoc.name.length > 28 ? attachedDoc.name.slice(0, 26) + '…' : attachedDoc.name}
+              </span>
+              {attachedDoc.truncated && (
+                <span className="text-[10px]" style={{ color: 'var(--mute)' }}>kısaltıldı</span>
+              )}
+            </div>
+            <button
+              onClick={() => setAttachedDoc(null)}
+              className="text-xs px-2 py-1 rounded-full cursor-pointer transition shrink-0"
+              style={{ color: 'var(--mute)' }}
+              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-2)'}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+            >
+              × Kaldır
+            </button>
+          </div>
+        )}
+
+        {/* Document loading indicator */}
+        {docLoading && (
+          <div className="mb-2 text-xs flex items-center gap-1.5" style={{ color: 'var(--mute)' }}>
+            <span className="animate-spin inline-block">⏳</span> Dosya okunuyor...
           </div>
         )}
 
         {/* Main input — rounded-full container */}
         <div className="gemini-input flex items-end gap-1 px-2 py-2">
-          {/* Attach button — only shown if active model supports vision */}
-          {modelSupportsVision && (
-            <>
-              <button
-                onClick={() => fileRef.current?.click()}
-                title={t('attach')}
-                className="h-10 w-10 rounded-full flex items-center justify-center cursor-pointer transition shrink-0"
-                style={{ color: 'var(--text-2)' }}
-                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
-                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round"
-                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                </svg>
-              </button>
-              <input
-                ref={fileRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={onFile}
-              />
-            </>
-          )}
+          {/* Attach button — always visible; accepts images on vision models, docs always */}
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={docLoading}
+            title={modelSupportsVision ? 'Resim veya dosya ekle (.docx, .xlsx, .pdf, .txt)' : 'Dosya ekle (.docx, .xlsx, .pdf, .txt)'}
+            className="h-10 w-10 rounded-full flex items-center justify-center cursor-pointer transition shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ color: 'var(--text-2)' }}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round"
+                d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+            </svg>
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept={modelSupportsVision
+              ? 'image/*,.docx,.doc,.xlsx,.xls,.pdf,.txt,.md,.csv'
+              : '.docx,.doc,.xlsx,.xls,.pdf,.txt,.md,.csv'}
+            className="hidden"
+            onChange={onFile}
+          />
 
           <textarea
             ref={ref}
@@ -223,7 +281,7 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
 
           <button
             onClick={generating ? onStop : submit}
-            disabled={!generating && !hasText}
+            disabled={(!generating && !hasText) || docLoading}
             className="h-10 w-10 rounded-full flex items-center justify-center shrink-0 transition cursor-pointer disabled:cursor-not-allowed"
             style={generating
               ? { background: 'rgba(234,67,53,0.18)', color: '#ea4335' }

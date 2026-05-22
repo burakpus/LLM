@@ -163,6 +163,42 @@ app.MapGet("/api/auth/me", [Authorize] (ClaimsPrincipal user) =>
 
 
 // =============================================================================
+// ─── File Extract ─────────────────────────────────────────────────────────────
+
+// POST /api/files/extract — parse uploaded document and return plain text (for chat injection)
+// Supported: .txt, .md, .csv, .pdf, .docx, .xlsx
+app.MapPost("/api/files/extract", [Authorize] async (HttpContext http, CancellationToken ct) =>
+{
+    if (!http.Request.HasFormContentType)
+        return Results.BadRequest(new { error = "multipart/form-data required" });
+
+    var form = await http.Request.ReadFormAsync(ct);
+    var file = form.Files.FirstOrDefault();
+    if (file == null)
+        return Results.BadRequest(new { error = "No file uploaded" });
+
+    const int MaxChars = 16_000; // ~4000 tokens
+
+    using var ms = new MemoryStream();
+    await file.CopyToAsync(ms, ct);
+
+    string text;
+    try
+    {
+        text = SetYazilim.Llm.Api.Admin.DocumentParser.ExtractText(ms.ToArray(), file.FileName);
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = $"Dosya okunamadı: {ex.Message}" });
+    }
+
+    var truncated = text.Length > MaxChars;
+    if (truncated) text = text[..MaxChars];
+
+    return Results.Ok(new { filename = file.FileName, text, truncated });
+});
+
+// =============================================================================
 // ─── Skills ──────────────────────────────────────────────────────────────────
 
 // GET /api/skills — list skills with metadata
