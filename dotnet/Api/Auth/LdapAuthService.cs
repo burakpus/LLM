@@ -116,27 +116,41 @@ public sealed class LdapAuthService : ILdapAuthService
             conn.SessionOptions.ProtocolVersion = 3;
             conn.Bind();
 
+            // Build base DN from host: setyazilim.com → DC=setyazilim,DC=com
+            var baseDn = string.Join(",", uri.Host.Split('.')
+                .Select(part => $"DC={part}"));
+
             // Search for the user and retrieve memberOf attribute
             var searchReq = new SearchRequest(
-                string.Empty,
+                baseDn,
                 $"(sAMAccountName={username})",
                 SearchScope.Subtree,
                 "memberOf");
 
             var resp = (SearchResponse)conn.SendRequest(searchReq);
-            if (resp.Entries.Count == 0) return false;
+            if (resp.Entries.Count == 0)
+            {
+                _log.LogWarning("IsAdmin: user {User}@{Domain} not found in LDAP (baseDn={BaseDn})", username, domain, baseDn);
+                return false;
+            }
 
             var entry    = resp.Entries[0];
             var memberOf = entry.Attributes["memberOf"];
-            if (memberOf == null) return false;
+            if (memberOf == null)
+            {
+                _log.LogWarning("IsAdmin: user {User}@{Domain} has no memberOf attribute", username, domain);
+                return false;
+            }
 
             foreach (var raw in memberOf.GetValues(typeof(string)))
             {
                 var dn = raw?.ToString() ?? "";
-                // CN=Set Management,OU=... — extract CN part
+                // CN=setmanagement,OU=... — extract CN part
                 var cn = dn.Split(',').FirstOrDefault(p =>
                     p.TrimStart().StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
                     ?.Substring(3).Trim();
+
+                _log.LogDebug("IsAdmin: {User}@{Domain} memberOf CN='{Cn}'", username, domain, cn);
 
                 if (cn != null && _opts.AdminGroupSet.Contains(cn))
                 {
@@ -145,7 +159,8 @@ public sealed class LdapAuthService : ILdapAuthService
                 }
             }
 
-            _log.LogDebug("Admin access denied: {User}@{Domain} — not in any admin group", username, domain);
+            _log.LogWarning("Admin access denied: {User}@{Domain} — not in any admin group. AdminGroups={Groups}",
+                username, domain, _opts.AdminGroups);
             return false;
         }
         catch (Exception ex)
