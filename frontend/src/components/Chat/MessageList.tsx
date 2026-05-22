@@ -164,14 +164,16 @@ interface ItemProps {
   isLastAssistant: boolean
   convId:          string
   activeModel:     string
+  generating:      boolean
   onContinue?:     (i: number) => void
+  onRegenerate?:   () => void
   copy:            (t: string) => void
   downloadTxt:     (m: Message) => void
   downloadCode:    (m: Message) => void
 }
 
 const MessageItem = memo(function MessageItem({
-  m, idx, isLastAssistant, convId, activeModel, onContinue, copy, downloadTxt, downloadCode,
+  m, idx, isLastAssistant, convId, activeModel, generating, onContinue, onRegenerate, copy, downloadTxt, downloadCode,
 }: ItemProps) {
   if (m.role === 'tool_call' && m.toolCall) {
     return (
@@ -208,15 +210,16 @@ const MessageItem = memo(function MessageItem({
   return (
     <AssistantMessage
       m={m} idx={idx} isLastAssistant={isLastAssistant}
-      convId={convId} activeModel={activeModel}
-      onContinue={onContinue} copy={copy} downloadTxt={downloadTxt} downloadCode={downloadCode}
+      convId={convId} activeModel={activeModel} generating={generating}
+      onContinue={onContinue} onRegenerate={onRegenerate}
+      copy={copy} downloadTxt={downloadTxt} downloadCode={downloadCode}
     />
   )
 })
 
 // Separate component so ReactMarkdown re-renders don't bubble up
 const AssistantMessage = memo(function AssistantMessage({
-  m, idx, isLastAssistant, convId, activeModel, onContinue, copy, downloadTxt, downloadCode,
+  m, idx, isLastAssistant, convId, activeModel, generating, onContinue, onRegenerate, copy, downloadTxt, downloadCode,
 }: ItemProps) {
   return (
     <div className="group flex gap-3 w-full">
@@ -252,6 +255,7 @@ const AssistantMessage = memo(function AssistantMessage({
         )}
         {m.content && !m.streaming && (
           <MessageActions m={m} isLast={isLastAssistant} convId={convId} activeModel={activeModel}
+            generating={generating} onRegenerate={isLastAssistant ? onRegenerate : undefined}
             copy={copy} downloadTxt={downloadTxt} downloadCode={downloadCode} />
         )}
       </div>
@@ -260,8 +264,9 @@ const AssistantMessage = memo(function AssistantMessage({
 })
 
 // Action bar extracted to prevent hover state from affecting parent
-const MessageActions = memo(function MessageActions({ m, convId, activeModel, copy, downloadTxt, downloadCode }: {
+const MessageActions = memo(function MessageActions({ m, isLast, convId, activeModel, generating, onRegenerate, copy, downloadTxt, downloadCode }: {
   m: Message; isLast: boolean; convId: string; activeModel: string
+  generating: boolean; onRegenerate?: () => void
   copy: (t: string) => void; downloadTxt: (m: Message) => void; downloadCode: (m: Message) => void
 }) {
   const [rating, setRating]   = useState<1 | -1 | 0>(0)
@@ -317,6 +322,26 @@ const MessageActions = memo(function MessageActions({ m, convId, activeModel, co
           <path strokeLinecap="round" strokeLinejoin="round" d="M10 14H5.236a2 2 0 01-1.789-2.894l3.5-7A2 2 0 018.736 3h4.018c.163 0 .326.02.485.06L17 4m-7 10v5a2 2 0 002 2h.095c.5 0 .905-.405.905-.905 0-.71.232-1.4.654-1.962L17 13V4m-7 10h2m5-10h2a2 2 0 012 2v6a2 2 0 01-2 2h-2.5" />
         </svg>
       </button>
+
+      <div className="w-px h-3 mx-1" style={{ background: 'var(--border)' }} />
+
+      {/* Regenerate — only on last assistant message */}
+      {isLast && onRegenerate && (
+        <button
+          onClick={onRegenerate}
+          disabled={generating}
+          title="Yeniden üret"
+          className="flex items-center gap-1 px-2 py-1 rounded-full transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{ color: 'var(--mute)' }}
+          onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+          onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+      )}
 
       <div className="w-px h-3 mx-1" style={{ background: 'var(--border)' }} />
 
@@ -434,7 +459,9 @@ export default function MessageList({
             isLastAssistant={idx === lastAssistantIdx}
             convId={currentId}
             activeModel={activeModel}
+            generating={generating}
             onContinue={onContinue}
+            onRegenerate={onRegenerate}
             copy={copy}
             downloadTxt={downloadTxt}
             downloadCode={downloadCode}

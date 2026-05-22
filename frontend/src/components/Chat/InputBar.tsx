@@ -632,8 +632,7 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
                 <button
                   onClick={toggleAgent}
                   className="w-full flex items-center justify-between px-3 py-2.5 text-xs cursor-pointer transition"
-                  style={{ color: agentMode ? 'var(--accent-hi)' : 'var(--text-2)',
-                           borderBottom: onRegenerate ? '1px solid var(--border)' : 'none' }}
+                  style={{ color: agentMode ? 'var(--accent-hi)' : 'var(--text-2)' }}
                   onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-2)'}
                   onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
                 >
@@ -643,28 +642,12 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
                     </svg>
                     RAG
                   </span>
-                  <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center transition-colors`}
+                  <span className="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center transition-colors"
                         style={{ borderColor: agentMode ? 'var(--accent)' : 'var(--mute)',
-                                 background: agentMode ? 'var(--accent)' : 'transparent' }}>
+                                 background:  agentMode ? 'var(--accent)' : 'transparent' }}>
                     {agentMode && <span className="w-1.5 h-1.5 rounded-full bg-[#0b1929]" />}
                   </span>
                 </button>
-                {/* Regenerate */}
-                {onRegenerate && (
-                  <button
-                    onClick={() => { onRegenerate(); setShowModDrop(false) }}
-                    disabled={generating}
-                    className="w-full flex items-center gap-2 px-3 py-2.5 text-xs cursor-pointer transition disabled:opacity-40"
-                    style={{ color: 'var(--text-2)' }}
-                    onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-2)'}
-                    onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                    {t('regenerate')}
-                  </button>
-                )}
               </div>
             )}
           </div>
