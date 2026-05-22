@@ -4,6 +4,8 @@ import { useStore, t, DEFAULT_ENDPOINTS } from '../../store'
 import type { OutputFormat } from '../../store'
 import { proxyRequest, extractFileText } from '../../api'
 import { improvePrompt } from '../../api/llm'
+import { listTemplates } from '../../api/admin'
+import type { PromptTemplate } from '../../api/admin'
 
 // ── Format pill definitions ───────────────────────────────────────────────────
 const FORMAT_PILLS: { id: OutputFormat; label: string; title: string }[] = [
@@ -81,6 +83,11 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
   const [improving,       setImproving]       = useState(false)
   const [suggestion,      setSuggestion]      = useState<string | null>(null)
   const [suggestionEdit,  setSuggestionEdit]  = useState('')
+  // slash picker
+  const [templates,       setTemplates]       = useState<PromptTemplate[] | null>(null)
+  const [showPicker,      setShowPicker]      = useState(false)
+  // variable fill
+  const [varFill, setVarFill] = useState<{ tmpl: PromptTemplate; vals: Record<string, string> } | null>(null)
   const ref     = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -250,9 +257,146 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
 
   const dismissSuggestion = () => setSuggestion(null)
 
+  // ── Slash picker ──────────────────────────────────────────────────────────
+  const slashFilter = input.startsWith('/') ? input.slice(1).toLowerCase() : ''
+  const pickerVisible = showPicker && input.startsWith('/')
+
+  const filteredTemplates = (templates ?? []).filter(t =>
+    !slashFilter ||
+    t.name.toLowerCase().includes(slashFilter) ||
+    t.collection.toLowerCase().includes(slashFilter)
+  )
+
+  const onInputChange = async (val: string) => {
+    setInput(val)
+    if (val.startsWith('/')) {
+      setShowPicker(true)
+      if (!templates) {
+        try { setTemplates(await listTemplates()) } catch { setTemplates([]) }
+      }
+    } else {
+      setShowPicker(false)
+    }
+  }
+
+  const selectTemplate = (tmpl: PromptTemplate) => {
+    setShowPicker(false)
+    if (tmpl.variables.length === 0) {
+      setInput(tmpl.content)
+      ref.current?.focus()
+      setTimeout(resize, 0)
+    } else {
+      const vals: Record<string, string> = {}
+      for (const v of tmpl.variables) vals[v] = ''
+      setVarFill({ tmpl, vals })
+      setInput('')
+    }
+  }
+
+  const applyVarFill = () => {
+    if (!varFill) return
+    let result = varFill.tmpl.content
+    for (const [k, v] of Object.entries(varFill.vals))
+      result = result.split(`{{${k}}}`).join(v)
+    setInput(result)
+    setVarFill(null)
+    ref.current?.focus()
+    setTimeout(resize, 0)
+  }
+
   return (
     <div className="shrink-0 px-4 pt-2 pb-4 w-full" style={{ background: 'var(--bg)' }}>
       <div className="mx-auto" style={{ maxWidth: '760px' }}>
+        {/* ── Variable fill panel ──────────────────────────────────────── */}
+        {varFill && (
+          <div className="mb-3 rounded-xl overflow-hidden"
+               style={{ border: '1px solid rgba(138,180,248,0.4)', background: 'var(--surface)' }}>
+            <div className="flex items-center gap-2 px-3 py-2"
+                 style={{ background: 'rgba(138,180,248,0.08)', borderBottom: '1px solid rgba(138,180,248,0.2)' }}>
+              <span className="text-sm">📝</span>
+              <span className="text-xs font-semibold" style={{ color: 'var(--accent-hi)' }}>
+                {varFill.tmpl.name}
+              </span>
+              <span className="text-[10px]" style={{ color: 'var(--mute)' }}>— değişkenleri doldurun</span>
+              <button onClick={() => setVarFill(null)} className="ml-auto cursor-pointer text-sm" style={{ color: 'var(--mute)' }}>×</button>
+            </div>
+            <div className="px-3 py-3 space-y-2">
+              {varFill.tmpl.variables.map(v => (
+                <label key={v} className="flex items-center gap-2">
+                  <span className="text-xs font-mono shrink-0 w-28 truncate"
+                        style={{ color: 'var(--accent-hi)' }}>{`{{${v}}}`}</span>
+                  <input
+                    value={varFill.vals[v] ?? ''}
+                    onChange={e => setVarFill(f => f ? { ...f, vals: { ...f.vals, [v]: e.target.value } } : null)}
+                    placeholder={v}
+                    className="flex-1 rounded-md px-2 py-1 text-sm outline-none"
+                    style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-2 px-3 pb-3">
+              <button onClick={applyVarFill}
+                      className="flex-1 py-1.5 rounded-lg text-xs font-semibold cursor-pointer"
+                      style={{ background: 'var(--accent)', color: '#0b1929' }}>
+                ✓ Uygula
+              </button>
+              <button onClick={() => setVarFill(null)}
+                      className="px-4 py-1.5 rounded-lg text-xs cursor-pointer"
+                      style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                İptal
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Slash picker dropdown ─────────────────────────────────────── */}
+        {pickerVisible && (
+          <div className="mb-2 rounded-xl overflow-hidden shadow-lg"
+               style={{ border: '1px solid var(--border)', background: 'var(--surface)', maxHeight: 260, overflowY: 'auto' }}>
+            <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider font-semibold"
+                 style={{ color: 'var(--mute)', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+              Prompt Şablonları {slashFilter && `— "${slashFilter}"`}
+            </div>
+            {filteredTemplates.length === 0 ? (
+              <div className="px-3 py-4 text-xs text-center" style={{ color: 'var(--mute)' }}>
+                Şablon bulunamadı
+              </div>
+            ) : (
+              filteredTemplates.map(tmpl => (
+                <button key={tmpl.id} onClick={() => selectTemplate(tmpl)}
+                        className="w-full text-left px-3 py-2.5 cursor-pointer transition"
+                        style={{ borderBottom: '1px solid var(--border)' }}
+                        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+                        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium" style={{ color: 'var(--text)' }}>{tmpl.name}</span>
+                    {tmpl.collection && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full"
+                            style={{ background: 'var(--surface-2)', color: 'var(--mute)' }}>
+                        {tmpl.collection}
+                      </span>
+                    )}
+                  </div>
+                  {tmpl.variables.length > 0 && (
+                    <div className="flex gap-1 mt-0.5">
+                      {tmpl.variables.map(v => (
+                        <span key={v} className="text-[9px] px-1 rounded font-mono"
+                              style={{ background: 'rgba(138,180,248,0.12)', color: 'var(--accent-hi)' }}>
+                          {`{{${v}}}`}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-[11px] mt-0.5 truncate" style={{ color: 'var(--mute)' }}>
+                    {tmpl.content.slice(0, 80)}{tmpl.content.length > 80 ? '…' : ''}
+                  </p>
+                </button>
+              ))
+            )}
+          </div>
+        )}
+
         {/* ── Meta-prompt suggestion panel ─────────────────────────────── */}
         {suggestion !== null && (
           <div className="mb-3 rounded-xl overflow-hidden"
@@ -378,7 +522,7 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
           <textarea
             ref={ref}
             value={input}
-            onChange={e => { setInput(e.target.value); resize() }}
+            onChange={e => { onInputChange(e.target.value); resize() }}
             onKeyDown={onKey}
             onPaste={onPaste}
             placeholder={t('placeholder') || 'Ask SET LLM...'}

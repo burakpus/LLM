@@ -132,6 +132,53 @@ export async function deleteSkill(id: string): Promise<{ deleted: string }> {
   return r.json()
 }
 
+// ── Prompt Templates ─────────────────────────────────────────────────────────
+
+export interface PromptTemplate {
+  id:         number
+  name:       string
+  content:    string
+  variables:  string[]   // extracted {{variable}} names
+  collection: string
+  createdBy:  string
+  createdAt:  string
+}
+
+export async function listTemplates(): Promise<PromptTemplate[]> {
+  const r = await fetch('/api/templates', { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export async function createTemplate(name: string, content: string, collection: string): Promise<PromptTemplate> {
+  const r = await fetch('/api/admin/templates', {
+    method:  'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify({ name, content, collection }),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
+export async function updateTemplate(id: number, name: string, content: string, collection: string): Promise<void> {
+  const r = await fetch(`/api/admin/templates/${id}`, {
+    method:  'PUT',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify({ name, content, collection }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+}
+
+export async function deleteTemplate(id: number): Promise<void> {
+  const r = await fetch(`/api/admin/templates/${id}`, {
+    method: 'DELETE', headers: authHeaders(),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+}
+
 // ── Usage (LiteLLM spend) ────────────────────────────────────────────────────
 
 export interface UserSpend  {

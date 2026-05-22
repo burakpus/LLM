@@ -110,6 +110,27 @@ services.AddHttpClient("proxy");
 // =============================================================================
 var app = builder.Build();
 
+// =============================================================================
+// ─── Startup: ensure prompt_templates table exists ───────────────────────────
+{
+    await using var scope = app.Services.CreateAsyncScope();
+    var ds0 = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+    await using var c0  = await ds0.OpenConnectionAsync();
+    await using var cmd0 = c0.CreateCommand();
+    cmd0.CommandText = @"
+        CREATE TABLE IF NOT EXISTS prompt_templates (
+            id          SERIAL PRIMARY KEY,
+            name        VARCHAR(200) NOT NULL,
+            content     TEXT         NOT NULL,
+            variables   TEXT         NOT NULL DEFAULT '[]',
+            collection  VARCHAR(100) NOT NULL DEFAULT '',
+            created_by  VARCHAR(100) NOT NULL DEFAULT '',
+            created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )";
+    await cmd0.ExecuteNonQueryAsync();
+}
+
 app.UseCors("ui");
 app.UseAuthentication();
 app.UseAuthorization();
@@ -196,6 +217,102 @@ app.MapPost("/api/files/extract", [Authorize] async (HttpContext http, Cancellat
     if (truncated) text = text[..MaxChars];
 
     return Results.Ok(new { filename = file.FileName, text, truncated });
+});
+
+// =============================================================================
+// ─── Prompt Templates ────────────────────────────────────────────────────────
+
+// Extract {{variable}} names from template content
+string[] ExtractTemplateVars(string content) =>
+    System.Text.RegularExpressions.Regex.Matches(content, @"\{\{(\w+)\}\}")
+        .Cast<System.Text.RegularExpressions.Match>()
+        .Select(m => m.Groups[1].Value)
+        .Distinct()
+        .ToArray();
+
+// GET /api/templates — list all (all authenticated users, for chat slash picker)
+app.MapGet("/api/templates", [Authorize] async (NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"SELECT id, name, content, variables, collection, created_by, created_at
+                        FROM prompt_templates ORDER BY collection, name";
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    var rows = new List<object>();
+    while (await r.ReadAsync(ct))
+        rows.Add(new {
+            id         = r.GetInt32(0),
+            name       = r.GetString(1),
+            content    = r.GetString(2),
+            variables  = JsonSerializer.Deserialize<string[]>(r.GetString(3)) ?? Array.Empty<string>(),
+            collection = r.GetString(4),
+            createdBy  = r.GetString(5),
+            createdAt  = r.GetDateTime(6),
+        });
+    return Results.Ok(rows);
+});
+
+// POST /api/admin/templates — create (admin only)
+app.MapPost("/api/admin/templates", [Authorize("AdminOnly")] async (
+    [FromBody] TemplateUpsertRequest req,
+    ClaimsPrincipal user,
+    NpgsqlDataSource ds,
+    CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Name) || string.IsNullOrWhiteSpace(req.Content))
+        return Results.BadRequest(new { error = "Name and Content are required" });
+
+    var vars     = ExtractTemplateVars(req.Content);
+    var varsJson = JsonSerializer.Serialize(vars);
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"INSERT INTO prompt_templates (name, content, variables, collection, created_by)
+                        VALUES ($1, $2, $3, $4, $5) RETURNING id";
+    cmd.Parameters.AddWithValue(req.Name.Trim());
+    cmd.Parameters.AddWithValue(req.Content);
+    cmd.Parameters.AddWithValue(varsJson);
+    cmd.Parameters.AddWithValue(req.Collection?.Trim() ?? "");
+    cmd.Parameters.AddWithValue(username);
+    var id = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+    return Results.Ok(new { id, name = req.Name.Trim(), variables = vars });
+});
+
+// PUT /api/admin/templates/{id} — update (admin only)
+app.MapPut("/api/admin/templates/{id:int}", [Authorize("AdminOnly")] async (
+    int id,
+    [FromBody] TemplateUpsertRequest req,
+    NpgsqlDataSource ds,
+    CancellationToken ct) =>
+{
+    var vars     = ExtractTemplateVars(req.Content);
+    var varsJson = JsonSerializer.Serialize(vars);
+
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"UPDATE prompt_templates
+                        SET name=$1, content=$2, variables=$3, collection=$4, updated_at=NOW()
+                        WHERE id=$5";
+    cmd.Parameters.AddWithValue(req.Name.Trim());
+    cmd.Parameters.AddWithValue(req.Content);
+    cmd.Parameters.AddWithValue(varsJson);
+    cmd.Parameters.AddWithValue(req.Collection?.Trim() ?? "");
+    cmd.Parameters.AddWithValue(id);
+    var rows = await cmd.ExecuteNonQueryAsync(ct);
+    return rows == 0 ? Results.NotFound() : Results.Ok(new { id, variables = vars });
+});
+
+// DELETE /api/admin/templates/{id} — delete (admin only)
+app.MapDelete("/api/admin/templates/{id:int}", [Authorize("AdminOnly")] async (
+    int id, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = "DELETE FROM prompt_templates WHERE id=$1";
+    cmd.Parameters.AddWithValue(id);
+    await cmd.ExecuteNonQueryAsync(ct);
+    return Results.NoContent();
 });
 
 // =============================================================================
@@ -996,6 +1113,7 @@ app.Run();
 // =============================================================================
 
 public sealed record LoginRequest(string Username, string Password, string Domain);
+public sealed record TemplateUpsertRequest(string Name, string Content, string? Collection);
 
 public sealed record ApiChatRequest(
     string    SessionId,
