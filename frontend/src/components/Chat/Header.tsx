@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useStore, t } from '../../store'
 import { logout } from '../../api'
 import type { Skill } from '../../api'
@@ -152,14 +152,14 @@ export default function Header({ skills, statusOk }: Props) {
   const store = useStore()
   const conv  = store.currentConv()
   const settings = conv?.settings
-  const [helpOpen, setHelpOpen] = useState(false)
+  const [helpOpen,       setHelpOpen]       = useState(false)
+  const [statusTooltip,  setStatusTooltip]  = useState(false)
 
   const statusClass = statusOk === true  ? 'ok'
                     : statusOk === false ? 'bad'
                     : ''
-  const statusLabel = statusOk === true  ? t('online')
-                    : statusOk === false ? t('offline')
-                    : t('checking')
+  // Detailed status for tooltip — prefer store.status (has "warming up" etc.)
+  const statusDetail = store.status || (statusOk === true ? t('online') : statusOk === false ? t('offline') : t('checking'))
 
   const handleLogout = () => {
     logout()
@@ -197,12 +197,6 @@ export default function Header({ skills, statusOk }: Props) {
         </span>
       </div>
 
-      {/* Status */}
-      <div className="flex items-center gap-1.5 ml-2">
-        <span className={`status-dot ${statusClass}`} />
-        <span className="text-[11px]" style={{ color: 'var(--mute)' }}>{statusLabel}</span>
-      </div>
-
       {/* Agentic */}
       {settings?.agenticEnabled && (
         <span className="ml-2 text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded-full"
@@ -227,10 +221,26 @@ export default function Header({ skills, statusOk }: Props) {
       {/* Vertical divider */}
       <div className="h-5 mx-2" style={{ borderLeft: '1px solid var(--border)' }} />
 
-      {/* User */}
-      <span className="text-[11px] hidden md:inline" style={{ color: 'var(--mute)' }}>
-        {store.auth.username}
-      </span>
+      {/* User + status dot */}
+      <div className="hidden md:flex items-center gap-1.5 relative"
+           onMouseEnter={() => setStatusTooltip(true)}
+           onMouseLeave={() => setStatusTooltip(false)}>
+        {/* Status dot */}
+        <span className={`status-dot ${statusClass}`} style={{ cursor: 'default' }} />
+        <span className="text-[11px]" style={{ color: 'var(--mute)' }}>
+          {store.auth.username}
+        </span>
+        {/* Tooltip */}
+        {statusTooltip && (
+          <div className="absolute bottom-full left-0 mb-2 px-2.5 py-1.5 rounded-lg text-[11px] whitespace-nowrap z-50 pointer-events-none"
+               style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text)', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
+            {statusDetail}
+            {/* Arrow */}
+            <div className="absolute top-full left-3 w-0 h-0"
+                 style={{ borderLeft: '4px solid transparent', borderRight: '4px solid transparent', borderTop: '4px solid var(--border)' }} />
+          </div>
+        )}
+      </div>
 
       {/* Admin — only visible to Set Management / Set AIAdmin group members */}
       {store.auth.isAdmin && (

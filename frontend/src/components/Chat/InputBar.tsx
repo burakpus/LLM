@@ -795,18 +795,13 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
 
           {/* Token counter */}
           {inputTokens > 0 && (
-            <span className="text-[10px] tabular-nums"
-                  style={{ color: tokenColor, marginLeft: input.trim().length <= 8 ? 'auto' : '4px' }}
+            <span className="ml-auto text-[10px] tabular-nums"
+                  style={{ color: tokenColor }}
                   title={`Tahmini ${inputTokens} token (6000 pencere sınırı)`}>
               ~{inputTokens.toLocaleString()} tok
             </span>
           )}
 
-          {/* Connection status */}
-          <div className="ml-auto flex items-center gap-1 text-[11px]" style={{ color: 'var(--mute-2)' }}>
-            <span className={`status-dot ${store.statusOk ? 'ok' : store.statusOk === false ? 'bad' : ''}`} />
-            <span>{store.status}</span>
-          </div>
         </div>
       </div>
     </div>
