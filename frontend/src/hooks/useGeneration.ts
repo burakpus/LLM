@@ -7,6 +7,7 @@ import {
 import { streamCompletion, BUILTIN_TOOLS } from '../api/llm'
 import type { StreamEvent } from '../api/llm'
 import { proxyRequest } from '../api'
+import { computeDiff } from '../components/Chat/DiffView'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -360,7 +361,7 @@ export function useGeneration() {
             while ((m = FILE_BLOCK.exec(delta)) !== null) {
               const filePath   = m[1].trim()
               const newContent = m[2]
-              const { computeDiff } = await import('../components/Chat/DiffView')
+
               const originalContent = proj.files[filePath] ?? ''
               const diffLines = computeDiff(originalContent, newContent)
               store.setPendingChange({ path: filePath, originalContent, newContent, diffLines })
