@@ -34,7 +34,8 @@ export default function SettingsPanel() {
   const [customToolsText, setCustomToolsText] = useState(() =>
     JSON.stringify(settings.customTools ?? [], null, 2)
   )
-  const [helpOpen, setHelpOpen] = useState(false)
+  const [helpOpen, setHelpOpen]     = useState(false)
+  const [groupsOpen, setGroupsOpen] = useState(false)
 
   useEffect(() => {
     setCustomToolsText(JSON.stringify(settings.customTools ?? [], null, 2))
@@ -94,56 +95,7 @@ export default function SettingsPanel() {
             </button>
           </div>
 
-          {/* ── Bilgi ─────────────────────────────────────────────── */}
-          <SectionLabel>Hesap</SectionLabel>
-
-          <div className="rounded-xl overflow-hidden text-[11px]"
-               style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
-            <div className="px-3 py-2 flex items-center justify-between"
-                 style={{ borderBottom: '1px solid var(--border)' }}>
-              <span style={{ color: 'var(--mute)' }}>Kullanıcı</span>
-              <strong style={{ color: 'var(--text)' }}>{store.auth.username}</strong>
-            </div>
-            <div className="px-3 py-2 flex items-center justify-between"
-                 style={{ borderBottom: '1px solid var(--border)' }}>
-              <span style={{ color: 'var(--mute)' }}>Domain</span>
-              <strong style={{ color: 'var(--text)' }}>{store.auth.domain}</strong>
-            </div>
-            {store.auth.groups && store.auth.groups.length > 0 && (
-              <div className="px-3 py-2 flex items-center justify-between gap-2"
-                   style={{ borderBottom: '1px solid var(--border)' }}>
-                <span style={{ color: 'var(--mute)' }}>Gruplar</span>
-                <div className="flex gap-1 flex-wrap justify-end">
-                  {store.auth.groups.map(g => (
-                    <span key={g} className="px-1.5 py-0.5 rounded text-[10px] font-medium"
-                          style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>
-                      {g}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-            <div className="px-3 py-2 flex items-center justify-between">
-              <span style={{ color: 'var(--mute)' }}>
-                Sohbetler: <strong style={{ color: 'var(--text)' }}>{store.conversations.length}</strong>
-              </span>
-              <button
-                onClick={onClearChat}
-                title="Sohbeti temizle"
-                className="p-1.5 rounded-md cursor-pointer transition"
-                style={{ color: '#ef4444' }}
-                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(239,68,68,0.1)'}
-                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round"
-                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3" />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          {/* ── Uygulama ──────────────────────────────────────────── */}
+          {/* ── Uygulama (en üst, sık kullanılan) ─────────────────── */}
           <SectionLabel>Uygulama</SectionLabel>
 
           <div className="rounded-xl overflow-hidden"
@@ -203,6 +155,78 @@ export default function SettingsPanel() {
                 Admin Paneli
               </a>
             )}
+          </div>
+
+          {/* ── Hesap ─────────────────────────────────────────────── */}
+          <SectionLabel>Hesap</SectionLabel>
+
+          <div className="rounded-xl overflow-hidden text-[11px]"
+               style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+            <div className="px-3 py-2 flex items-center justify-between"
+                 style={{ borderBottom: '1px solid var(--border)' }}>
+              <span style={{ color: 'var(--mute)' }}>Kullanıcı</span>
+              <strong style={{ color: 'var(--text)' }}>{store.auth.username}</strong>
+            </div>
+            <div className="px-3 py-2 flex items-center justify-between"
+                 style={{ borderBottom: '1px solid var(--border)' }}>
+              <span style={{ color: 'var(--mute)' }}>Domain</span>
+              <strong style={{ color: 'var(--text)' }}>{store.auth.domain}</strong>
+            </div>
+            {store.auth.groups && store.auth.groups.length > 0 && (() => {
+              const all = store.auth.groups
+              const visible = groupsOpen ? all : all.slice(0, 3)
+              const hidden = all.length - visible.length
+              return (
+                <div className="px-3 py-2 flex items-start justify-between gap-2"
+                     style={{ borderBottom: '1px solid var(--border)' }}>
+                  <span style={{ color: 'var(--mute)' }}>Gruplar</span>
+                  <div className="flex gap-1 flex-wrap justify-end" style={{ maxWidth: '70%' }}>
+                    {visible.map(g => (
+                      <span key={g} className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                            style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}
+                            title={g}>
+                        {g.length > 16 ? g.slice(0, 14) + '…' : g}
+                      </span>
+                    ))}
+                    {hidden > 0 && (
+                      <button
+                        onClick={() => setGroupsOpen(true)}
+                        className="px-1.5 py-0.5 rounded text-[10px] font-medium cursor-pointer transition"
+                        style={{ background: 'rgba(138,180,248,0.15)', color: 'var(--accent-hi)', border: '1px solid rgba(138,180,248,0.3)' }}
+                        title={`${hidden} grup daha`}>
+                        +{hidden} …
+                      </button>
+                    )}
+                    {groupsOpen && all.length > 3 && (
+                      <button
+                        onClick={() => setGroupsOpen(false)}
+                        className="px-1.5 py-0.5 rounded text-[10px] font-medium cursor-pointer transition"
+                        style={{ color: 'var(--mute)' }}>
+                        gizle
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })()}
+            <div className="px-3 py-2 flex items-center justify-between">
+              <span style={{ color: 'var(--mute)' }}>
+                Sohbetler: <strong style={{ color: 'var(--text)' }}>{store.conversations.length}</strong>
+              </span>
+              <button
+                onClick={onClearChat}
+                title="Sohbeti temizle"
+                className="p-1.5 rounded-md cursor-pointer transition"
+                style={{ color: '#ef4444' }}
+                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(239,68,68,0.1)'}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round"
+                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3" />
+                </svg>
+              </button>
+            </div>
           </div>
 
           {/* ── Parametreler (gelişmiş, en altta) ─────────────────── */}
