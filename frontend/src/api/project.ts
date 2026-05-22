@@ -48,3 +48,10 @@ export async function deleteFile(projectId: string, path: string): Promise<void>
     { method: 'DELETE', headers: authHeaders() })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
 }
+
+export async function deleteProject(projectId: string): Promise<void> {
+  const r = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}`,
+    { method: 'DELETE', headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+}

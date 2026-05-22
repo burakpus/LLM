@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../../store'
-import { writeFile, listFiles } from '../../api/project'
+import { writeFile, listFiles, deleteProject } from '../../api/project'
 import { computeDiff } from './DiffView'
 import DiffView from './DiffView'
 
@@ -24,13 +24,15 @@ export default function ProjectPanel({ onFileContext }: Props) {
   const store = useStore()
   const { project } = store
 
-  const [saving,    setSaving]    = useState(false)
-  const [err,       setErr]       = useState<string | null>(null)
-  const [editMode,  setEditMode]  = useState(false)
-  const [editText,  setEditText]  = useState('')
-  const [newMode,   setNewMode]   = useState(false)
-  const [newName,   setNewName]   = useState('')
-  const [newText,   setNewText]   = useState('')
+  const [saving,        setSaving]        = useState(false)
+  const [err,           setErr]           = useState<string | null>(null)
+  const [editMode,      setEditMode]      = useState(false)
+  const [editText,      setEditText]      = useState('')
+  const [newMode,       setNewMode]       = useState(false)
+  const [newName,       setNewName]       = useState('')
+  const [newText,       setNewText]       = useState('')
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [deleting,      setDeleting]      = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   if (!project.projectId) return null
@@ -97,6 +99,20 @@ export default function ProjectPanel({ onFileContext }: Props) {
     if (onFileContext) onFileContext(`@${path} `)
   }
 
+  const onDeleteProject = async () => {
+    if (!project.projectId) return
+    setDeleting(true); setErr(null)
+    try {
+      await deleteProject(project.projectId)
+      store.setProjectId(null)
+    } catch (e: any) {
+      setErr(e.message ?? 'Silme başarısız')
+      setDeleteConfirm(false)
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div
       className="fixed top-14 right-0 bottom-0 flex flex-col"
@@ -117,12 +133,64 @@ export default function ProjectPanel({ onFileContext }: Props) {
                 title="Yeni dosya">
           + Yeni
         </button>
+        {/* Delete project button */}
+        <button onClick={() => setDeleteConfirm(true)}
+                className="px-1.5 py-0.5 rounded text-[10px] cursor-pointer transition"
+                style={{ color: '#ef4444', border: '1px solid transparent' }}
+                title="Projeyi sil"
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(239,68,68,0.1)'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(239,68,68,0.4)' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }}>
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round"
+              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/>
+          </svg>
+        </button>
+        {/* Close panel (does NOT delete) */}
         <button onClick={() => store.setProjectId(null)}
                 className="px-2 py-0.5 rounded text-[10px] cursor-pointer"
-                style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)' }}>
+                style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)' }}
+                title="Kapat (silmez)">
           ✕
         </button>
       </div>
+
+      {/* Delete confirmation banner */}
+      {deleteConfirm && (
+        <div className="shrink-0 px-3 py-3 space-y-2"
+             style={{ background: 'rgba(239,68,68,0.08)', borderBottom: '1px solid rgba(239,68,68,0.3)' }}>
+          <div className="flex items-start gap-2">
+            <span className="text-base shrink-0">⚠️</span>
+            <div className="text-xs leading-relaxed" style={{ color: '#fca5a5' }}>
+              <span className="font-semibold" style={{ color: '#f87171' }}>
+                Proje klasörü kalıcı olarak silinecektir!
+              </span>
+              <br />
+              <span style={{ color: 'var(--text-2)' }}>
+                <code className="font-mono" style={{ color: 'var(--mute)' }}>~/llm-projects/…/{project.projectId}/</code>
+                {' '}içindeki tüm dosyalar geri alınamaz şekilde silinir.
+              </span>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={onDeleteProject}
+              disabled={deleting}
+              className="flex-1 py-1.5 rounded text-xs font-semibold cursor-pointer disabled:opacity-50"
+              style={{ background: '#ef4444', color: '#fff' }}
+            >
+              {deleting ? 'Siliniyor…' : '🗑 Evet, Sil'}
+            </button>
+            <button
+              onClick={() => setDeleteConfirm(false)}
+              disabled={deleting}
+              className="flex-1 py-1.5 rounded text-xs cursor-pointer disabled:opacity-50"
+              style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}
+            >
+              İptal
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* File tabs */}
       {fileList.length > 0 && (

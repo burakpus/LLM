@@ -970,6 +970,22 @@ app.MapDelete("/api/projects/{projectId}/files/{*path}", [Authorize] (
     return Results.NoContent();
 });
 
+// DELETE /api/projects/{projectId} — delete entire project directory
+app.MapDelete("/api/projects/{projectId}", [Authorize] (
+    string projectId, ClaimsPrincipal principal) =>
+{
+    var userId = principal.FindFirstValue(ClaimTypes.Name) ?? "anon";
+    var home   = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    var root   = Path.Combine(home, "llm-projects",
+        string.Join("_", userId.Split(Path.GetInvalidFileNameChars())),
+        string.Join("_", projectId.Split(Path.GetInvalidFileNameChars())));
+
+    if (!Directory.Exists(root)) return Results.NotFound(new { error = "Project not found" });
+
+    Directory.Delete(root, recursive: true);
+    return Results.Ok(new { deleted = true, project = projectId });
+});
+
 // SPA fallback — all unknown routes → index.html (React router)
 app.MapFallbackToFile("index.html");
 
