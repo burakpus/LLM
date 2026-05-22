@@ -26,6 +26,7 @@ import type {
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 import JobProgressModal from './JobProgressModal'
+import SqlDataDialog from './SqlDataDialog'
 
 type Tab = 'upload' | 'documents' | 'skills' | 'templates' | 'sql' | 'usage' | 'activity' | 'settings'
 
@@ -1392,14 +1393,8 @@ function SqlConnectionsTab() {
   const [ingestTypes,   setIngestTypes]   = useState<string[]>([...OBJ_TYPES])
   const [ingestCollection, setIngestCollection] = useState('')
   const [ingestRunning, setIngestRunning] = useState(false)
-  // Data sampling modal
-  const [dataConn,        setDataConn]        = useState<SqlConnection | null>(null)
-  const [dataTables,      setDataTables]      = useState<SqlTable[] | null>(null)
-  const [dataLoading,     setDataLoading]     = useState(false)
-  const [dataFilter,      setDataFilter]      = useState('')
-  const [dataSelected,    setDataSelected]    = useState<Set<string>>(new Set())
-  const [dataLimit,       setDataLimit]       = useState(1000)
-  const [dataCollection,  setDataCollection]  = useState('')
+  // Data sync dialog (new — replaces old data sampling modal)
+  const [dataConn, setDataConn] = useState<SqlConnection | null>(null)
   // Active background job (single shared modal)
   const [activeJob, setActiveJob] = useState<{ id: number; title: string; subtitle?: string } | null>(null)
   // Sync start dialog
@@ -1521,57 +1516,7 @@ function SqlConnectionsTab() {
     }
   }
 
-  const openData = async (c: SqlConnection) => {
-    setDataConn(c); setDataTables(null)
-    setDataSelected(new Set()); setDataFilter(''); setDataLimit(1000)
-    setDataCollection(`sql-data-${c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`)
-    setDataLoading(true)
-    try {
-      const tables = await listSqlTables(c.id)
-      setDataTables(tables)
-    } catch (e: any) {
-      setError(`Tablo listesi hatası: ${e.message}`)
-      setDataConn(null)
-    } finally {
-      setDataLoading(false)
-    }
-  }
-
-  const toggleDataSel = (key: string) => {
-    setDataSelected(prev => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key); else next.add(key)
-      return next
-    })
-  }
-
-  const onDataRun = async () => {
-    if (!dataConn || !dataTables) return
-    const specs: SqlTableSpec[] = []
-    for (const key of dataSelected) {
-      const [schema, name] = key.split('|')
-      specs.push({ schema, name, limit: dataLimit, where: null })
-    }
-    if (specs.length === 0) return
-    try {
-      const r = await fetch(`/api/admin/sql-connections/${dataConn.id}/ingest-data`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('setllm-token')}` },
-        body:   JSON.stringify({ collection: dataCollection.trim(), defaultLimit: dataLimit, tables: specs }),
-      })
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({ error: r.statusText }))
-        throw new Error(err?.error ?? `HTTP ${r.status}`)
-      }
-      const { jobId } = await r.json()
-      const conn = dataConn
-      setDataConn(null); setDataTables(null)
-      setActiveJob({ id: jobId, title: `Veri Çekme — ${conn.name}`,
-        subtitle: `${specs.length} tablodan veri RAG'a yazılıyor (arkada çalışıyor)` })
-    } catch (e: any) {
-      setError(e.message)
-    }
-  }
+  const openData = (c: SqlConnection) => setDataConn(c)
 
   // Sync button → open dialog showing last/current state + Start button
   const onSyncRun = async (c: SqlConnection) => {
@@ -2055,116 +2000,13 @@ function SqlConnectionsTab() {
         />
       )}
 
-      {/* Data Sampling Modal */}
+      {/* New Data Sync Dialog (table configs + groups + delta sync) */}
       {dataConn && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-             style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
-             onClick={e => { if (e.target === e.currentTarget) setDataConn(null) }}>
-          <div className="w-full max-w-3xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-               style={{ background: 'var(--bg)', border: '1px solid var(--border)', maxHeight: '85vh' }}>
-            <div className="px-5 py-4 flex items-center gap-3 shrink-0"
-                 style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
-              <span className="text-2xl">💾</span>
-              <div className="flex-1">
-                <div className="font-semibold" style={{ color: 'var(--text)' }}>Veri Örnekleme — {dataConn.name}</div>
-                <div className="text-xs" style={{ color: 'var(--mute)' }}>
-                  Seçili tabloların ilk N satırı Markdown tablo olarak RAG'a yazılır. PII içeren kolonlar otomatik maskelenir.
-                </div>
-              </div>
-              <button onClick={() => setDataConn(null)}
-                      className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer"
-                      style={{ color: 'var(--mute)' }}>×</button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-5 space-y-4">
-              {/* Loading */}
-              {dataLoading && (
-                <div className="text-center py-8">
-                  <div className="text-3xl mb-2 animate-pulse">⏳</div>
-                  <div className="text-sm" style={{ color: 'var(--text-2)' }}>Tablolar yükleniyor…</div>
-                </div>
-              )}
-
-              {/* Table picker */}
-              {dataTables && (
-                <>
-                  <div className="grid grid-cols-3 gap-3">
-                    <label className="block col-span-2">
-                      <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>Koleksiyon</div>
-                      <input value={dataCollection} onChange={e => setDataCollection(e.target.value)}
-                             className="w-full rounded-md px-3 py-2 text-sm outline-none"
-                             style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
-                    </label>
-                    <label className="block">
-                      <div className="text-xs mb-1" style={{ color: 'var(--mute)' }}>Tablo başına satır</div>
-                      <input type="number" value={dataLimit} onChange={e => setDataLimit(parseInt(e.target.value) || 1000)}
-                             min={1} max={10000}
-                             className="w-full rounded-md px-3 py-2 text-sm outline-none"
-                             style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
-                    </label>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <input value={dataFilter} onChange={e => setDataFilter(e.target.value)}
-                           placeholder="Tablo ara…"
-                           className="flex-1 rounded-md px-3 py-2 text-sm outline-none"
-                           style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
-                    <span className="text-xs" style={{ color: 'var(--mute)' }}>
-                      <strong style={{ color: 'var(--accent-hi)' }}>{dataSelected.size}</strong> / {dataTables.length} seçili
-                    </span>
-                  </div>
-
-                  <div className="rounded-xl overflow-hidden" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                    <div className="max-h-80 overflow-y-auto">
-                      {dataTables
-                        .filter(t => !dataFilter || `${t.schema}.${t.name}`.toLowerCase().includes(dataFilter.toLowerCase()))
-                        .map((t, i) => {
-                          const key = `${t.schema}|${t.name}`
-                          const selected = dataSelected.has(key)
-                          const piiCount = t.columns.filter(c => c.isPII).length
-                          return (
-                            <label key={key} className="flex items-center gap-3 px-3 py-2 cursor-pointer"
-                                   style={{ borderBottom: '1px solid var(--border)',
-                                            background: selected ? 'rgba(245,158,11,0.08)' : 'transparent' }}>
-                              <input type="checkbox" checked={selected} onChange={() => toggleDataSel(key)} />
-                              <div className="flex-1 min-w-0">
-                                <div className="text-sm font-medium truncate" style={{ color: 'var(--text)' }}>
-                                  {t.schema}.{t.name}
-                                </div>
-                                <div className="text-[10px]" style={{ color: 'var(--mute)' }}>
-                                  {t.columns.length} kolon
-                                  {piiCount > 0 && <span style={{ color: '#ea4335' }}> · {piiCount} PII maskelenecek</span>}
-                                </div>
-                              </div>
-                              <span className="text-[10px] font-mono" style={{ color: 'var(--mute)' }}>
-                                ~{t.estimatedRows.toLocaleString()} satır
-                              </span>
-                            </label>
-                          )
-                        })}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <div className="px-5 py-4 flex gap-2 shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
-              {dataTables && (
-                <button onClick={onDataRun}
-                        disabled={dataSelected.size === 0 || !dataCollection.trim()}
-                        className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50"
-                        style={{ background: '#f59e0b', color: '#0b1929' }}>
-                  🚀 {dataSelected.size} Tablodan Veri Çek (Arka Planda)
-                </button>
-              )}
-              <button onClick={() => setDataConn(null)}
-                      className="px-4 py-2 rounded-lg text-sm cursor-pointer"
-                      style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                İptal
-              </button>
-            </div>
-          </div>
-        </div>
+        <SqlDataDialog
+          conn={dataConn}
+          onClose={() => setDataConn(null)}
+          onJobStarted={(jobId, title, subtitle) => setActiveJob({ id: jobId, title, subtitle })}
+        />
       )}
     </section>
   )

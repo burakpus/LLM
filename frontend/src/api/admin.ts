@@ -448,6 +448,105 @@ export async function listSqlTables(connId: number): Promise<SqlTable[]> {
   return r.json()
 }
 
+// ── Table Groups + Configs + Delta Sync ──────────────────────────────────────
+
+export interface SqlTableGroup {
+  id:        number
+  name:      string
+  sortOrder: number
+}
+
+export interface SqlTableConfig {
+  id:                number
+  schema:            string
+  table:             string
+  pkCol:             string
+  createdCol:        string
+  updatedCol:        string
+  rowLimit:          number
+  whereClause:       string
+  includedColumns:   string[]
+  groupId:           number | null
+  collection:        string
+  lastSyncedAt:      string | null
+  lastMaxUpdatedAt:  string | null
+}
+
+export interface SqlTableConfigUpsert {
+  schema:           string
+  table:            string
+  pkCol:            string
+  createdCol:       string
+  updatedCol:       string
+  rowLimit:         number
+  whereClause:      string
+  includedColumns:  string[]
+  groupId:          number | null
+  collection:       string
+}
+
+export async function listTableGroups(connId: number): Promise<SqlTableGroup[]> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/table-groups`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+export async function createTableGroup(connId: number, name: string, sortOrder = 0): Promise<{ id: number }> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/table-groups`, {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ name, sortOrder }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+export async function updateTableGroup(connId: number, gid: number, name: string, sortOrder: number): Promise<void> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/table-groups/${gid}`, {
+    method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ name, sortOrder }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+}
+export async function deleteTableGroup(connId: number, gid: number): Promise<void> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/table-groups/${gid}`, {
+    method: 'DELETE', headers: authHeaders(),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+}
+
+export async function listTableConfigs(connId: number): Promise<SqlTableConfig[]> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/table-configs`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+export async function upsertTableConfig(connId: number, cfg: SqlTableConfigUpsert): Promise<{ id: number }> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/table-configs`, {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(cfg),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+export async function deleteTableConfig(connId: number, tid: number): Promise<void> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/table-configs/${tid}`, {
+    method: 'DELETE', headers: authHeaders(),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+}
+
+export async function syncSqlData(connId: number, tableConfigIds?: number[]): Promise<{ jobId: number }> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/sync-data`, {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ tableConfigIds: tableConfigIds ?? null }),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
 export async function ingestSqlData(
   connId:       number,
   collection:   string,

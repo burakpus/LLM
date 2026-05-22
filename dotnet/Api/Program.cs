@@ -97,6 +97,7 @@ services.AddScoped<IJobService, JobService>();
 services.AddSingleton<IJobHandler, SqlIngestSchemaJobHandler>();
 services.AddSingleton<IJobHandler, SqlSyncSchemaJobHandler>();
 services.AddSingleton<IJobHandler, SqlIngestDataJobHandler>();
+services.AddSingleton<IJobHandler, SqlSyncDataJobHandler>();
 services.AddHostedService<JobWorker>();
 
 // ── LLM + VectorStore + AgentStack ───────────────────────────────────────────
@@ -211,7 +212,44 @@ var app = builder.Build();
             started_at    TIMESTAMPTZ,
             completed_at  TIMESTAMPTZ
         );
-        CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs (status, id)";
+        CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs (status, id);
+        CREATE TABLE IF NOT EXISTS sql_table_groups (
+            id            SERIAL PRIMARY KEY,
+            connection_id INTEGER      NOT NULL,
+            name          VARCHAR(200) NOT NULL,
+            sort_order    INTEGER      NOT NULL DEFAULT 0,
+            created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            UNIQUE (connection_id, name)
+        );
+        CREATE TABLE IF NOT EXISTS sql_table_configs (
+            id                   SERIAL PRIMARY KEY,
+            connection_id        INTEGER      NOT NULL,
+            schema_name          VARCHAR(200) NOT NULL,
+            table_name           VARCHAR(200) NOT NULL,
+            pk_col               VARCHAR(500) NOT NULL DEFAULT '',
+            created_col          VARCHAR(200) NOT NULL DEFAULT '',
+            updated_col          VARCHAR(200) NOT NULL DEFAULT '',
+            row_limit            INTEGER      NOT NULL DEFAULT 1000,
+            where_clause         TEXT         NOT NULL DEFAULT '',
+            included_columns     TEXT         NOT NULL DEFAULT '[]',
+            group_id             INTEGER,
+            collection           VARCHAR(100) NOT NULL DEFAULT '',
+            last_synced_at       TIMESTAMPTZ,
+            last_max_updated_at  TIMESTAMPTZ,
+            created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            UNIQUE (connection_id, schema_name, table_name)
+        );
+        CREATE TABLE IF NOT EXISTS sql_ingested_rows (
+            id               SERIAL PRIMARY KEY,
+            table_config_id  INTEGER      NOT NULL,
+            pk_value         VARCHAR(500) NOT NULL,
+            content_hash     VARCHAR(64)  NOT NULL,
+            source           VARCHAR(500) NOT NULL,
+            chunks_count     INTEGER      NOT NULL DEFAULT 0,
+            last_ingested_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            UNIQUE (table_config_id, pk_value)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sql_ingested_rows_config ON sql_ingested_rows (table_config_id)";
     await cmd0.ExecuteNonQueryAsync();
 }
 
@@ -1081,6 +1119,159 @@ app.MapGet("/api/jobs/{id:long}", [Authorize] async (long id, IJobService jobs, 
     var j = await jobs.GetAsync(id, ct);
     if (j is null) return Results.NotFound();
     return Results.Ok(SerializeJob(j));
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SQL Table Groups CRUD
+// ═════════════════════════════════════════════════════════════════════════════
+
+app.MapGet("/api/admin/sql-connections/{id:int}/table-groups", [Authorize("AdminOnly")] async (
+    int id, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = "SELECT id, name, sort_order FROM sql_table_groups WHERE connection_id=$1 ORDER BY sort_order, name";
+    cmd.Parameters.AddWithValue(id);
+    var items = new List<object>();
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    while (await r.ReadAsync(ct))
+        items.Add(new { id = r.GetInt32(0), name = r.GetString(1), sortOrder = r.GetInt32(2) });
+    return Results.Ok(items);
+});
+
+app.MapPost("/api/admin/sql-connections/{id:int}/table-groups", [Authorize("AdminOnly")] async (
+    int id, [FromBody] TableGroupUpsert req, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Name)) return Results.BadRequest(new { error = "Name required" });
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = "INSERT INTO sql_table_groups (connection_id, name, sort_order) VALUES ($1,$2,$3) RETURNING id";
+    cmd.Parameters.AddWithValue(id); cmd.Parameters.AddWithValue(req.Name.Trim()); cmd.Parameters.AddWithValue(req.SortOrder);
+    var gid = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+    return Results.Ok(new { id = gid });
+});
+
+app.MapPut("/api/admin/sql-connections/{id:int}/table-groups/{gid:int}", [Authorize("AdminOnly")] async (
+    int id, int gid, [FromBody] TableGroupUpsert req, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = "UPDATE sql_table_groups SET name=$1, sort_order=$2 WHERE id=$3 AND connection_id=$4";
+    cmd.Parameters.AddWithValue(req.Name.Trim()); cmd.Parameters.AddWithValue(req.SortOrder);
+    cmd.Parameters.AddWithValue(gid); cmd.Parameters.AddWithValue(id);
+    await cmd.ExecuteNonQueryAsync(ct);
+    return Results.NoContent();
+});
+
+app.MapDelete("/api/admin/sql-connections/{id:int}/table-groups/{gid:int}", [Authorize("AdminOnly")] async (
+    int id, int gid, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using (var c1 = conn.CreateCommand())
+    {
+        c1.CommandText = "UPDATE sql_table_configs SET group_id=NULL WHERE group_id=$1 AND connection_id=$2";
+        c1.Parameters.AddWithValue(gid); c1.Parameters.AddWithValue(id);
+        await c1.ExecuteNonQueryAsync(ct);
+    }
+    await using var cmd = conn.CreateCommand();
+    cmd.CommandText = "DELETE FROM sql_table_groups WHERE id=$1 AND connection_id=$2";
+    cmd.Parameters.AddWithValue(gid); cmd.Parameters.AddWithValue(id);
+    await cmd.ExecuteNonQueryAsync(ct);
+    return Results.NoContent();
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SQL Table Configs (PK, CreatedAt, UpdatedAt, group assignment)
+// ═════════════════════════════════════════════════════════════════════════════
+
+app.MapGet("/api/admin/sql-connections/{id:int}/table-configs", [Authorize("AdminOnly")] async (
+    int id, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"SELECT id, schema_name, table_name, pk_col, created_col, updated_col,
+                               row_limit, where_clause, included_columns, group_id, collection,
+                               last_synced_at, last_max_updated_at
+                        FROM sql_table_configs WHERE connection_id=$1 ORDER BY schema_name, table_name";
+    cmd.Parameters.AddWithValue(id);
+    var items = new List<object>();
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    while (await r.ReadAsync(ct))
+    {
+        string[] cols;
+        try { cols = System.Text.Json.JsonSerializer.Deserialize<string[]>(r.GetString(8)) ?? Array.Empty<string>(); }
+        catch { cols = Array.Empty<string>(); }
+        items.Add(new {
+            id           = r.GetInt32(0),
+            schema       = r.GetString(1),
+            table        = r.GetString(2),
+            pkCol        = r.GetString(3),
+            createdCol   = r.GetString(4),
+            updatedCol   = r.GetString(5),
+            rowLimit     = r.GetInt32(6),
+            whereClause  = r.GetString(7),
+            includedColumns = cols,
+            groupId      = r.IsDBNull(9) ? (int?)null : r.GetInt32(9),
+            collection   = r.GetString(10),
+            lastSyncedAt = r.IsDBNull(11) ? (DateTime?)null : r.GetDateTime(11),
+            lastMaxUpdatedAt = r.IsDBNull(12) ? (DateTime?)null : r.GetDateTime(12),
+        });
+    }
+    return Results.Ok(items);
+});
+
+app.MapPost("/api/admin/sql-connections/{id:int}/table-configs", [Authorize("AdminOnly")] async (
+    int id, [FromBody] TableConfigUpsert req, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Schema) || string.IsNullOrWhiteSpace(req.Table))
+        return Results.BadRequest(new { error = "Schema, Table required" });
+    var colsJson = System.Text.Json.JsonSerializer.Serialize(req.IncludedColumns ?? Array.Empty<string>());
+
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"INSERT INTO sql_table_configs
+        (connection_id, schema_name, table_name, pk_col, created_col, updated_col,
+         row_limit, where_clause, included_columns, group_id, collection)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ON CONFLICT (connection_id, schema_name, table_name) DO UPDATE
+        SET pk_col=$4, created_col=$5, updated_col=$6, row_limit=$7,
+            where_clause=$8, included_columns=$9, group_id=$10, collection=$11
+        RETURNING id";
+    cmd.Parameters.AddWithValue(id);
+    cmd.Parameters.AddWithValue(req.Schema); cmd.Parameters.AddWithValue(req.Table);
+    cmd.Parameters.AddWithValue(req.PkCol ?? ""); cmd.Parameters.AddWithValue(req.CreatedCol ?? "");
+    cmd.Parameters.AddWithValue(req.UpdatedCol ?? ""); cmd.Parameters.AddWithValue(req.RowLimit > 0 ? req.RowLimit : 1000);
+    cmd.Parameters.AddWithValue(req.WhereClause ?? ""); cmd.Parameters.AddWithValue(colsJson);
+    cmd.Parameters.AddWithValue((object?)req.GroupId ?? DBNull.Value);
+    cmd.Parameters.AddWithValue(req.Collection ?? "");
+    var tid = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+    return Results.Ok(new { id = tid });
+});
+
+app.MapDelete("/api/admin/sql-connections/{id:int}/table-configs/{tid:int}", [Authorize("AdminOnly")] async (
+    int id, int tid, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using (var c1 = conn.CreateCommand())
+    {
+        c1.CommandText = "DELETE FROM sql_ingested_rows WHERE table_config_id=$1";
+        c1.Parameters.AddWithValue(tid);
+        await c1.ExecuteNonQueryAsync(ct);
+    }
+    await using var cmd = conn.CreateCommand();
+    cmd.CommandText = "DELETE FROM sql_table_configs WHERE id=$1 AND connection_id=$2";
+    cmd.Parameters.AddWithValue(tid); cmd.Parameters.AddWithValue(id);
+    await cmd.ExecuteNonQueryAsync(ct);
+    return Results.NoContent();
+});
+
+// POST /api/admin/sql-connections/{id}/sync-data — enqueue delta sync job
+app.MapPost("/api/admin/sql-connections/{id:int}/sync-data", [Authorize("AdminOnly")] async (
+    int id, [FromBody] SyncDataRequest? req, IJobService jobs, ClaimsPrincipal user, CancellationToken ct) =>
+{
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    var jobId = await jobs.EnqueueAsync("sql.sync-data", new SqlSyncDataParams(id, req?.TableConfigIds), username, ct);
+    return Results.Ok(new { jobId });
 });
 
 // GET /api/admin/sql-connections/{id}/latest-job?type=... — latest job for this connection
@@ -2321,6 +2512,20 @@ public sealed record DataIngestRequest(
     string?            Collection,
     int                DefaultLimit,
     TableSampleSpec[]? Tables);
+
+public sealed record TableGroupUpsert(string Name, int SortOrder);
+public sealed record TableConfigUpsert(
+    string    Schema,
+    string    Table,
+    string?   PkCol,
+    string?   CreatedCol,
+    string?   UpdatedCol,
+    int       RowLimit,
+    string?   WhereClause,
+    string[]? IncludedColumns,
+    int?      GroupId,
+    string?   Collection);
+public sealed record SyncDataRequest(int[]? TableConfigIds);
 
 public sealed record ApiChatRequest(
     string    SessionId,
