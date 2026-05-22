@@ -32,6 +32,7 @@ public interface IJwtTokenService
 public static class AppClaims
 {
     public const string IsAdmin = "isAdmin";
+    public const string Groups  = "groups";   // semicolon-separated AD group CNs
 }
 
 public sealed class JwtTokenService : IJwtTokenService
@@ -45,7 +46,7 @@ public sealed class JwtTokenService : IJwtTokenService
         _key  = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_opts.Secret));
     }
 
-    public TokenResult Generate(string username, string domain, bool isAdmin = false)
+    public TokenResult Generate(string username, string domain, bool isAdmin = false, string[]? groups = null)
     {
         var expiry = DateTime.UtcNow.AddHours(_opts.ExpiryHours);
         var claims = new[]
@@ -54,6 +55,7 @@ public sealed class JwtTokenService : IJwtTokenService
             new Claim("domain",                   domain),
             new Claim(ClaimTypes.NameIdentifier,  $"{domain}\\{username}"),
             new Claim(AppClaims.IsAdmin,           isAdmin ? "true" : "false"),
+            new Claim(AppClaims.Groups,            groups is { Length: > 0 } ? string.Join(";", groups) : ""),
         };
 
         var token = new JwtSecurityToken(

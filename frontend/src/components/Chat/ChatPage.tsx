@@ -36,7 +36,13 @@ export default function ChatPage() {
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data?.isAdmin && !store.auth.isAdmin) {
-          store.setAuth({ ...store.auth, isAdmin: true })
+          store.setAuth({
+            ...store.auth,
+            isAdmin: true,
+            groups: data.groups ?? store.auth.groups,
+          })
+        } else if (data?.groups?.length && !store.auth.groups?.length) {
+          store.setAuth({ ...store.auth, groups: data.groups })
         }
       })
       .catch(() => {})

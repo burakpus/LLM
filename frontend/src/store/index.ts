@@ -117,6 +117,7 @@ export interface AuthState {
   username?: string
   domain?:   string
   isAdmin?:  boolean
+  groups?:   string[]   // AD group CN list from LDAP
 }
 
 export type Status =

@@ -25,13 +25,16 @@ export default function LoginPage() {
     setLoading(true); setError('')
     try {
       const r = await login(username, password, domain)
-      // Parse isAdmin from JWT payload (claim set by server after AD group check)
+      // Parse isAdmin + groups from JWT payload
       let isAdmin = false
+      let groups: string[] = []
       try {
         const payload = JSON.parse(atob(r.token.split('.')[1]))
         isAdmin = payload['isAdmin'] === 'true' || payload['isAdmin'] === true
+        const g = payload['groups']
+        if (typeof g === 'string' && g) groups = g.split(';').filter(Boolean)
       } catch { /* ignore parse error */ }
-      setAuth({ token: r.token, username: r.username, domain: r.domain, isAdmin })
+      setAuth({ token: r.token, username: r.username, domain: r.domain, isAdmin, groups })
       // Fetch model capabilities after login
       getModelCapabilities().then(setModelCapabilities).catch(() => { /* non-critical */ })
     } catch {

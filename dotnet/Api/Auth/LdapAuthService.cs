@@ -51,6 +51,8 @@ public interface ILdapAuthService
 {
     bool Authenticate(string domain, string username, string password);
     bool IsAdmin(string domain, string username, string password);
+    /// <summary>Returns all AD group CN names the user belongs to (empty on error/bypass).</summary>
+    string[] GetUserGroups(string domain, string username, string password);
     IReadOnlyList<string> GetDomains();
 }
 
@@ -66,6 +68,49 @@ public sealed class LdapAuthService : ILdapAuthService
     }
 
     public IReadOnlyList<string> GetDomains() => _opts.DomainList;
+
+    /// <summary>Returns all AD group CN names (e.g. "setmanagement") for the user.</summary>
+    public string[] GetUserGroups(string domain, string username, string password)
+    {
+        if (_opts.Bypass) return [];
+
+        if (!_opts.Domains.TryGetValue(domain.ToUpperInvariant(), out var cfg))
+            return [];
+
+        try
+        {
+            var uri    = new Uri(cfg.Path.Replace("LDAP://", "ldap://", StringComparison.OrdinalIgnoreCase));
+            var server = new LdapDirectoryIdentifier(uri.Host, 389);
+            var creds  = new NetworkCredential($"{cfg.Domain}\\{username}", password);
+
+            using var conn = new LdapConnection(server, creds, AuthType.Ntlm);
+            conn.SessionOptions.ProtocolVersion = 3;
+            conn.Bind();
+
+            var baseDn    = string.Join(",", uri.Host.Split('.').Select(p => $"DC={p}"));
+            var searchReq = new SearchRequest(baseDn, $"(sAMAccountName={username})",
+                SearchScope.Subtree, "memberOf");
+            var resp = (SearchResponse)conn.SendRequest(searchReq);
+
+            if (resp.Entries.Count == 0) return [];
+
+            var memberOf = resp.Entries[0].Attributes["memberOf"];
+            if (memberOf == null) return [];
+
+            return memberOf.GetValues(typeof(string))
+                .Select(raw => raw?.ToString() ?? "")
+                .Select(dn => dn.Split(',')
+                    .FirstOrDefault(p => p.TrimStart().StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
+                    ?.Substring(3).Trim() ?? "")
+                .Where(cn => !string.IsNullOrEmpty(cn))
+                .ToArray();
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("GetUserGroups failed for {User}@{Domain}: {Msg}", username, domain, ex.Message);
+            return [];
+        }
+    }
 
     public bool Authenticate(string domain, string username, string password)
     {

@@ -187,7 +187,8 @@ app.MapPost("/api/auth/login", (
         return Results.Unauthorized();
 
     var isAdmin = ldap.IsAdmin(req.Domain, req.Username, req.Password);
-    var token   = jwt.Generate(req.Username, req.Domain, isAdmin);
+    var groups  = ldap.GetUserGroups(req.Domain, req.Username, req.Password);
+    var token   = jwt.Generate(req.Username, req.Domain, isAdmin, groups);
     return Results.Ok(token);
 });
 
@@ -276,12 +277,17 @@ app.MapPost("/api/auth/debug-bind", [Authorize] async (
 
 // GET /api/auth/me
 app.MapGet("/api/auth/me", [Authorize] (ClaimsPrincipal user) =>
-    Results.Ok(new
+{
+    var groupsClaim = user.FindFirstValue(AppClaims.Groups) ?? "";
+    var groups = groupsClaim.Split(';', StringSplitOptions.RemoveEmptyEntries);
+    return Results.Ok(new
     {
         username = user.FindFirstValue(ClaimTypes.Name),
         domain   = user.FindFirstValue("domain"),
         isAdmin  = user.FindFirstValue(AppClaims.IsAdmin) == "true",
-    }));
+        groups,
+    });
+});
 
 
 // =============================================================================

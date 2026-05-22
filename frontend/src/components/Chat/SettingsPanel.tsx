@@ -186,6 +186,17 @@ export default function SettingsPanel() {
           <section className="pt-3 text-[11px] space-y-0.5" style={{ borderTop: '1px solid var(--border)', color: 'var(--mute)' }}>
             <div>User: <strong style={{ color: 'var(--text)' }}>{store.auth.username}</strong></div>
             <div>Domain: <strong style={{ color: 'var(--text)' }}>{store.auth.domain}</strong></div>
+            {store.auth.groups && store.auth.groups.length > 0 && (
+              <div className="flex items-start gap-1 flex-wrap">
+                <span>Groups:</span>
+                {store.auth.groups.map(g => (
+                  <span key={g} className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                        style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>
+                    {g}
+                  </span>
+                ))}
+              </div>
+            )}
             <div>Conversations: {store.conversations.length}</div>
           </section>
 
