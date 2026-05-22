@@ -80,6 +80,7 @@ public sealed class SqlConnectionService : ISqlConnectionService
                 InitialCatalog          = database,
                 UserID                  = username,
                 Password                = password,
+                Encrypt                 = SqlConnectionEncryptOption.Optional,
                 TrustServerCertificate  = true,
                 ConnectTimeout          = 10,
             }.ToString(),
