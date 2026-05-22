@@ -193,11 +193,9 @@ app.MapPost("/api/auth/login", (
 });
 
 // GET /api/auth/groups — debug: shows user's actual AD group CNs (authenticated)
-app.MapGet("/api/auth/groups", [Authorize] async (
+app.MapGet("/api/auth/groups", [Authorize] (
     ClaimsPrincipal user,
-    IOptions<LdapOptions> ldapOpts,
-    HttpContext http,
-    CancellationToken ct) =>
+    IOptions<LdapOptions> ldapOpts) =>
 {
     var opts     = ldapOpts.Value;
     var username = user.FindFirstValue(ClaimTypes.Name) ?? "";
@@ -221,10 +219,9 @@ app.MapGet("/api/auth/groups", [Authorize] async (
 });
 
 // POST /api/auth/debug-bind — test LDAP group lookup with credentials (debug only)
-app.MapPost("/api/auth/debug-bind", [Authorize] async (
+app.MapPost("/api/auth/debug-bind", [Authorize] (
     [FromBody] LoginRequest req,
-    IOptions<LdapOptions> ldapOpts,
-    CancellationToken ct) =>
+    IOptions<LdapOptions> ldapOpts) =>
 {
     var opts = ldapOpts.Value;
     if (!opts.Domains.TryGetValue(req.Domain.ToUpperInvariant(), out var cfg))
