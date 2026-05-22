@@ -18,15 +18,26 @@ public sealed class LdapOptions
 
     /// <summary>
     /// Comma-separated AD group names whose members get admin access.
-    /// Example: "Set Management,Set AIAdmin"
+    /// Example: "setmanagement,Set AIAdmin"
     /// </summary>
-    public string AdminGroups { get; init; } = "Set Management,Set AIAdmin";
+    public string AdminGroups { get; init; } = "setmanagement,Set AIAdmin";
+
+    /// <summary>
+    /// Comma-separated usernames that always get admin access regardless of group.
+    /// Fallback for when LDAP group lookup fails or user is not in a group.
+    /// Example: "burakpus,admin"
+    /// </summary>
+    public string AdminUsers { get; init; } = "";
 
     public IReadOnlyList<string> DomainList =>
         DomainNames.Split(';', StringSplitOptions.RemoveEmptyEntries);
 
     public IReadOnlySet<string> AdminGroupSet =>
         AdminGroups.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlySet<string> AdminUserSet =>
+        AdminUsers.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 }
 
@@ -102,6 +113,13 @@ public sealed class LdapAuthService : ILdapAuthService
     public bool IsAdmin(string domain, string username, string password)
     {
         if (_opts.Bypass) return true;
+
+        // Direct username override (fallback when group lookup fails or isn't needed)
+        if (_opts.AdminUserSet.Contains(username))
+        {
+            _log.LogInformation("Admin access granted: {User}@{Domain} via AdminUsers config", username, domain);
+            return true;
+        }
 
         if (!_opts.Domains.TryGetValue(domain.ToUpperInvariant(), out var cfg))
             return false;

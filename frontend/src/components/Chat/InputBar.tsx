@@ -88,6 +88,10 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
   const [showPicker,      setShowPicker]      = useState(false)
   // variable fill
   const [varFill, setVarFill] = useState<{ tmpl: PromptTemplate; vals: Record<string, string> } | null>(null)
+  // bottom bar dropdowns
+  const [showEndDrop, setShowEndDrop] = useState(false)
+  const [showModDrop, setShowModDrop] = useState(false)
+  const [showFmtDrop, setShowFmtDrop] = useState(false)
   const ref     = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -99,6 +103,10 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
       onFileContextConsumed?.()
     }
   }, [fileContext])
+
+  const closeDropdowns = useCallback(() => {
+    setShowEndDrop(false); setShowModDrop(false); setShowFmtDrop(false)
+  }, [])
 
   const submit = () => {
     const text = input.trim()
@@ -229,6 +237,10 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
     if (!conv) return
     store.updateConvSettings(conv.id, { outputFormat: fmt })
   }
+
+  const endpoints   = store.endpoints.length ? store.endpoints : DEFAULT_ENDPOINTS
+  const activeEp    = endpoints[store.activeEpIdx ?? 0] ?? endpoints[0]
+  const formatLabel = FORMAT_PILLS.find(f => f.id === outputFormat)?.label ?? 'Serbest'
 
   // ── Meta-prompt: improve current input ────────────────────────────────────
   const onImprove = async () => {
@@ -555,110 +567,174 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
           </button>
         </div>
 
-        {/* Bottom row — endpoints + agent + status */}
-        <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-          {(store.endpoints.length ? store.endpoints : DEFAULT_ENDPOINTS).map((ep, i) => {
-            const active = store.activeEpIdx === i
-            return (
-              <button
-                key={ep.name + i}
-                onClick={() => onEndpointPing(i)}
-                className={`pill ${active ? 'active' : ''}`}
-                title={ep.model}
-              >
-                <span className={`status-dot ${active && store.statusOk ? 'ok' : active && store.statusOk === false ? 'bad' : ''}`} />
-                {ep.name}
-              </button>
-            )
-          })}
+        {/* ── Single action row ─────────────────────────────────────────── */}
+        {/* Transparent overlay — closes any open dropdown on outside click */}
+        {(showEndDrop || showModDrop || showFmtDrop) && (
+          <div className="fixed inset-0 z-40" onClick={closeDropdowns} />
+        )}
 
-          <button onClick={toggleAgent} className={`pill ${agentMode ? 'active' : ''}`}>
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round"
-                d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-            </svg>
-            RAG
-          </button>
+        <div className="mt-2 flex items-center gap-1.5">
 
-          {onRegenerate && (
-            <button onClick={onRegenerate}
-                    disabled={generating}
-                    className="pill disabled:opacity-50 disabled:cursor-not-allowed">
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round"
-                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              {t('regenerate')}
-            </button>
-          )}
-
-          <div className="ml-auto flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--mute-2)' }}>
-            <span className={`status-dot ${store.statusOk ? 'ok' : store.statusOk === false ? 'bad' : ''}`} />
-            <span>{store.status}</span>
-          </div>
-        </div>
-
-        {/* Format + token row */}
-        <div className="mt-1.5 flex items-center gap-1 flex-wrap">
-          {/* Format pills */}
-          {FORMAT_PILLS.map(fp => {
-            const active = outputFormat === fp.id
-            return (
-              <button
-                key={fp.id}
-                onClick={() => setOutputFormat(fp.id)}
-                title={fp.title}
-                className="pill"
-                style={{
-                  background:  active ? (fp.id === 'free' ? 'var(--surface-hi)' : 'rgba(138,180,248,0.15)') : 'transparent',
-                  color:       active ? (fp.id === 'free' ? 'var(--text-2)' : 'var(--accent-hi)') : 'var(--mute)',
-                  border:      active ? `1px solid ${fp.id === 'free' ? 'var(--border)' : 'rgba(138,180,248,0.35)'}` : '1px solid transparent',
-                  fontSize:    '10px',
-                  padding:     '2px 7px',
-                }}
-              >
-                {fp.label}
-              </button>
-            )
-          })}
-
-          {/* ✨ Improve prompt button — only when there's meaningful input */}
-          {input.trim().length > 8 && (
+          {/* 1. Endpoint dropdown */}
+          <div className="relative z-50">
             <button
-              onClick={onImprove}
-              disabled={improving}
-              title="Promptu AI ile iyileştir"
-              className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] cursor-pointer transition disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{
-                background: improving ? 'rgba(138,180,248,0.15)' : 'transparent',
-                border:     '1px solid rgba(138,180,248,0.3)',
-                color:      'var(--accent-hi)',
-              }}
-              onMouseEnter={e => { if (!improving) (e.currentTarget as HTMLElement).style.background = 'rgba(138,180,248,0.12)' }}
-              onMouseLeave={e => { if (!improving) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+              onClick={() => { setShowEndDrop(o => !o); setShowModDrop(false); setShowFmtDrop(false) }}
+              className="pill active"
             >
-              {improving ? (
-                <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
-                </svg>
-              ) : (
-                <span>✨</span>
-              )}
+              <span className={`status-dot ${store.statusOk ? 'ok' : store.statusOk === false ? 'bad' : ''}`} />
+              {activeEp?.name ?? 'Chating'}
+              <svg className="w-2.5 h-2.5 ml-0.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {showEndDrop && (
+              <div className="absolute left-0 bottom-full mb-2 rounded-xl shadow-2xl overflow-hidden z-50"
+                   style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', minWidth: 140 }}>
+                {endpoints.map((ep, i) => {
+                  const isAct = store.activeEpIdx === i
+                  return (
+                    <button key={ep.name + i}
+                            onClick={() => { onEndpointPing(i); setShowEndDrop(false) }}
+                            className="w-full flex items-center gap-2 px-3 py-2.5 text-xs cursor-pointer text-left transition"
+                            style={{ background: isAct ? 'rgba(138,180,248,0.15)' : 'transparent',
+                                     color: isAct ? 'var(--accent-hi)' : 'var(--text-2)',
+                                     borderBottom: i < endpoints.length - 1 ? '1px solid var(--border)' : 'none' }}
+                            onMouseEnter={e => { if (!isAct) (e.currentTarget as HTMLElement).style.background = 'var(--surface-2)' }}
+                            onMouseLeave={e => { if (!isAct) (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                      <span className={`status-dot ${isAct && store.statusOk ? 'ok' : ''}`} />
+                      {ep.name}
+                      <span className="ml-auto opacity-50 text-[10px]">{ep.model}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* 2. Mod dropdown (RAG + Regenerate) */}
+          <div className="relative z-50">
+            <button
+              onClick={() => { setShowModDrop(o => !o); setShowEndDrop(false); setShowFmtDrop(false) }}
+              className={`pill ${agentMode ? 'active' : ''}`}
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+              </svg>
+              Mod
+              <svg className="w-2.5 h-2.5 ml-0.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {showModDrop && (
+              <div className="absolute left-0 bottom-full mb-2 rounded-xl shadow-2xl overflow-hidden z-50"
+                   style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', minWidth: 160 }}>
+                {/* RAG toggle */}
+                <button
+                  onClick={toggleAgent}
+                  className="w-full flex items-center justify-between px-3 py-2.5 text-xs cursor-pointer transition"
+                  style={{ color: agentMode ? 'var(--accent-hi)' : 'var(--text-2)',
+                           borderBottom: onRegenerate ? '1px solid var(--border)' : 'none' }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-2)'}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+                >
+                  <span className="flex items-center gap-2">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                    </svg>
+                    RAG
+                  </span>
+                  <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center transition-colors`}
+                        style={{ borderColor: agentMode ? 'var(--accent)' : 'var(--mute)',
+                                 background: agentMode ? 'var(--accent)' : 'transparent' }}>
+                    {agentMode && <span className="w-1.5 h-1.5 rounded-full bg-[#0b1929]" />}
+                  </span>
+                </button>
+                {/* Regenerate */}
+                {onRegenerate && (
+                  <button
+                    onClick={() => { onRegenerate(); setShowModDrop(false) }}
+                    disabled={generating}
+                    className="w-full flex items-center gap-2 px-3 py-2.5 text-xs cursor-pointer transition disabled:opacity-40"
+                    style={{ color: 'var(--text-2)' }}
+                    onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-2)'}
+                    onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    {t('regenerate')}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 3. Format dropdown */}
+          <div className="relative z-50">
+            <button
+              onClick={() => { setShowFmtDrop(o => !o); setShowEndDrop(false); setShowModDrop(false) }}
+              className="pill"
+              style={ outputFormat !== 'free'
+                ? { background: 'rgba(138,180,248,0.15)', color: 'var(--accent-hi)', border: '1px solid rgba(138,180,248,0.35)' }
+                : {} }
+            >
+              {formatLabel}
+              <svg className="w-2.5 h-2.5 ml-0.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {showFmtDrop && (
+              <div className="absolute left-0 bottom-full mb-2 rounded-xl shadow-2xl overflow-hidden z-50"
+                   style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', minWidth: 130 }}>
+                {FORMAT_PILLS.map((fp, i) => {
+                  const isAct = outputFormat === fp.id
+                  return (
+                    <button key={fp.id}
+                            onClick={() => { setOutputFormat(fp.id); setShowFmtDrop(false) }}
+                            title={fp.title}
+                            className="w-full text-left px-3 py-2.5 text-xs cursor-pointer transition"
+                            style={{ background: isAct ? 'rgba(138,180,248,0.15)' : 'transparent',
+                                     color: isAct ? 'var(--accent-hi)' : 'var(--text-2)',
+                                     borderBottom: i < FORMAT_PILLS.length - 1 ? '1px solid var(--border)' : 'none' }}
+                            onMouseEnter={e => { if (!isAct) (e.currentTarget as HTMLElement).style.background = 'var(--surface-2)' }}
+                            onMouseLeave={e => { if (!isAct) (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+                      {fp.label}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ✨ improve — only when meaningful input */}
+          {input.trim().length > 8 && (
+            <button onClick={onImprove} disabled={improving} title="Promptu AI ile iyileştir"
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] cursor-pointer transition disabled:opacity-50"
+                    style={{ background: improving ? 'rgba(138,180,248,0.15)' : 'transparent',
+                             border: '1px solid rgba(138,180,248,0.3)', color: 'var(--accent-hi)' }}
+                    onMouseEnter={e => { if (!improving) (e.currentTarget as HTMLElement).style.background = 'rgba(138,180,248,0.12)' }}
+                    onMouseLeave={e => { if (!improving) (e.currentTarget as HTMLElement).style.background = 'transparent' }}>
+              {improving
+                ? <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>
+                : <span>✨</span>}
               {improving ? 'İyileştiriliyor…' : 'İyileştir'}
             </button>
           )}
 
           {/* Token counter */}
           {inputTokens > 0 && (
-            <span
-              className={`${input.trim().length <= 8 ? 'ml-auto' : ''} text-[10px] tabular-nums`}
-              style={{ color: tokenColor }}
-              title={`Tahmini ${inputTokens} token (6000 pencere sınırı)`}
-            >
+            <span className="text-[10px] tabular-nums"
+                  style={{ color: tokenColor, marginLeft: input.trim().length <= 8 ? 'auto' : '4px' }}
+                  title={`Tahmini ${inputTokens} token (6000 pencere sınırı)`}>
               ~{inputTokens.toLocaleString()} tok
             </span>
           )}
+
+          {/* Connection status */}
+          <div className="ml-auto flex items-center gap-1 text-[11px]" style={{ color: 'var(--mute-2)' }}>
+            <span className={`status-dot ${store.statusOk ? 'ok' : store.statusOk === false ? 'bad' : ''}`} />
+            <span>{store.status}</span>
+          </div>
         </div>
       </div>
     </div>

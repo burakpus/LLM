@@ -191,6 +191,89 @@ app.MapPost("/api/auth/login", (
     return Results.Ok(token);
 });
 
+// GET /api/auth/groups — debug: shows user's actual AD group CNs (authenticated)
+app.MapGet("/api/auth/groups", [Authorize] async (
+    ClaimsPrincipal user,
+    IOptions<LdapOptions> ldapOpts,
+    HttpContext http,
+    CancellationToken ct) =>
+{
+    var opts     = ldapOpts.Value;
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "";
+    var domain   = user.FindFirstValue("domain") ?? "";
+
+    if (opts.Bypass)
+        return Results.Ok(new { username, domain, bypass = true, groups = Array.Empty<string>() });
+
+    if (!opts.Domains.TryGetValue(domain.ToUpperInvariant(), out var cfg))
+        return Results.BadRequest(new { error = $"Domain not configured: {domain}" });
+
+    // Re-auth requires password — not available here, so we use a read-only bind attempt
+    // by checking the Authorization header for a Basic token if available
+    return Results.Ok(new {
+        username,
+        domain,
+        adminUserSet  = opts.AdminUserSet.ToArray(),
+        adminGroupSet = opts.AdminGroupSet.ToArray(),
+        note = "Password not available after login — use /api/auth/debug-bind to test with credentials"
+    });
+});
+
+// POST /api/auth/debug-bind — test LDAP group lookup with credentials (debug only)
+app.MapPost("/api/auth/debug-bind", [Authorize] async (
+    [FromBody] LoginRequest req,
+    IOptions<LdapOptions> ldapOpts,
+    CancellationToken ct) =>
+{
+    var opts = ldapOpts.Value;
+    if (!opts.Domains.TryGetValue(req.Domain.ToUpperInvariant(), out var cfg))
+        return Results.BadRequest(new { error = $"Domain not configured: {req.Domain}" });
+
+    try
+    {
+        var uri    = new Uri(cfg.Path.Replace("LDAP://", "ldap://", StringComparison.OrdinalIgnoreCase));
+        var server = new System.DirectoryServices.Protocols.LdapDirectoryIdentifier(uri.Host, 389);
+        var creds  = new System.Net.NetworkCredential($"{cfg.Domain}\\{req.Username}", req.Password);
+        using var conn = new System.DirectoryServices.Protocols.LdapConnection(server, creds,
+            System.DirectoryServices.Protocols.AuthType.Ntlm);
+        conn.SessionOptions.ProtocolVersion = 3;
+        conn.Bind();
+
+        var baseDn = string.Join(",", uri.Host.Split('.').Select(p => $"DC={p}"));
+        var searchReq = new System.DirectoryServices.Protocols.SearchRequest(
+            baseDn, $"(sAMAccountName={req.Username})",
+            System.DirectoryServices.Protocols.SearchScope.Subtree, "memberOf");
+        var resp = (System.DirectoryServices.Protocols.SearchResponse)conn.SendRequest(searchReq);
+
+        if (resp.Entries.Count == 0)
+            return Results.Ok(new { found = false, baseDn, entries = 0 });
+
+        var entry    = resp.Entries[0];
+        var memberOf = entry.Attributes["memberOf"];
+        var groups   = memberOf == null ? [] :
+            memberOf.GetValues(typeof(string))
+                .Select(r => r?.ToString() ?? "")
+                .ToArray();
+
+        var cns = groups.Select(dn =>
+            dn.Split(',').FirstOrDefault(p => p.TrimStart().StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
+                ?.Substring(3).Trim() ?? "").ToArray();
+
+        return Results.Ok(new {
+            found    = true,
+            baseDn,
+            rawDns   = groups,
+            cns,
+            adminGroupSet = opts.AdminGroupSet.ToArray(),
+            isAdmin  = cns.Any(cn => opts.AdminGroupSet.Contains(cn))
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Ok(new { error = ex.Message });
+    }
+});
+
 // GET /api/auth/me
 app.MapGet("/api/auth/me", [Authorize] (ClaimsPrincipal user) =>
     Results.Ok(new
