@@ -452,6 +452,37 @@ export async function ingestSqlData(
   return r.json()
 }
 
+// ── Background jobs ──────────────────────────────────────────────────────────
+
+export interface JobInfo {
+  id:          number
+  type:        string
+  status:      'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  progressCur: number
+  progressTot: number
+  message:     string
+  createdBy:   string
+  createdAt:   string
+  startedAt:   string | null
+  completedAt: string | null
+  error:       string
+  result:      any
+}
+
+export async function getJob(id: number): Promise<JobInfo> {
+  const r = await fetch(`/api/jobs/${id}`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export async function listJobs(limit = 20, status?: string): Promise<JobInfo[]> {
+  const p = new URLSearchParams({ limit: String(limit) })
+  if (status) p.set('status', status)
+  const r = await fetch(`/api/jobs?${p}`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
 // ── Activity log ─────────────────────────────────────────────────────────────
 
 export interface ActivityEntry {

@@ -22,6 +22,7 @@ import type {
   SqlTable, SqlTableSpec, SqlDataIngestResult,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
+import JobProgressModal from './JobProgressModal'
 
 type Tab = 'upload' | 'documents' | 'skills' | 'templates' | 'sql' | 'usage' | 'activity' | 'settings'
 
@@ -1387,11 +1388,6 @@ function SqlConnectionsTab() {
   const [ingestTypes,   setIngestTypes]   = useState<string[]>([...OBJ_TYPES])
   const [ingestCollection, setIngestCollection] = useState('')
   const [ingestRunning, setIngestRunning] = useState(false)
-  const [ingestResult,  setIngestResult]  = useState<SqlIngestResult | null>(null)
-  // Sync modal
-  const [syncConn,    setSyncConn]    = useState<SqlConnection | null>(null)
-  const [syncRunning, setSyncRunning] = useState(false)
-  const [syncResult,  setSyncResult]  = useState<SqlSyncResult | null>(null)
   // Data sampling modal
   const [dataConn,        setDataConn]        = useState<SqlConnection | null>(null)
   const [dataTables,      setDataTables]      = useState<SqlTable[] | null>(null)
@@ -1400,8 +1396,8 @@ function SqlConnectionsTab() {
   const [dataSelected,    setDataSelected]    = useState<Set<string>>(new Set())
   const [dataLimit,       setDataLimit]       = useState(1000)
   const [dataCollection,  setDataCollection]  = useState('')
-  const [dataRunning,     setDataRunning]     = useState(false)
-  const [dataResult,      setDataResult]      = useState<SqlDataIngestResult | null>(null)
+  // Active background job (single shared modal)
+  const [activeJob, setActiveJob] = useState<{ id: number; title: string; subtitle?: string } | null>(null)
 
   const load = async () => {
     setLoading(true); setError(null)
@@ -1478,7 +1474,6 @@ function SqlConnectionsTab() {
   const openIngest = async (c: SqlConnection) => {
     setIngestConn(c)
     setIngestPreview(null)
-    setIngestResult(null)
     setIngestTypes([...OBJ_TYPES])
     setIngestCollection(`sql-${c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`)
     try {
@@ -1494,8 +1489,19 @@ function SqlConnectionsTab() {
     if (!ingestConn) return
     setIngestRunning(true)
     try {
-      const result = await ingestSqlSchema(ingestConn.id, ingestCollection.trim(), ingestTypes)
-      setIngestResult(result)
+      // Backend now enqueues a background job
+      const r = await fetch(`/api/admin/sql-connections/${ingestConn.id}/ingest-schema`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('setllm-token')}` },
+        body:   JSON.stringify({ collection: ingestCollection.trim(), includeTypes: ingestTypes }),
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const { jobId } = await r.json()
+      // Close ingest modal, open job progress modal
+      const conn = ingestConn
+      setIngestConn(null); setIngestPreview(null)
+      setActiveJob({ id: jobId, title: `Şema Çıkarımı — ${conn.name}`,
+        subtitle: 'Tüm CREATE script\'leri RAG\'a yazılıyor (arkada çalışıyor)' })
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -1504,7 +1510,7 @@ function SqlConnectionsTab() {
   }
 
   const openData = async (c: SqlConnection) => {
-    setDataConn(c); setDataTables(null); setDataResult(null)
+    setDataConn(c); setDataTables(null)
     setDataSelected(new Set()); setDataFilter(''); setDataLimit(1000)
     setDataCollection(`sql-data-${c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`)
     setDataLoading(true)
@@ -1535,27 +1541,42 @@ function SqlConnectionsTab() {
       specs.push({ schema, name, limit: dataLimit, where: null })
     }
     if (specs.length === 0) return
-    setDataRunning(true)
     try {
-      const result = await ingestSqlData(dataConn.id, dataCollection.trim(), dataLimit, specs)
-      setDataResult(result)
+      const r = await fetch(`/api/admin/sql-connections/${dataConn.id}/ingest-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('setllm-token')}` },
+        body:   JSON.stringify({ collection: dataCollection.trim(), defaultLimit: dataLimit, tables: specs }),
+      })
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ error: r.statusText }))
+        throw new Error(err?.error ?? `HTTP ${r.status}`)
+      }
+      const { jobId } = await r.json()
+      const conn = dataConn
+      setDataConn(null); setDataTables(null)
+      setActiveJob({ id: jobId, title: `Veri Çekme — ${conn.name}`,
+        subtitle: `${specs.length} tablodan veri RAG'a yazılıyor (arkada çalışıyor)` })
     } catch (e: any) {
       setError(e.message)
-    } finally {
-      setDataRunning(false)
     }
   }
 
   const onSyncRun = async (c: SqlConnection) => {
-    setSyncConn(c); setSyncResult(null); setSyncRunning(true); setError(null); setMsg(null)
+    setError(null); setMsg(null)
     try {
-      const result = await syncSqlSchema(c.id)
-      setSyncResult(result)
+      const r = await fetch(`/api/admin/sql-connections/${c.id}/sync-schema`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${localStorage.getItem('setllm-token')}` },
+      })
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ error: r.statusText }))
+        throw new Error(err?.error ?? `HTTP ${r.status}`)
+      }
+      const { jobId } = await r.json()
+      setActiveJob({ id: jobId, title: `Senkronizasyon — ${c.name}`,
+        subtitle: 'Değişen/yeni/silinen objeler güncelleniyor (arkada çalışıyor)' })
     } catch (e: any) {
       setError(e.message)
-      setSyncConn(null)
-    } finally {
-      setSyncRunning(false)
     }
   }
 
@@ -1712,8 +1733,7 @@ function SqlConnectionsTab() {
                       📜 Şema
                     </button>
                     <button onClick={() => onSyncRun(c)}
-                            disabled={syncRunning}
-                            className="px-2 py-1 rounded text-xs cursor-pointer disabled:opacity-50"
+                            className="px-2 py-1 rounded text-xs cursor-pointer"
                             style={{ background: 'rgba(52,168,83,0.15)', color: '#34a853', border: '1px solid rgba(52,168,83,0.3)' }}
                             title="Sadece değişen/yeni objeleri güncelle">
                       🔄 Sync
@@ -1768,14 +1788,13 @@ function SqlConnectionsTab() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 space-y-4">
-              {/* Preview */}
-              {!ingestPreview && !ingestResult && (
+              {!ingestPreview && (
                 <div className="text-sm text-center py-6" style={{ color: 'var(--mute)' }}>
                   Önizleme yükleniyor…
                 </div>
               )}
 
-              {ingestPreview && !ingestResult && (
+              {ingestPreview && (
                 <>
                   <div className="rounded-xl p-4" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
                     <div className="text-xs font-semibold mb-2" style={{ color: 'var(--mute)' }}>BULUNAN OBJELER</div>
@@ -1817,208 +1836,45 @@ function SqlConnectionsTab() {
                       })}
                     </div>
                   </div>
-                </>
-              )}
-
-              {/* Running */}
-              {ingestRunning && (
-                <div className="text-center py-8">
-                  <div className="text-3xl mb-2 animate-pulse">⏳</div>
-                  <div className="text-sm" style={{ color: 'var(--text-2)' }}>
-                    Script'ler çıkarılıyor ve RAG'a yazılıyor…
+                  <div className="text-[11px] p-2 rounded" style={{ background: 'rgba(138,180,248,0.08)', color: 'var(--mute)' }}>
+                    İşlem arka planda kuyruğa alınır. Bu pencereyi kapatabilirsin — ilerleme ayrı bir pencerede gösterilecek.
                   </div>
-                </div>
-              )}
-
-              {/* Result */}
-              {ingestResult && (
-                <>
-                  <div className="rounded-xl p-4 grid grid-cols-3 gap-3 text-center"
-                       style={{ background: 'rgba(52,168,83,0.08)', border: '1px solid rgba(52,168,83,0.3)' }}>
-                    <div>
-                      <div className="text-2xl font-bold" style={{ color: '#34a853' }}>{ingestResult.success}</div>
-                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Başarılı</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold" style={{ color: 'var(--accent-hi)' }}>{ingestResult.chunks}</div>
-                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Chunk</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold" style={{ color: ingestResult.failures.length > 0 ? '#ea4335' : 'var(--text)' }}>
-                        {ingestResult.failures.length}
-                      </div>
-                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Hatalı</div>
-                    </div>
-                  </div>
-                  <div className="text-xs" style={{ color: 'var(--mute)' }}>
-                    Koleksiyon: <span className="font-mono" style={{ color: 'var(--text)' }}>{ingestResult.collection}</span>
-                  </div>
-
-                  {ingestResult.failures.length > 0 && (
-                    <div className="rounded-xl overflow-hidden"
-                         style={{ background: 'rgba(234,67,53,0.08)', border: '1px solid rgba(234,67,53,0.3)' }}>
-                      <div className="px-3 py-2 text-xs font-semibold" style={{ color: '#ea4335', borderBottom: '1px solid rgba(234,67,53,0.3)' }}>
-                        Hatalı objeler ({ingestResult.failures.length})
-                      </div>
-                      <div className="max-h-40 overflow-y-auto">
-                        {ingestResult.failures.map((f, i) => (
-                          <div key={i} className="px-3 py-1.5 text-xs" style={{ borderBottom: i < ingestResult.failures.length - 1 ? '1px solid rgba(234,67,53,0.2)' : 'none' }}>
-                            <div className="font-mono" style={{ color: 'var(--text)' }}>{f.name}</div>
-                            <div style={{ color: 'var(--mute)' }}>{f.error}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </>
               )}
             </div>
 
-            {/* Footer */}
             <div className="px-5 py-4 flex gap-2 shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
-              {!ingestResult && (
-                <button onClick={onIngestRun}
-                        disabled={ingestRunning || !ingestPreview || !ingestCollection.trim() || ingestTypes.length === 0}
-                        className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50"
-                        style={{ background: 'var(--accent)', color: '#0b1929' }}>
-                  {ingestRunning ? 'Çalışıyor…' : '🚀 Çıkar ve RAG\'a Yaz'}
-                </button>
-              )}
+              <button onClick={onIngestRun}
+                      disabled={ingestRunning || !ingestPreview || !ingestCollection.trim() || ingestTypes.length === 0}
+                      className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50"
+                      style={{ background: 'var(--accent)', color: '#0b1929' }}>
+                {ingestRunning ? 'Kuyruğa ekleniyor…' : '🚀 Arka Planda Çalıştır'}
+              </button>
               <button onClick={() => setIngestConn(null)} disabled={ingestRunning}
                       className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
                       style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                {ingestResult ? 'Kapat' : 'İptal'}
+                İptal
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Sync Result Modal */}
-      {syncConn && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-             style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
-             onClick={e => { if (e.target === e.currentTarget && !syncRunning) setSyncConn(null) }}>
-          <div className="w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-               style={{ background: 'var(--bg)', border: '1px solid var(--border)', maxHeight: '85vh' }}>
-            <div className="px-5 py-4 flex items-center gap-3 shrink-0"
-                 style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
-              <span className="text-2xl">🔄</span>
-              <div className="flex-1">
-                <div className="font-semibold" style={{ color: 'var(--text)' }}>
-                  Şema Senkronizasyonu — {syncConn.name}
-                </div>
-                <div className="text-xs" style={{ color: 'var(--mute)' }}>
-                  Sadece değişen ve yeni objeler güncellenir, silinen objeler RAG'dan kaldırılır
-                </div>
-              </div>
-              <button onClick={() => !syncRunning && setSyncConn(null)}
-                      disabled={syncRunning}
-                      className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer disabled:opacity-30"
-                      style={{ color: 'var(--mute)' }}>×</button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-5 space-y-4">
-              {syncRunning && (
-                <div className="text-center py-8">
-                  <div className="text-3xl mb-2 animate-pulse">🔄</div>
-                  <div className="text-sm" style={{ color: 'var(--text-2)' }}>
-                    Objeler karşılaştırılıyor ve değişiklikler aktarılıyor…
-                  </div>
-                </div>
-              )}
-
-              {syncResult && (
-                <>
-                  <div className="grid grid-cols-4 gap-2">
-                    <div className="rounded-xl p-3 text-center"
-                         style={{ background: 'rgba(52,168,83,0.08)', border: '1px solid rgba(52,168,83,0.3)' }}>
-                      <div className="text-2xl font-bold" style={{ color: '#34a853' }}>{syncResult.added.length}</div>
-                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Yeni</div>
-                    </div>
-                    <div className="rounded-xl p-3 text-center"
-                         style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
-                      <div className="text-2xl font-bold" style={{ color: '#f59e0b' }}>{syncResult.updated.length}</div>
-                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Güncellenen</div>
-                    </div>
-                    <div className="rounded-xl p-3 text-center"
-                         style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
-                      <div className="text-2xl font-bold" style={{ color: 'var(--mute)' }}>{syncResult.unchanged}</div>
-                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Aynı</div>
-                    </div>
-                    <div className="rounded-xl p-3 text-center"
-                         style={{ background: 'rgba(234,67,53,0.08)', border: '1px solid rgba(234,67,53,0.3)' }}>
-                      <div className="text-2xl font-bold" style={{ color: '#ea4335' }}>{syncResult.removed.length}</div>
-                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Silinen</div>
-                    </div>
-                  </div>
-
-                  <div className="text-xs" style={{ color: 'var(--mute)' }}>
-                    Koleksiyon: <span className="font-mono" style={{ color: 'var(--text)' }}>{syncResult.collection}</span>
-                    {' '}• <span style={{ color: 'var(--accent-hi)' }}>{syncResult.chunks}</span> yeni chunk yazıldı
-                  </div>
-
-                  {(['added','updated','removed'] as const).map(k => {
-                    const list = syncResult[k]
-                    if (list.length === 0) return null
-                    const colors: Record<typeof k, string> = { added: '#34a853', updated: '#f59e0b', removed: '#ea4335' }
-                    const labels: Record<typeof k, string> = { added: 'Yeni Eklenen', updated: 'Güncellenen', removed: 'Silinen' }
-                    return (
-                      <div key={k} className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
-                        <div className="px-3 py-2 text-xs font-semibold" style={{ color: colors[k], borderBottom: '1px solid var(--border)' }}>
-                          {labels[k]} ({list.length})
-                        </div>
-                        <div className="max-h-32 overflow-y-auto">
-                          {list.map((n, i) => (
-                            <div key={i} className="px-3 py-1 text-xs font-mono" style={{ color: 'var(--text-2)' }}>{n}</div>
-                          ))}
-                        </div>
-                      </div>
-                    )
-                  })}
-
-                  {syncResult.failures.length > 0 && (
-                    <div className="rounded-xl overflow-hidden" style={{ background: 'rgba(234,67,53,0.08)', border: '1px solid rgba(234,67,53,0.3)' }}>
-                      <div className="px-3 py-2 text-xs font-semibold" style={{ color: '#ea4335', borderBottom: '1px solid rgba(234,67,53,0.3)' }}>
-                        Hatalı ({syncResult.failures.length})
-                      </div>
-                      <div className="max-h-32 overflow-y-auto">
-                        {syncResult.failures.map((f, i) => (
-                          <div key={i} className="px-3 py-1 text-xs">
-                            <span className="font-mono" style={{ color: 'var(--text)' }}>{f.name}</span>
-                            {' — '}
-                            <span style={{ color: 'var(--mute)' }}>{f.error}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {syncResult.added.length === 0 && syncResult.updated.length === 0 && syncResult.removed.length === 0 && (
-                    <div className="text-sm text-center py-4" style={{ color: 'var(--mute)' }}>
-                      ✓ Her şey güncel — hiçbir değişiklik yok
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            <div className="px-5 py-4 flex justify-end shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
-              <button onClick={() => setSyncConn(null)} disabled={syncRunning}
-                      className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
-                      style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                Kapat
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Background job progress modal (shared) */}
+      {activeJob && (
+        <JobProgressModal
+          jobId={activeJob.id}
+          title={activeJob.title}
+          subtitle={activeJob.subtitle}
+          onClose={() => setActiveJob(null)}
+        />
       )}
 
       {/* Data Sampling Modal */}
       {dataConn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
              style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
-             onClick={e => { if (e.target === e.currentTarget && !dataRunning) setDataConn(null) }}>
+             onClick={e => { if (e.target === e.currentTarget) setDataConn(null) }}>
           <div className="w-full max-w-3xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
                style={{ background: 'var(--bg)', border: '1px solid var(--border)', maxHeight: '85vh' }}>
             <div className="px-5 py-4 flex items-center gap-3 shrink-0"
@@ -2030,8 +1886,8 @@ function SqlConnectionsTab() {
                   Seçili tabloların ilk N satırı Markdown tablo olarak RAG'a yazılır. PII içeren kolonlar otomatik maskelenir.
                 </div>
               </div>
-              <button onClick={() => !dataRunning && setDataConn(null)} disabled={dataRunning}
-                      className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer disabled:opacity-30"
+              <button onClick={() => setDataConn(null)}
+                      className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer"
                       style={{ color: 'var(--mute)' }}>×</button>
             </div>
 
@@ -2044,56 +1900,8 @@ function SqlConnectionsTab() {
                 </div>
               )}
 
-              {/* Running */}
-              {dataRunning && !dataResult && (
-                <div className="text-center py-8">
-                  <div className="text-3xl mb-2 animate-pulse">💾</div>
-                  <div className="text-sm" style={{ color: 'var(--text-2)' }}>
-                    {dataSelected.size} tablodan veri çekiliyor ve RAG'a yazılıyor…
-                  </div>
-                </div>
-              )}
-
-              {/* Result */}
-              {dataResult && (
-                <>
-                  <div className="rounded-xl p-4 grid grid-cols-3 gap-3 text-center"
-                       style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
-                    <div>
-                      <div className="text-2xl font-bold" style={{ color: '#f59e0b' }}>{dataResult.success}</div>
-                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Tablo</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold" style={{ color: 'var(--accent-hi)' }}>{dataResult.rows.toLocaleString()}</div>
-                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Satır</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold" style={{ color: 'var(--text)' }}>{dataResult.chunks}</div>
-                      <div className="text-[10px] uppercase" style={{ color: 'var(--mute)' }}>Chunk</div>
-                    </div>
-                  </div>
-                  <div className="text-xs" style={{ color: 'var(--mute)' }}>
-                    Koleksiyon: <span className="font-mono" style={{ color: 'var(--text)' }}>{dataResult.collection}</span>
-                  </div>
-                  {dataResult.failures.length > 0 && (
-                    <div className="rounded-xl overflow-hidden" style={{ background: 'rgba(234,67,53,0.08)', border: '1px solid rgba(234,67,53,0.3)' }}>
-                      <div className="px-3 py-2 text-xs font-semibold" style={{ color: '#ea4335', borderBottom: '1px solid rgba(234,67,53,0.3)' }}>
-                        Hatalı ({dataResult.failures.length})
-                      </div>
-                      <div className="max-h-32 overflow-y-auto">
-                        {dataResult.failures.map((f, i) => (
-                          <div key={i} className="px-3 py-1 text-xs">
-                            <span className="font-mono" style={{ color: 'var(--text)' }}>{f.name}</span> — <span style={{ color: 'var(--mute)' }}>{f.error}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-
               {/* Table picker */}
-              {dataTables && !dataResult && !dataRunning && (
+              {dataTables && (
                 <>
                   <div className="grid grid-cols-3 gap-3">
                     <label className="block col-span-2">
@@ -2156,18 +1964,18 @@ function SqlConnectionsTab() {
             </div>
 
             <div className="px-5 py-4 flex gap-2 shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
-              {!dataResult && dataTables && (
+              {dataTables && (
                 <button onClick={onDataRun}
-                        disabled={dataRunning || dataSelected.size === 0 || !dataCollection.trim()}
+                        disabled={dataSelected.size === 0 || !dataCollection.trim()}
                         className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50"
                         style={{ background: '#f59e0b', color: '#0b1929' }}>
-                  {dataRunning ? 'Çalışıyor…' : `🚀 ${dataSelected.size} Tablodan Veri Çek`}
+                  🚀 {dataSelected.size} Tablodan Veri Çek (Arka Planda)
                 </button>
               )}
-              <button onClick={() => setDataConn(null)} disabled={dataRunning}
-                      className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
+              <button onClick={() => setDataConn(null)}
+                      className="px-4 py-2 rounded-lg text-sm cursor-pointer"
                       style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                {dataResult ? 'Kapat' : 'İptal'}
+                İptal
               </button>
             </div>
           </div>

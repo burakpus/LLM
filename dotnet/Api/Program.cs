@@ -11,6 +11,7 @@ using Npgsql;
 using Prometheus;
 using SetYazilim.Llm;
 using SetYazilim.Llm.Api.Auth;
+using SetYazilim.Llm.Api.Jobs;
 using SetYazilim.Llm.Api.Sql;
 using SetYazilim.Llm.Context;
 using SetYazilim.Llm.Memory;
@@ -90,6 +91,13 @@ services.AddSingleton<ILdapAuthService, LdapAuthService>();
 // ── SQL external sources (Phase 1: connection mgmt + test) ────────────────────
 services.AddDataProtection().SetApplicationName("set-llm-api");
 services.AddSingleton<ISqlConnectionService, SqlConnectionService>();
+
+// ── Background jobs ───────────────────────────────────────────────────────────
+services.AddScoped<IJobService, JobService>();
+services.AddSingleton<IJobHandler, SqlIngestSchemaJobHandler>();
+services.AddSingleton<IJobHandler, SqlSyncSchemaJobHandler>();
+services.AddSingleton<IJobHandler, SqlIngestDataJobHandler>();
+services.AddHostedService<JobWorker>();
 
 // ── LLM + VectorStore + AgentStack ───────────────────────────────────────────
 services.AddLiteLLMClient();
@@ -187,7 +195,23 @@ var app = builder.Build();
             chunks_count    INTEGER      NOT NULL DEFAULT 0,
             last_ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             UNIQUE (connection_id, object_type, schema_name, object_name)
-        )";
+        );
+        CREATE TABLE IF NOT EXISTS jobs (
+            id            BIGSERIAL PRIMARY KEY,
+            job_type      VARCHAR(100) NOT NULL,
+            status        VARCHAR(20)  NOT NULL DEFAULT 'queued',
+            progress_cur  INTEGER      NOT NULL DEFAULT 0,
+            progress_tot  INTEGER      NOT NULL DEFAULT 0,
+            message       TEXT         NOT NULL DEFAULT '',
+            params        TEXT         NOT NULL DEFAULT '{}',
+            result        TEXT         NOT NULL DEFAULT '{}',
+            error         TEXT         NOT NULL DEFAULT '',
+            created_by    VARCHAR(100) NOT NULL DEFAULT '',
+            created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            started_at    TIMESTAMPTZ,
+            completed_at  TIMESTAMPTZ
+        );
+        CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs (status, id)";
     await cmd0.ExecuteNonQueryAsync();
 }
 
@@ -570,8 +594,20 @@ static string Sha256(string s)
     return Convert.ToHexString(bytes).ToLowerInvariant();
 }
 
-// POST /api/admin/sql-connections/{id}/ingest-schema — initial full ingest
+// POST /api/admin/sql-connections/{id}/ingest-schema — enqueue background job
 app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema", [Authorize("AdminOnly")] async (
+    int id, [FromBody] SchemaIngestRequest req, IJobService jobs, ClaimsPrincipal user, CancellationToken ct) =>
+{
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    var jobId = await jobs.EnqueueAsync("sql.ingest-schema", new SqlIngestSchemaParams(
+        ConnectionId: id,
+        Collection:   string.IsNullOrWhiteSpace(req.Collection) ? "sql-schema" : req.Collection.Trim(),
+        IncludeTypes: req.IncludeTypes), username, ct);
+    return Results.Ok(new { jobId });
+});
+
+// Legacy synchronous version moved to /sync (kept for any remaining direct calls)
+app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema-sync", [Authorize("AdminOnly")] async (
     int id,
     [FromBody] SchemaIngestRequest req,
     ISqlConnectionService svc,
@@ -701,8 +737,25 @@ app.MapGet("/api/admin/sql-connections/{id:int}/tables", [Authorize("AdminOnly")
     }
 });
 
-// POST /api/admin/sql-connections/{id}/ingest-data — sample selected tables into RAG
+// POST /api/admin/sql-connections/{id}/ingest-data — enqueue background data sampling
 app.MapPost("/api/admin/sql-connections/{id:int}/ingest-data", [Authorize("AdminOnly")] async (
+    int id, [FromBody] DataIngestRequest req, IJobService jobs, ClaimsPrincipal user, CancellationToken ct) =>
+{
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    var tables = req.Tables?.Select(t => new SqlTableSpecDto(t.Schema, t.Name, t.Limit, t.Where)).ToArray()
+                 ?? Array.Empty<SqlTableSpecDto>();
+    if (tables.Length == 0) return Results.BadRequest(new { error = "At least one table required" });
+
+    var jobId = await jobs.EnqueueAsync("sql.ingest-data", new SqlIngestDataParams(
+        ConnectionId: id,
+        Collection:   string.IsNullOrWhiteSpace(req.Collection) ? "sql-data" : req.Collection.Trim(),
+        DefaultLimit: req.DefaultLimit,
+        Tables:       tables), username, ct);
+    return Results.Ok(new { jobId });
+});
+
+// Legacy synchronous version
+app.MapPost("/api/admin/sql-connections/{id:int}/ingest-data-sync", [Authorize("AdminOnly")] async (
     int id,
     [FromBody] DataIngestRequest req,
     ISqlConnectionService svc,
@@ -781,8 +834,17 @@ app.MapPost("/api/admin/sql-connections/{id:int}/ingest-data", [Authorize("Admin
     });
 });
 
-// POST /api/admin/sql-connections/{id}/sync-schema — incremental update (only changed/new)
+// POST /api/admin/sql-connections/{id}/sync-schema — enqueue background sync job
 app.MapPost("/api/admin/sql-connections/{id:int}/sync-schema", [Authorize("AdminOnly")] async (
+    int id, IJobService jobs, ClaimsPrincipal user, CancellationToken ct) =>
+{
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    var jobId = await jobs.EnqueueAsync("sql.sync-schema", new SqlSyncSchemaParams(id), username, ct);
+    return Results.Ok(new { jobId });
+});
+
+// Legacy synchronous (kept under /sync-schema-sync for back-compat)
+app.MapPost("/api/admin/sql-connections/{id:int}/sync-schema-sync", [Authorize("AdminOnly")] async (
     int id,
     ISqlConnectionService svc,
     IDocumentIngestion ingestion,
@@ -977,6 +1039,41 @@ app.MapPost("/api/admin/sql-connections/test-credentials", [Authorize("AdminOnly
         ? Results.Ok(new { ok = true })
         : Results.Ok(new { ok = false, error = err });
 });
+
+// =============================================================================
+// ─── Background Jobs ──────────────────────────────────────────────────────────
+
+// GET /api/jobs/{id} — single job status
+app.MapGet("/api/jobs/{id:long}", [Authorize] async (long id, IJobService jobs, CancellationToken ct) =>
+{
+    var j = await jobs.GetAsync(id, ct);
+    if (j is null) return Results.NotFound();
+    return Results.Ok(SerializeJob(j));
+});
+
+// GET /api/jobs?limit=20&status=running
+app.MapGet("/api/jobs", [Authorize("AdminOnly")] async (
+    int? limit, string? status, IJobService jobs, CancellationToken ct) =>
+{
+    var list = await jobs.ListRecentAsync(limit ?? 20, status, ct);
+    return Results.Ok(list.Select(SerializeJob));
+});
+
+static object SerializeJob(JobInfo j) => new {
+    id          = j.Id,
+    type        = j.Type,
+    status      = j.Status.ToString().ToLowerInvariant(),
+    progressCur = j.ProgressCur,
+    progressTot = j.ProgressTot,
+    message     = j.Message,
+    createdBy   = j.CreatedBy,
+    createdAt   = j.CreatedAt,
+    startedAt   = j.StartedAt,
+    completedAt = j.CompletedAt,
+    error       = j.Error,
+    result      = string.IsNullOrEmpty(j.ResultJson) ? null
+                  : System.Text.Json.JsonSerializer.Deserialize<object>(j.ResultJson),
+};
 
 // =============================================================================
 // ─── Activity Log ─────────────────────────────────────────────────────────────
