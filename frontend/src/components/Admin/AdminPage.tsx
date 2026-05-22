@@ -38,18 +38,35 @@ export default function AdminPage() {
   // Guard: non-admin users who navigate directly to /admin see a 403 page
   if (!auth.isAdmin) {
     return (
-      <div className="min-h-dvh flex flex-col items-center justify-center gap-4"
+      <div className="min-h-dvh flex flex-col items-center justify-center gap-5"
            style={{ background: 'var(--bg)', color: 'var(--text)' }}>
-        <svg className="w-16 h-16 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <svg className="w-16 h-16 opacity-25" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
           <path strokeLinecap="round" strokeLinejoin="round"
-            d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+            d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
         </svg>
-        <div className="text-2xl font-semibold">Erişim Yetkiniz Yok</div>
-        <p className="text-sm opacity-60">Admin paneline yalnızca Set Management ve Set AIAdmin grupları erişebilir.</p>
-        <a href="/" className="mt-2 px-4 py-2 rounded-full text-sm cursor-pointer"
-           style={{ background: 'var(--accent)', color: '#0b1929' }}>
-          ← Ana Sayfaya Dön
-        </a>
+        <div>
+          <div className="text-2xl font-semibold text-center">Erişim Yetkiniz Yok</div>
+          <p className="text-sm mt-2 text-center max-w-xs" style={{ color: 'var(--mute)' }}>
+            Bu sayfayı görüntülemek için yönetici yetkisi gereklidir.
+          </p>
+        </div>
+        <div className="flex flex-col items-center gap-2 mt-1">
+          <p className="text-xs" style={{ color: 'var(--mute-2)' }}>
+            Yetkiniz varsa çıkış yapıp tekrar giriş yapın.
+          </p>
+          <div className="flex gap-2">
+            <a href="/" className="px-4 py-2 rounded-full text-sm cursor-pointer"
+               style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+              ← Ana Sayfa
+            </a>
+            <a href="/login"
+               onClick={() => { localStorage.removeItem('setllm-token'); localStorage.removeItem('setllm-user') }}
+               className="px-4 py-2 rounded-full text-sm cursor-pointer"
+               style={{ background: 'var(--accent)', color: '#0b1929' }}>
+              Yeniden Giriş Yap
+            </a>
+          </div>
+        </div>
       </div>
     )
   }
