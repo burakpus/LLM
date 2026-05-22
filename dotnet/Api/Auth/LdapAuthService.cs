@@ -1,6 +1,5 @@
-using System.DirectoryServices.Protocols;
-using System.Net;
 using Microsoft.Extensions.Options;
+using Novell.Directory.Ldap;
 
 namespace SetYazilim.Llm.Api.Auth;
 
@@ -69,6 +68,22 @@ public sealed class LdapAuthService : ILdapAuthService
 
     public IReadOnlyList<string> GetDomains() => _opts.DomainList;
 
+    // Extracts the host from "LDAP://setyazilim.com" → "setyazilim.com"
+    private static string HostFromPath(string path) =>
+        new Uri(path.Replace("LDAP://", "ldap://", StringComparison.OrdinalIgnoreCase)).Host;
+
+    // Builds base DN from host: "setyazilim.com" → "DC=setyazilim,DC=com"
+    private static string BaseDnFromHost(string host) =>
+        string.Join(",", host.Split('.').Select(p => $"DC={p}"));
+
+    // Extracts CN names from a list of DN strings like "CN=setmanagement,OU=..."
+    private static IEnumerable<string> ExtractCns(IEnumerable<string> dns) =>
+        dns.Select(dn =>
+                dn.Split(',')
+                  .FirstOrDefault(p => p.TrimStart().StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
+                  ?.Substring(3).Trim() ?? "")
+           .Where(cn => !string.IsNullOrEmpty(cn));
+
     /// <summary>Returns all AD group CN names (e.g. "setmanagement") for the user.</summary>
     public string[] GetUserGroups(string domain, string username, string password)
     {
@@ -79,31 +94,30 @@ public sealed class LdapAuthService : ILdapAuthService
 
         try
         {
-            var uri    = new Uri(cfg.Path.Replace("LDAP://", "ldap://", StringComparison.OrdinalIgnoreCase));
-            var server = new LdapDirectoryIdentifier(uri.Host, 389);
-            var creds  = new NetworkCredential($"{cfg.Domain}\\{username}", password);
+            var host   = HostFromPath(cfg.Path);
+            var baseDn = BaseDnFromHost(host);
 
-            using var conn = new LdapConnection(server, creds, AuthType.Ntlm);
-            conn.SessionOptions.ProtocolVersion = 3;
-            conn.Bind();
+            using var conn = new LdapConnection();
+            conn.Connect(host, 389);
+            conn.Bind($"{cfg.Domain}\\{username}", password);
 
-            var baseDn    = string.Join(",", uri.Host.Split('.').Select(p => $"DC={p}"));
-            var searchReq = new SearchRequest(baseDn, $"(sAMAccountName={username})",
-                SearchScope.Subtree, "memberOf");
-            var resp = (SearchResponse)conn.SendRequest(searchReq);
+            var results = conn.Search(baseDn, LdapConnection.ScopeSub,
+                $"(sAMAccountName={username})", new[] { "memberOf" }, false);
 
-            if (resp.Entries.Count == 0) return [];
+            var memberOfValues = new List<string>();
+            while (results.HasMore())
+            {
+                LdapEntry entry;
+                try { entry = results.Next(); }
+                catch (LdapException) { break; }
 
-            var memberOf = resp.Entries[0].Attributes["memberOf"];
-            if (memberOf == null) return [];
+                var attr = entry.GetAttributeSet().GetAttribute("memberOf");
+                if (attr != null)
+                    memberOfValues.AddRange(attr.StringValueArray);
+            }
 
-            return memberOf.GetValues(typeof(string))
-                .Select(raw => raw?.ToString() ?? "")
-                .Select(dn => dn.Split(',')
-                    .FirstOrDefault(p => p.TrimStart().StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
-                    ?.Substring(3).Trim() ?? "")
-                .Where(cn => !string.IsNullOrEmpty(cn))
-                .ToArray();
+            conn.Disconnect();
+            return ExtractCns(memberOfValues).ToArray();
         }
         catch (Exception ex)
         {
@@ -128,13 +142,13 @@ public sealed class LdapAuthService : ILdapAuthService
 
         try
         {
-            var uri    = new Uri(cfg.Path.Replace("LDAP://", "ldap://", StringComparison.OrdinalIgnoreCase));
-            var server = new LdapDirectoryIdentifier(uri.Host, 389);
-            var creds  = new NetworkCredential($"{cfg.Domain}\\{username}", password);
+            var host = HostFromPath(cfg.Path);
 
-            using var conn = new LdapConnection(server, creds, AuthType.Ntlm);
-            conn.SessionOptions.ProtocolVersion = 3;
-            conn.Bind();
+            using var conn = new LdapConnection();
+            conn.Connect(host, 389);
+            conn.Bind($"{cfg.Domain}\\{username}", password);
+            conn.Disconnect();
+
             _log.LogInformation("LDAP auth succeeded: {User}@{Domain}", username, domain);
             return true;
         }
@@ -153,13 +167,10 @@ public sealed class LdapAuthService : ILdapAuthService
     /// <summary>
     /// Checks whether the authenticated user is a member of any admin AD group.
     /// Queries the user's 'memberOf' attribute and matches against Ldap:AdminGroups config.
-    /// On bypass mode always returns true so developers can access admin panel.
+    /// On bypass mode always returns false so only AdminUsers have admin access.
     /// </summary>
     public bool IsAdmin(string domain, string username, string password)
     {
-        // Bypass only skips LDAP — AdminUsers/AdminGroups still checked via config
-        // (Bypass=true means anyone can login, but admin is still config-controlled)
-
         // Direct username override — always checked first, even in bypass mode
         if (_opts.AdminUserSet.Contains(username))
         {
@@ -179,59 +190,58 @@ public sealed class LdapAuthService : ILdapAuthService
 
         try
         {
-            var uri    = new Uri(cfg.Path.Replace("LDAP://", "ldap://", StringComparison.OrdinalIgnoreCase));
-            var server = new LdapDirectoryIdentifier(uri.Host, 389);
-            var creds  = new NetworkCredential($"{cfg.Domain}\\{username}", password);
+            var host   = HostFromPath(cfg.Path);
+            var baseDn = BaseDnFromHost(host);
 
-            using var conn = new LdapConnection(server, creds, AuthType.Ntlm);
-            conn.SessionOptions.ProtocolVersion = 3;
-            conn.Bind();
-
-            // Build base DN from host: setyazilim.com → DC=setyazilim,DC=com
-            var baseDn = string.Join(",", uri.Host.Split('.')
-                .Select(part => $"DC={part}"));
+            using var conn = new LdapConnection();
+            conn.Connect(host, 389);
+            conn.Bind($"{cfg.Domain}\\{username}", password);
 
             // Search for the user and retrieve memberOf attribute
-            var searchReq = new SearchRequest(
-                baseDn,
-                $"(sAMAccountName={username})",
-                SearchScope.Subtree,
-                "memberOf");
+            var results = conn.Search(baseDn, LdapConnection.ScopeSub,
+                $"(sAMAccountName={username})", new[] { "memberOf" }, false);
 
-            var resp = (SearchResponse)conn.SendRequest(searchReq);
-            if (resp.Entries.Count == 0)
+            bool foundUser = false;
+            while (results.HasMore())
             {
-                _log.LogWarning("IsAdmin: user {User}@{Domain} not found in LDAP (baseDn={BaseDn})", username, domain, baseDn);
-                return false;
-            }
+                LdapEntry entry;
+                try { entry = results.Next(); }
+                catch (LdapException) { break; }
 
-            var entry    = resp.Entries[0];
-            var memberOf = entry.Attributes["memberOf"];
-            if (memberOf == null)
-            {
-                _log.LogWarning("IsAdmin: user {User}@{Domain} has no memberOf attribute", username, domain);
-                return false;
-            }
-
-            foreach (var raw in memberOf.GetValues(typeof(string)))
-            {
-                var dn = raw?.ToString() ?? "";
-                // CN=setmanagement,OU=... — extract CN part
-                var cn = dn.Split(',').FirstOrDefault(p =>
-                    p.TrimStart().StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
-                    ?.Substring(3).Trim();
-
-                _log.LogDebug("IsAdmin: {User}@{Domain} memberOf CN='{Cn}'", username, domain, cn);
-
-                if (cn != null && _opts.AdminGroupSet.Contains(cn))
+                foundUser = true;
+                var attr = entry.GetAttributeSet().GetAttribute("memberOf");
+                if (attr == null)
                 {
-                    _log.LogInformation("Admin access granted: {User}@{Domain} via group '{Group}'", username, domain, cn);
-                    return true;
+                    _log.LogWarning("IsAdmin: user {User}@{Domain} has no memberOf attribute", username, domain);
+                    continue;
+                }
+
+                foreach (var dn in attr.StringValueArray)
+                {
+                    // CN=setmanagement,OU=... — extract CN part
+                    var cn = dn.Split(',').FirstOrDefault(p =>
+                        p.TrimStart().StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
+                        ?.Substring(3).Trim();
+
+                    _log.LogDebug("IsAdmin: {User}@{Domain} memberOf CN='{Cn}'", username, domain, cn);
+
+                    if (cn != null && _opts.AdminGroupSet.Contains(cn))
+                    {
+                        _log.LogInformation("Admin access granted: {User}@{Domain} via group '{Group}'", username, domain, cn);
+                        conn.Disconnect();
+                        return true;
+                    }
                 }
             }
 
-            _log.LogWarning("Admin access denied: {User}@{Domain} — not in any admin group. AdminGroups={Groups}",
-                username, domain, _opts.AdminGroups);
+            conn.Disconnect();
+
+            if (!foundUser)
+                _log.LogWarning("IsAdmin: user {User}@{Domain} not found in LDAP (baseDn={BaseDn})", username, domain, baseDn);
+            else
+                _log.LogWarning("Admin access denied: {User}@{Domain} — not in any admin group. AdminGroups={Groups}",
+                    username, domain, _opts.AdminGroups);
+
             return false;
         }
         catch (Exception ex)

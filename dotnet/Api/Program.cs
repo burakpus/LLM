@@ -229,38 +229,42 @@ app.MapPost("/api/auth/debug-bind", [Authorize] (
 
     try
     {
-        var uri    = new Uri(cfg.Path.Replace("LDAP://", "ldap://", StringComparison.OrdinalIgnoreCase));
-        var server = new System.DirectoryServices.Protocols.LdapDirectoryIdentifier(uri.Host, 389);
-        var creds  = new System.Net.NetworkCredential($"{cfg.Domain}\\{req.Username}", req.Password);
-        using var conn = new System.DirectoryServices.Protocols.LdapConnection(server, creds,
-            System.DirectoryServices.Protocols.AuthType.Ntlm);
-        conn.SessionOptions.ProtocolVersion = 3;
-        conn.Bind();
+        var host   = new Uri(cfg.Path.Replace("LDAP://", "ldap://", StringComparison.OrdinalIgnoreCase)).Host;
+        var baseDn = string.Join(",", host.Split('.').Select(p => $"DC={p}"));
 
-        var baseDn = string.Join(",", uri.Host.Split('.').Select(p => $"DC={p}"));
-        var searchReq = new System.DirectoryServices.Protocols.SearchRequest(
-            baseDn, $"(sAMAccountName={req.Username})",
-            System.DirectoryServices.Protocols.SearchScope.Subtree, "memberOf");
-        var resp = (System.DirectoryServices.Protocols.SearchResponse)conn.SendRequest(searchReq);
+        using var conn = new Novell.Directory.Ldap.LdapConnection();
+        conn.Connect(host, 389);
+        conn.Bind($"{cfg.Domain}\\{req.Username}", req.Password);
 
-        if (resp.Entries.Count == 0)
+        var results = conn.Search(baseDn, Novell.Directory.Ldap.LdapConnection.ScopeSub,
+            $"(sAMAccountName={req.Username})", new[] { "memberOf" }, false);
+
+        var rawDns = new List<string>();
+        bool found = false;
+        while (results.HasMore())
+        {
+            Novell.Directory.Ldap.LdapEntry entry;
+            try { entry = results.Next(); }
+            catch (Novell.Directory.Ldap.LdapException) { break; }
+
+            found = true;
+            var attr = entry.GetAttributeSet().GetAttribute("memberOf");
+            if (attr != null)
+                rawDns.AddRange(attr.StringValueArray);
+        }
+        conn.Disconnect();
+
+        if (!found)
             return Results.Ok(new { found = false, baseDn, entries = 0 });
 
-        var entry    = resp.Entries[0];
-        var memberOf = entry.Attributes["memberOf"];
-        var groups   = memberOf == null ? [] :
-            memberOf.GetValues(typeof(string))
-                .Select(r => r?.ToString() ?? "")
-                .ToArray();
-
-        var cns = groups.Select(dn =>
+        var cns = rawDns.Select(dn =>
             dn.Split(',').FirstOrDefault(p => p.TrimStart().StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
                 ?.Substring(3).Trim() ?? "").ToArray();
 
         return Results.Ok(new {
             found    = true,
             baseDn,
-            rawDns   = groups,
+            rawDns   = rawDns.ToArray(),
             cns,
             adminGroupSet = opts.AdminGroupSet.ToArray(),
             isAdmin  = cns.Any(cn => opts.AdminGroupSet.Contains(cn))
