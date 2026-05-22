@@ -25,8 +25,13 @@ public sealed class TokenResult
 
 public interface IJwtTokenService
 {
-    TokenResult Generate(string username, string domain);
+    TokenResult Generate(string username, string domain, bool isAdmin = false);
     ClaimsPrincipal? Validate(string token);
+}
+
+public static class AppClaims
+{
+    public const string IsAdmin = "isAdmin";
 }
 
 public sealed class JwtTokenService : IJwtTokenService
@@ -40,7 +45,7 @@ public sealed class JwtTokenService : IJwtTokenService
         _key  = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_opts.Secret));
     }
 
-    public TokenResult Generate(string username, string domain)
+    public TokenResult Generate(string username, string domain, bool isAdmin = false)
     {
         var expiry = DateTime.UtcNow.AddHours(_opts.ExpiryHours);
         var claims = new[]
@@ -48,6 +53,7 @@ public sealed class JwtTokenService : IJwtTokenService
             new Claim(ClaimTypes.Name,            username),
             new Claim("domain",                   domain),
             new Claim(ClaimTypes.NameIdentifier,  $"{domain}\\{username}"),
+            new Claim(AppClaims.IsAdmin,           isAdmin ? "true" : "false"),
         };
 
         var token = new JwtSecurityToken(

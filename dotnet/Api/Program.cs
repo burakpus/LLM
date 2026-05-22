@@ -70,7 +70,13 @@ services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-services.AddAuthorization();
+services.AddAuthorization(o =>
+{
+    // "AdminOnly" policy: JWT must contain isAdmin=true claim
+    o.AddPolicy("AdminOnly", p =>
+        p.RequireAuthenticatedUser()
+         .RequireClaim(AppClaims.IsAdmin, "true"));
+});
 
 // ── LDAP ──────────────────────────────────────────────────────────────────────
 services.AddOptions<LdapOptions>()
@@ -141,7 +147,8 @@ app.MapPost("/api/auth/login", (
     if (!ldap.Authenticate(req.Domain, req.Username, req.Password))
         return Results.Unauthorized();
 
-    var token = jwt.Generate(req.Username, req.Domain);
+    var isAdmin = ldap.IsAdmin(req.Domain, req.Username, req.Password);
+    var token   = jwt.Generate(req.Username, req.Domain, isAdmin);
     return Results.Ok(token);
 });
 
@@ -150,8 +157,13 @@ app.MapGet("/api/auth/me", [Authorize] (ClaimsPrincipal user) =>
     Results.Ok(new
     {
         username = user.FindFirstValue(ClaimTypes.Name),
-        domain   = user.FindFirstValue("domain")
+        domain   = user.FindFirstValue("domain"),
+        isAdmin  = user.FindFirstValue(AppClaims.IsAdmin) == "true",
     }));
+
+// Helper: require admin claim on sensitive endpoints
+bool RequireAdmin(ClaimsPrincipal user) =>
+    user.FindFirstValue(AppClaims.IsAdmin) == "true";
 
 // =============================================================================
 // ─── Skills ──────────────────────────────────────────────────────────────────
@@ -314,7 +326,7 @@ app.MapDelete("/api/ingest/{collection}/{*source}", [Authorize] async (
 // ─── Admin — RAG Management ──────────────────────────────────────────────────
 
 // POST /api/admin/upload — multipart file upload, auto-parse and ingest
-app.MapPost("/api/admin/upload", [Authorize] async (
+app.MapPost("/api/admin/upload", [Authorize("AdminOnly")] async (
     HttpContext http,
     IDocumentIngestion ingestion,
     CancellationToken ct) =>
@@ -362,7 +374,7 @@ app.MapPost("/api/admin/upload", [Authorize] async (
 });
 
 // GET /api/admin/documents?collection=xxx&page=1&pageSize=20
-app.MapGet("/api/admin/documents", [Authorize] async (
+app.MapGet("/api/admin/documents", [Authorize("AdminOnly")] async (
     string? collection,
     int page,
     int pageSize,
@@ -418,7 +430,7 @@ app.MapGet("/api/admin/documents", [Authorize] async (
 });
 
 // GET /api/admin/collections
-app.MapGet("/api/admin/collections", [Authorize] async (
+app.MapGet("/api/admin/collections", [Authorize("AdminOnly")] async (
     NpgsqlDataSource ds, CancellationToken ct) =>
 {
     await using var conn = await ds.OpenConnectionAsync(ct);
@@ -439,7 +451,7 @@ app.MapGet("/api/admin/collections", [Authorize] async (
 });
 
 // DELETE /api/admin/documents/{collection}/{*source}
-app.MapDelete("/api/admin/documents/{collection}/{*source}", [Authorize] async (
+app.MapDelete("/api/admin/documents/{collection}/{*source}", [Authorize("AdminOnly")] async (
     string collection, string source,
     IDocumentIngestion ingestion, CancellationToken ct) =>
 {
@@ -465,12 +477,12 @@ async Task<IResult> LiteLLMProxy(string path, IOptions<LiteLLMOptions> opts,
 }
 
 // GET /api/admin/usage/users
-app.MapGet("/api/admin/usage/users", [Authorize] async (
+app.MapGet("/api/admin/usage/users", [Authorize("AdminOnly")] async (
     IOptions<LiteLLMOptions> opts, IHttpClientFactory http, CancellationToken ct) =>
     await LiteLLMProxy("/spend/users", opts, http, ct));
 
 // GET /api/admin/usage/session-users — token stats from our own session_memories (reliable)
-app.MapGet("/api/admin/usage/session-users", [Authorize] async (
+app.MapGet("/api/admin/usage/session-users", [Authorize("AdminOnly")] async (
     NpgsqlDataSource ds, CancellationToken ct) =>
 {
     await using var conn = await ds.OpenConnectionAsync(ct);
@@ -501,7 +513,7 @@ app.MapGet("/api/admin/usage/session-users", [Authorize] async (
 });
 
 // GET /api/admin/usage/models — aggregate from spend logs (reliable after reset)
-app.MapGet("/api/admin/usage/models", [Authorize] async (
+app.MapGet("/api/admin/usage/models", [Authorize("AdminOnly")] async (
     IOptions<LiteLLMOptions> litellmOpts, IHttpClientFactory httpFactory, CancellationToken ct) =>
 {
     using var client = httpFactory.CreateClient("proxy");
@@ -538,13 +550,13 @@ app.MapGet("/api/admin/usage/models", [Authorize] async (
 });
 
 // GET /api/admin/usage/logs?limit=50
-app.MapGet("/api/admin/usage/logs", [Authorize] async (
+app.MapGet("/api/admin/usage/logs", [Authorize("AdminOnly")] async (
     int limit,
     IOptions<LiteLLMOptions> opts, IHttpClientFactory http, CancellationToken ct) =>
     await LiteLLMProxy($"/spend/logs?limit={Math.Clamp(limit, 1, 200)}", opts, http, ct));
 
 // GET /api/admin/usage/end-users — aggregate end_user spend from LiteLLM logs
-app.MapGet("/api/admin/usage/end-users", [Authorize] async (
+app.MapGet("/api/admin/usage/end-users", [Authorize("AdminOnly")] async (
     IOptions<LiteLLMOptions> opts, IHttpClientFactory httpFactory, CancellationToken ct) =>
 {
     using var client = httpFactory.CreateClient("proxy");
@@ -597,18 +609,18 @@ app.MapGet("/api/admin/usage/end-users", [Authorize] async (
 });
 
 // GET /api/admin/skills
-app.MapGet("/api/admin/skills", [Authorize] (SkillRegistry registry) =>
+app.MapGet("/api/admin/skills", [Authorize("AdminOnly")] (SkillRegistry registry) =>
     Results.Ok(registry.All.Select(kv => new { id = kv.Key, size = kv.Value.Length })));
 
 // GET /api/admin/skills/{id}
-app.MapGet("/api/admin/skills/{id}", [Authorize] (string id, SkillRegistry registry) =>
+app.MapGet("/api/admin/skills/{id}", [Authorize("AdminOnly")] (string id, SkillRegistry registry) =>
 {
     if (!registry.All.ContainsKey(id)) return Results.NotFound();
     return Results.Text(registry.All[id], "text/plain; charset=utf-8");
 });
 
 // POST /api/admin/skills — upload a .md skill file
-app.MapPost("/api/admin/skills", [Authorize] async (
+app.MapPost("/api/admin/skills", [Authorize("AdminOnly")] async (
     HttpContext http,
     SkillRegistry registry,
     CancellationToken ct) =>
@@ -647,7 +659,7 @@ app.MapPost("/api/admin/skills", [Authorize] async (
 });
 
 // DELETE /api/admin/skills/{id}
-app.MapDelete("/api/admin/skills/{id}", [Authorize] (string id, SkillRegistry registry) =>
+app.MapDelete("/api/admin/skills/{id}", [Authorize("AdminOnly")] (string id, SkillRegistry registry) =>
 {
     if (!registry.All.ContainsKey(id))
         return Results.NotFound(new { error = $"Skill '{id}' not found" });

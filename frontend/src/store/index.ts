@@ -110,6 +110,7 @@ export interface AuthState {
   token?:    string
   username?: string
   domain?:   string
+  isAdmin?:  boolean
 }
 
 export type Status =

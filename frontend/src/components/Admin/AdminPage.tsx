@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
+import { useStore } from '../../store'
 import {
   uploadFiles, listDocuments, listCollections,
   deleteDocument, listSkills, getSkill, uploadSkills, deleteSkill,
@@ -17,13 +18,32 @@ type Tab = 'upload' | 'documents' | 'skills' | 'usage'
 // =============================================================================
 
 export default function AdminPage() {
+  const { auth } = useStore()
   const [tab, setTab] = useState<Tab>('upload')
 
   useEffect(() => {
-    // ensure dark theme matches the rest of the app
     const stored = localStorage.getItem('setllm-theme')
     document.documentElement.setAttribute('data-theme', stored === 'light' ? 'light' : 'dark')
   }, [])
+
+  // Guard: non-admin users who navigate directly to /admin see a 403 page
+  if (!auth.isAdmin) {
+    return (
+      <div className="min-h-dvh flex flex-col items-center justify-center gap-4"
+           style={{ background: 'var(--bg)', color: 'var(--text)' }}>
+        <svg className="w-16 h-16 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round"
+            d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+        </svg>
+        <div className="text-2xl font-semibold">Erişim Yetkiniz Yok</div>
+        <p className="text-sm opacity-60">Admin paneline yalnızca Set Management ve Set AIAdmin grupları erişebilir.</p>
+        <a href="/" className="mt-2 px-4 py-2 rounded-full text-sm cursor-pointer"
+           style={{ background: 'var(--accent)', color: '#0b1929' }}>
+          ← Ana Sayfaya Dön
+        </a>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-dvh flex flex-col" style={{ background: 'var(--bg)', color: 'var(--text)' }}>
