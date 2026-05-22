@@ -94,9 +94,6 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
   const [showFmtDrop, setShowFmtDrop] = useState(false)
   const ref     = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const endRef  = useRef<HTMLDivElement>(null)
-  const modRef  = useRef<HTMLDivElement>(null)
-  const fmtRef  = useRef<HTMLDivElement>(null)
 
   // Inject file context from project panel tab click
   useEffect(() => {
@@ -107,15 +104,8 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
     }
   }, [fileContext])
 
-  // Close dropdowns on outside click
-  useEffect(() => {
-    const close = (e: MouseEvent) => {
-      if (endRef.current && !endRef.current.contains(e.target as Node)) setShowEndDrop(false)
-      if (modRef.current && !modRef.current.contains(e.target as Node)) setShowModDrop(false)
-      if (fmtRef.current && !fmtRef.current.contains(e.target as Node)) setShowFmtDrop(false)
-    }
-    document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
+  const closeDropdowns = useCallback(() => {
+    setShowEndDrop(false); setShowModDrop(false); setShowFmtDrop(false)
   }, [])
 
   const submit = () => {
@@ -578,10 +568,15 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
         </div>
 
         {/* ── Single action row ─────────────────────────────────────────── */}
+        {/* Transparent overlay — closes any open dropdown on outside click */}
+        {(showEndDrop || showModDrop || showFmtDrop) && (
+          <div className="fixed inset-0 z-40" onClick={closeDropdowns} />
+        )}
+
         <div className="mt-2 flex items-center gap-1.5">
 
           {/* 1. Endpoint dropdown */}
-          <div ref={endRef} className="relative">
+          <div className="relative z-50">
             <button
               onClick={() => { setShowEndDrop(o => !o); setShowModDrop(false); setShowFmtDrop(false) }}
               className="pill active"
@@ -617,7 +612,7 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
           </div>
 
           {/* 2. Mod dropdown (RAG + Regenerate) */}
-          <div ref={modRef} className="relative">
+          <div className="relative z-50">
             <button
               onClick={() => { setShowModDrop(o => !o); setShowEndDrop(false); setShowFmtDrop(false) }}
               className={`pill ${agentMode ? 'active' : ''}`}
@@ -675,7 +670,7 @@ export default function InputBar({ onSend, onStop, onRegenerate, generating,
           </div>
 
           {/* 3. Format dropdown */}
-          <div ref={fmtRef} className="relative">
+          <div className="relative z-50">
             <button
               onClick={() => { setShowFmtDrop(o => !o); setShowEndDrop(false); setShowModDrop(false) }}
               className="pill"
