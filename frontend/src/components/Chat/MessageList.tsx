@@ -354,10 +354,10 @@ const MessageActions = memo(function MessageActions({ m, convId, activeModel, co
 export default function MessageList({
   messages, generating, onRegenerate, onContinue,
 }: Props) {
-  const { currentId, activeModel } = useStore(s => ({
+  const { currentId, activeModel } = useStore(useShallow(s => ({
     currentId:   s.currentId ?? '',
     activeModel: s.activeModel ?? 'chat',
-  }))
+  })))
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
