@@ -184,6 +184,11 @@ var app = builder.Build();
             details     TEXT         NOT NULL DEFAULT '',
             created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS skill_settings (
+            skill_id    VARCHAR(200) PRIMARY KEY,
+            order_value INTEGER      NOT NULL DEFAULT 999,
+            updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        );
         CREATE TABLE IF NOT EXISTS event_log (
             id          BIGSERIAL    PRIMARY KEY,
             ts          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -1888,25 +1893,47 @@ app.MapGet("/api/models/capabilities", [Authorize] () => Results.Ok(new Dictiona
                        description = "nomic-embed-text-v1.5 — 768 boyut embedding" },
 }));
 
-app.MapGet("/api/skills", [Authorize] (SkillRegistry registry) =>
+app.MapGet("/api/skills", [Authorize] async (SkillRegistry registry, NpgsqlDataSource ds, CancellationToken ct) =>
 {
+    var overrides = await LoadSkillOrderOverrides(ds, ct);
     var skills = registry.Metadata.Values
-        .OrderBy(m => m.Order)
-        .ThenBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
-        .Select(m => new
+        .Select(m =>
         {
-            id              = m.Id,
-            name            = m.Name,
-            description     = m.Description,
-            icon            = m.Icon,
-            collection      = m.Collection,
-            order           = m.Order,
-            isFolder        = m.IsFolder,
-            referenceCount  = m.ReferenceCount,
-            contentBytes    = m.ContentBytes,
-        });
+            var ord = overrides.TryGetValue(m.Id, out var ov) ? ov : m.Order;
+            return new
+            {
+                id              = m.Id,
+                name            = m.Name,
+                description     = m.Description,
+                icon            = m.Icon,
+                collection      = m.Collection,
+                order           = ord,
+                isFolder        = m.IsFolder,
+                referenceCount  = m.ReferenceCount,
+                contentBytes    = m.ContentBytes,
+            };
+        })
+        .OrderBy(s => s.order)
+        .ThenBy(s => s.name, StringComparer.OrdinalIgnoreCase);
     return Results.Ok(skills);
 });
+
+// Helper — load DB order overrides into a dictionary
+static async Task<Dictionary<string, int>> LoadSkillOrderOverrides(NpgsqlDataSource ds, CancellationToken ct)
+{
+    var dict = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    try
+    {
+        await using var conn = await ds.OpenConnectionAsync(ct);
+        await using var cmd  = conn.CreateCommand();
+        cmd.CommandText = "SELECT skill_id, order_value FROM skill_settings";
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            dict[r.GetString(0)] = r.GetInt32(1);
+    }
+    catch { /* table may not exist yet — fall through with empty dict */ }
+    return dict;
+}
 
 // GET /api/skills/{id} — get skill system prompt body (no frontmatter)
 app.MapGet("/api/skills/{id}", [Authorize] (string id, SkillRegistry registry) =>
@@ -2373,20 +2400,29 @@ app.MapGet("/api/admin/usage/end-users", [Authorize("AdminOnly")] async (
 });
 
 // GET /api/admin/skills
-app.MapGet("/api/admin/skills", [Authorize("AdminOnly")] (SkillRegistry registry) =>
-    Results.Ok(registry.Metadata.Values
-        .OrderBy(m => m.Order)
-        .ThenBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
-        .Select(m => new
+app.MapGet("/api/admin/skills", [Authorize("AdminOnly")] async (
+    SkillRegistry registry, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    var overrides = await LoadSkillOrderOverrides(ds, ct);
+    var items = registry.Metadata.Values
+        .Select(m =>
         {
-            id              = m.Id,
-            name            = m.Name,
-            description     = m.Description,
-            order           = m.Order,
-            isFolder        = m.IsFolder,
-            referenceCount  = m.ReferenceCount,
-            size            = (int)m.ContentBytes,
-        })));
+            var ord = overrides.TryGetValue(m.Id, out var ov) ? ov : m.Order;
+            return new
+            {
+                id              = m.Id,
+                name            = m.Name,
+                description     = m.Description,
+                order           = ord,
+                isFolder        = m.IsFolder,
+                referenceCount  = m.ReferenceCount,
+                size            = (int)m.ContentBytes,
+            };
+        })
+        .OrderBy(s => s.order)
+        .ThenBy(s => s.name, StringComparer.OrdinalIgnoreCase);
+    return Results.Ok(items);
+});
 
 // GET /api/admin/skills/{id}
 app.MapGet("/api/admin/skills/{id}", [Authorize("AdminOnly")] (string id, SkillRegistry registry) =>
@@ -2632,7 +2668,7 @@ app.MapPost("/api/admin/skills/import-anthropic", [Authorize("AdminOnly")] async
     return Results.Ok(new { results, imported });
 });
 
-// PUT /api/admin/skills/{id}/order — update skill order (writes 'order:' to frontmatter)
+// PUT /api/admin/skills/{id}/order — update skill order (DB-stored, survives deploys)
 // body: { order: number }
 app.MapPut("/api/admin/skills/{id}/order", [Authorize("AdminOnly")] async (
     string id, [FromBody] SkillOrderRequest req,
@@ -2641,24 +2677,16 @@ app.MapPut("/api/admin/skills/{id}/order", [Authorize("AdminOnly")] async (
 {
     if (!registry.All.ContainsKey(id))
         return Results.NotFound(new { error = $"Skill '{id}' not found" });
-    if (registry.SkillsPath is null)
-        return Results.BadRequest(new { error = "SkillsPath not configured" });
 
-    // Determine target .md path (folder skill → SKILL.md inside folder, else flat .md)
-    var folderPath = Path.Combine(registry.SkillsPath, id);
-    var targetPath = Directory.Exists(folderPath)
-        ? Path.Combine(folderPath, "SKILL.md")
-        : Path.Combine(registry.SkillsPath, id + ".md");
-
-    if (!File.Exists(targetPath))
-        return Results.NotFound(new { error = $"Skill file missing: {targetPath}" });
-
-    var content = await File.ReadAllTextAsync(targetPath, ct);
-    var newContent = SkillFrontmatter.UpsertKey(content, "order", req.Order.ToString());
-    await File.WriteAllTextAsync(targetPath, newContent, ct);
-
-    // Hot-reload all skills (cheap — just file scan)
-    registry.LoadFromDirectory(registry.SkillsPath);
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"INSERT INTO skill_settings (skill_id, order_value, updated_at)
+                        VALUES ($1, $2, NOW())
+                        ON CONFLICT (skill_id) DO UPDATE
+                        SET order_value = $2, updated_at = NOW()";
+    cmd.Parameters.AddWithValue(id);
+    cmd.Parameters.AddWithValue(req.Order);
+    await cmd.ExecuteNonQueryAsync(ct);
 
     var username = user.FindFirstValue(ClaimTypes.Name) ?? "unknown";
     _ = LogActivity(ds, username, "skill.order.update", id, $"order={req.Order}");
@@ -2689,6 +2717,18 @@ app.MapDelete("/api/admin/skills/{id}", [Authorize("AdminOnly")] (
     }
 
     registry.Remove(id);
+
+    // Cleanup DB-stored order override
+    try
+    {
+        using var c = ds.OpenConnection();
+        using var d = c.CreateCommand();
+        d.CommandText = "DELETE FROM skill_settings WHERE skill_id=$1";
+        d.Parameters.AddWithValue(id);
+        d.ExecuteNonQuery();
+    }
+    catch { /* table may be missing — non-fatal */ }
+
     var username = user.FindFirstValue(ClaimTypes.Name) ?? "unknown";
     _ = LogActivity(ds, username, "skill.delete", id);
     return Results.Ok(new { deleted = id });
