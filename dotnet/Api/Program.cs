@@ -347,62 +347,28 @@ app.MapGet("/api/auth/groups", [Authorize] (
     });
 });
 
-// POST /api/auth/debug-bind — test LDAP group lookup with credentials (debug only)
-app.MapPost("/api/auth/debug-bind", [Authorize] (
+// POST /api/auth/debug-ldap — comprehensive step-by-step LDAP diagnostic (admin only)
+// Tests: config → connect → TLS → service-account bind → user search → user bind → group fetch
+app.MapPost("/api/auth/debug-ldap", [Authorize("AdminOnly")] (
     [FromBody] LoginRequest req,
-    IOptions<LdapOptions> ldapOpts) =>
+    ILdapAuthService ldap) =>
 {
-    var opts = ldapOpts.Value;
-    if (!opts.Domains.TryGetValue(req.Domain.ToUpperInvariant(), out var cfg))
-        return Results.BadRequest(new { error = $"Domain not configured: {req.Domain}" });
+    var result = ldap.Diagnose(req.Domain, req.Username ?? "", req.Password ?? "");
+    return Results.Ok(result);
+});
 
-    try
-    {
-        var host   = new Uri(cfg.Path.Replace("LDAP://", "ldap://", StringComparison.OrdinalIgnoreCase)).Host;
-        var baseDn = string.Join(",", host.Split('.').Select(p => $"DC={p}"));
-
-        using var conn = new Novell.Directory.Ldap.LdapConnection();
-        conn.Connect(host, 389);
-        conn.Bind($"{cfg.Domain}\\{req.Username}", req.Password);
-
-        var results = conn.Search(baseDn, Novell.Directory.Ldap.LdapConnection.ScopeSub,
-            $"(sAMAccountName={req.Username})", new[] { "memberOf" }, false);
-
-        var rawDns = new List<string>();
-        bool found = false;
-        while (results.HasMore())
-        {
-            Novell.Directory.Ldap.LdapEntry entry;
-            try { entry = results.Next(); }
-            catch (Novell.Directory.Ldap.LdapException) { break; }
-
-            found = true;
-            var attr = entry.GetAttributeSet().GetAttribute("memberOf");
-            if (attr != null)
-                rawDns.AddRange(attr.StringValueArray);
-        }
-        conn.Disconnect();
-
-        if (!found)
-            return Results.Ok(new { found = false, baseDn, entries = 0 });
-
-        var cns = rawDns.Select(dn =>
-            dn.Split(',').FirstOrDefault(p => p.TrimStart().StartsWith("CN=", StringComparison.OrdinalIgnoreCase))
-                ?.Substring(3).Trim() ?? "").ToArray();
-
-        return Results.Ok(new {
-            found    = true,
-            baseDn,
-            rawDns   = rawDns.ToArray(),
-            cns,
-            adminGroupSet = opts.AdminGroupSet.ToArray(),
-            isAdmin  = cns.Any(cn => opts.AdminGroupSet.Contains(cn))
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.Ok(new { error = ex.Message });
-    }
+// POST /api/auth/debug-ldap-anonymous — same diagnostic but unauthenticated
+// (necessary for first-time setup when no admin user can log in yet — restricted to localhost-ish use)
+app.MapPost("/api/auth/debug-ldap-anonymous", (
+    [FromBody] LoginRequest req,
+    ILdapAuthService ldap,
+    IOptions<LdapOptions> opts) =>
+{
+    // Only allow when no admin user is configured OR when LDAP is unconfigured (recovery scenario)
+    if (opts.Value.Domains.Count > 0 && opts.Value.AdminUserSet.Count > 0)
+        return Results.Forbid();
+    var result = ldap.Diagnose(req.Domain, req.Username ?? "", req.Password ?? "");
+    return Results.Ok(result);
 });
 
 // GET /api/auth/me
