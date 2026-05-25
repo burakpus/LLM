@@ -128,53 +128,55 @@ public sealed class MsSqlSchemaProvider : ISqlSchemaProvider
             sb.AppendLine(string.Join(",\n", cols));
         }
 
-        // Primary key
+        // Primary key — read raw rows, aggregate in C# (SQL 2008+ compatible)
+        var pkColumns = new List<(string IdxName, string ColName, int Ordinal)>();
         await using (var pkCmd = conn.CreateCommand())
         {
             pkCmd.CommandText = @"
-                SELECT i.name AS pk_name,
-                       STRING_AGG(QUOTENAME(c.name), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS cols
+                SELECT i.name AS pk_name, c.name AS col_name, ic.key_ordinal
                 FROM sys.indexes i
                 JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
                 JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
                 WHERE i.object_id = OBJECT_ID(@n) AND i.is_primary_key = 1
-                GROUP BY i.name";
+                ORDER BY ic.key_ordinal";
             pkCmd.Parameters.Add("@n", SqlDbType.NVarChar, 520).Value = $"[{obj.Schema}].[{obj.Name}]";
-
             await using var r = await pkCmd.ExecuteReaderAsync(ct);
-            if (await r.ReadAsync(ct))
-            {
-                sb.AppendLine($",    CONSTRAINT [{r.GetString(0)}] PRIMARY KEY ({r.GetString(1)})");
-            }
+            while (await r.ReadAsync(ct))
+                pkColumns.Add((r.GetString(0), r.GetString(1), r.GetByte(2)));
+        }
+        if (pkColumns.Count > 0)
+        {
+            var pkName = pkColumns[0].IdxName;
+            var pkCols = string.Join(", ", pkColumns.OrderBy(p => p.Ordinal).Select(p => $"[{p.ColName}]"));
+            sb.AppendLine($",    CONSTRAINT [{pkName}] PRIMARY KEY ({pkCols})");
         }
 
         sb.AppendLine(");");
 
-        // Indexes (non-PK)
+        // Indexes (non-PK) — same aggregation strategy
+        var indexes = new List<(string IdxName, string ColName, int Ordinal, bool Unique)>();
         await using (var idxCmd = conn.CreateCommand())
         {
             idxCmd.CommandText = @"
-                SELECT i.name,
-                       i.is_unique,
-                       STRING_AGG(QUOTENAME(c.name), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS cols
+                SELECT i.name, c.name, ic.key_ordinal, i.is_unique
                 FROM sys.indexes i
                 JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
                 JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
                 WHERE i.object_id = OBJECT_ID(@n)
                   AND i.is_primary_key = 0
                   AND i.type_desc <> 'HEAP'
-                GROUP BY i.name, i.is_unique
-                ORDER BY i.name";
+                  AND i.name IS NOT NULL
+                ORDER BY i.name, ic.key_ordinal";
             idxCmd.Parameters.Add("@n", SqlDbType.NVarChar, 520).Value = $"[{obj.Schema}].[{obj.Name}]";
-
             await using var r = await idxCmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
-            {
-                var idxName = r.GetString(0);
-                var unique  = r.GetBoolean(1);
-                var cols    = r.GetString(2);
-                sb.AppendLine($"CREATE {(unique ? "UNIQUE " : "")}INDEX [{idxName}] ON [{obj.Schema}].[{obj.Name}] ({cols});");
-            }
+                indexes.Add((r.GetString(0), r.GetString(1), r.GetByte(2), r.GetBoolean(3)));
+        }
+        foreach (var grp in indexes.GroupBy(x => x.IdxName))
+        {
+            var first = grp.First();
+            var cols  = string.Join(", ", grp.OrderBy(x => x.Ordinal).Select(x => $"[{x.ColName}]"));
+            sb.AppendLine($"CREATE {(first.Unique ? "UNIQUE " : "")}INDEX [{first.IdxName}] ON [{obj.Schema}].[{obj.Name}] ({cols});");
         }
 
         return sb.ToString();
