@@ -34,7 +34,7 @@ function Badge({ children, color = 'var(--accent)' }: { children: string; color?
   )
 }
 
-function Step({ n, children }: { n: number; children: string }) {
+function Step({ n, children }: { n: number; children: React.ReactNode }) {
   return (
     <div className="flex gap-3 items-start">
       <span className="shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold mt-0.5"
@@ -251,10 +251,11 @@ function ContentAgent() {
       <H>Yerleşik Araçlar</H>
       <div className="space-y-2">
         {[
-          { tool: 'get_datetime', desc: 'Güncel tarih, saat ve zaman dilimi' },
-          { tool: 'calculate',   desc: 'JavaScript math ifadesi hesaplama (Math.sqrt, Math.PI vb.)' },
-          { tool: 'http_get',    desc: 'Sunucu üzerinden GET isteği' },
-          { tool: 'http_post',   desc: 'Sunucu üzerinden POST isteği' },
+          { tool: 'get_datetime',  desc: 'Güncel tarih, saat ve zaman dilimi' },
+          { tool: 'calculate',     desc: 'JavaScript math ifadesi hesaplama (Math.sqrt, Math.PI vb.)' },
+          { tool: 'http_get',      desc: 'Sunucu üzerinden GET isteği' },
+          { tool: 'http_post',     desc: 'Sunucu üzerinden POST isteği' },
+          { tool: 'generate_file', desc: 'Word/Excel/PDF/PowerPoint üretip indirme bağlantısı döndürür' },
         ].map(t => (
           <div key={t.tool} className="flex items-start gap-3 p-3 rounded-lg"
                style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
@@ -264,11 +265,50 @@ function ContentAgent() {
         ))}
       </div>
 
+      <H>📄 Dosya Üretimi (generate_file)</H>
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+        Chat&apos;te &quot;rapor.docx olarak ver&quot;, &quot;excel tablo hazırla&quot;, &quot;pdf çıktısı al&quot;, &quot;pptx sunum yap&quot;
+        gibi isteklerde model bu aracı çağırır. Backend Python ile (python-docx, openpyxl,
+        python-pptx, reportlab) dosyayı üretir, chat&apos;te tool sonuç kutusunda
+        <strong> 📄 dosya.docx · 24 KB</strong> şeklinde indirilebilir chip gösterilir.
+      </p>
+
+      <H>Desteklenen Formatlar</H>
+      <div className="space-y-2">
+        {[
+          { icon: '📄', kind: 'docx', desc: 'Başlık + bölüm + paragraf + maddeli liste + tablo (python-docx)' },
+          { icon: '📊', kind: 'xlsx', desc: 'Çoklu sayfa, başlık satırı, otomatik genişlik (openpyxl)' },
+          { icon: '📕', kind: 'pdf',  desc: 'Başlık + markdown gövdesi veya yapılandırılmış bölüm/tablo (reportlab)' },
+          { icon: '📽️', kind: 'pptx', desc: 'Slayt başlığı, madde listesi veya gövde, konuşmacı notları (python-pptx)' },
+        ].map(t => (
+          <div key={t.kind} className="flex items-start gap-3 p-3 rounded-lg"
+               style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+            <span className="text-xl shrink-0">{t.icon}</span>
+            <div className="flex-1">
+              <div className="font-medium text-sm" style={{ color: 'var(--text)' }}>
+                <Code>{t.kind}</Code>
+              </div>
+              <div className="text-xs" style={{ color: 'var(--text-2)' }}>{t.desc}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <H>Tipik Kullanım</H>
+      <div className="space-y-2">
+        <Step n={1}>Coding modu + Otonom işaretli olsun</Step>
+        <Step n={2}>İlgili skill seç (örn: <strong>DOCX Processing</strong>, <strong>XLSX Processing</strong>)</Step>
+        <Step n={3}>Chat&apos;e iste: &quot;Geçen ay satış raporunu docx olarak ver — özet, KPI tablosu, riskler bölümleri olsun&quot;</Step>
+        <Step n={4}>Model spec çıkarır → generate_file çağrılır → tool kutusunda indir butonu çıkar</Step>
+      </div>
+
+      <Tip>Üretilen dosyalar sunucuda kullanıcıya özel klasörde saklanır, JWT korumalı bağlantı ile sadece sen indirebilirsin. Path-traversal koruması var.</Tip>
+
       <H>RAG Agent Modu</H>
       <p className="text-sm" style={{ color: 'var(--text-2)' }}>
-        Alt bardaki <span className="font-medium" style={{ color: 'var(--text)' }}>RAG</span> pill'i
+        Alt bardaki <span className="font-medium" style={{ color: 'var(--text)' }}>RAG</span> pill&apos;i
         tam bir ajan pipeline açar: vektör arama + BM25 hibrit, oturum hafızası, skill sistem promptu.
-        Otonom Mod'dan farklı olarak backend'de yönetilir.
+        Otonom Mod&apos;dan farklı olarak backend&apos;de yönetilir.
       </p>
 
       <Tip>Otonom Mod açıkken resim gönderirseniz tools otomatik devre dışı kalır — görsel anlama ve araç çağırma aynı anda çalışmaz.</Tip>
