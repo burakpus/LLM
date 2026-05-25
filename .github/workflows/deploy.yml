@@ -51,6 +51,20 @@ jobs:
 
           # ── Deploy ────────────────────────────────────────────────────────────
           cp -r $ROOT/dotnet/Api/Skills /tmp/setllm-publish/
+          mkdir -p /tmp/setllm-publish/scripts
+          cp $ROOT/scripts/file-gen.py /tmp/setllm-publish/scripts/file-gen.py
+
+          # ── Python venv for file-gen tool (idempotent — only creates if missing) ──
+          VENV=/home/admin/setllm-tools/venv
+          if [ ! -x "$VENV/bin/python" ]; then
+            mkdir -p /home/admin/setllm-tools
+            python3 -m venv $VENV
+            $VENV/bin/pip install --quiet --upgrade pip
+            $VENV/bin/pip install --quiet python-docx openpyxl python-pptx reportlab
+            echo "✅ file-gen venv created"
+          else
+            echo "✅ file-gen venv exists"
+          fi
 
           # Merge server appsettings.json (secrets preserved) with git version (new keys added)
           if [ -f ~/setllm-api/appsettings.json ]; then

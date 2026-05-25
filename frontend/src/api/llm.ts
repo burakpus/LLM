@@ -53,6 +53,28 @@ export const BUILTIN_TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_file',
+      description:
+        'Generate a Word/Excel/PDF/PowerPoint file from a structured spec. ' +
+        'Returns a downloadUrl the user can click. Use when the user asks for a file.\n' +
+        'kind="docx" spec: { title?, sections:[{heading?, paragraphs?:[str], lists?:[{type:"bullet"|"number", items:[str]}], table?:{headers:[str], rows:[[any]]}}] }\n' +
+        'kind="xlsx" spec: { sheets:[{name?, headers?:[str], rows:[[any]]}] }\n' +
+        'kind="pdf"  spec: { title?, content_markdown?, sections?:[same as docx] }\n' +
+        'kind="pptx" spec: { slides:[{title?, bullets?:[str], body?, notes?}] }',
+      parameters: {
+        type: 'object',
+        properties: {
+          kind:     { type: 'string', enum: ['docx', 'xlsx', 'pdf', 'pptx'] },
+          filename: { type: 'string', description: 'Output filename with extension, e.g. "rapor.docx"' },
+          spec:     { type: 'object', description: 'Kind-specific document spec' },
+        },
+        required: ['kind', 'filename', 'spec'],
+      },
+    },
+  },
 ] as const
 
 // ── Stream event types ───────────────────────────────────────────────────────

@@ -90,6 +90,27 @@ export function useGeneration() {
           return { ok: r.ok, status: r.status, body: r.text }
         }
 
+        if (name === 'generate_file') {
+          const tok = localStorage.getItem('setllm-token') ?? ''
+          const r = await fetch('/api/tools/generate-file', {
+            method:  'POST',
+            headers: {
+              'Content-Type':  'application/json',
+              'Authorization': `Bearer ${tok}`,
+            },
+            body: JSON.stringify({
+              kind:     String(args.kind ?? '').toLowerCase(),
+              filename: String(args.filename ?? `output.${args.kind ?? 'bin'}`),
+              spec:     args.spec ?? {},
+            }),
+          })
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({ error: r.statusText }))
+            return { ok: false, error: err?.error ?? `HTTP ${r.status}` }
+          }
+          return await r.json()
+        }
+
         return { error: `Unknown tool: ${name}` }
       } catch (e: unknown) {
         return { error: (e as Error).message }

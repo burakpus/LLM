@@ -100,6 +100,9 @@ services.AddSingleton<ILdapAuthService, LdapAuthService>();
 services.AddHttpContextAccessor();
 services.AddScoped<IEventLog, EventLog>();
 
+// ── Tools (file generation via Python subprocess) ─────────────────────────────
+services.AddSingleton<SetYazilim.Llm.Api.Tools.IFileGenerator, SetYazilim.Llm.Api.Tools.FileGenerator>();
+
 // ── SQL external sources (Phase 1: connection mgmt + test) ────────────────────
 services.AddDataProtection().SetApplicationName("set-llm-api");
 services.AddSingleton<ISqlConnectionService, SqlConnectionService>();
@@ -2755,6 +2758,52 @@ app.MapDelete("/api/session/{sessionId}", [Authorize] async (
 {
     await session.ClearAsync(sessionId, ct);
     return Results.NoContent();
+});
+
+// =============================================================================
+// ─── Tools — File Generation (docx/xlsx/pdf/pptx via Python subprocess) ──────
+
+// POST /api/tools/generate-file — agent tool entry point
+// body: { kind: "docx"|"xlsx"|"pdf"|"pptx", filename: "report.docx", spec: {...} }
+app.MapPost("/api/tools/generate-file", [Authorize] async (
+    [FromBody] SetYazilim.Llm.Api.Tools.FileGenRequest req,
+    SetYazilim.Llm.Api.Tools.IFileGenerator gen,
+    ClaimsPrincipal user,
+    IEventLog evt,
+    CancellationToken ct) =>
+{
+    if (string.IsNullOrEmpty(req.Kind))
+        return Results.BadRequest(new { error = "kind required" });
+
+    var allowed = new[] { "docx", "xlsx", "pdf", "pptx" };
+    if (!allowed.Contains(req.Kind.ToLowerInvariant()))
+        return Results.BadRequest(new { error = $"kind must be one of: {string.Join(",", allowed)}" });
+
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "anon";
+    var result   = await gen.GenerateAsync(username, req, ct);
+
+    await evt.LogAsync(EventCategory.Data,
+        result.Ok ? EventSeverity.Info : EventSeverity.Warn,
+        $"file.generate.{req.Kind}",
+        result.Ok ? EventResult.Success : EventResult.Failure,
+        reason: result.Error,
+        action: "generate", resource: $"{req.Kind}:{result.Filename}",
+        details: new { result.SizeBytes, result.Token }, ct: ct);
+
+    return Results.Ok(result);
+});
+
+// GET /api/tools/generated/{token}/{filename} — download a generated file (user-scoped)
+app.MapGet("/api/tools/generated/{token}/{filename}", [Authorize] (
+    string token, string filename,
+    SetYazilim.Llm.Api.Tools.IFileGenerator gen,
+    ClaimsPrincipal user) =>
+{
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "anon";
+    var path     = gen.Resolve(username, token, filename);
+    if (path == null) return Results.NotFound();
+    return Results.File(path, SetYazilim.Llm.Api.Tools.ContentTypes.Lookup(filename),
+        fileDownloadName: filename, enableRangeProcessing: true);
 });
 
 // =============================================================================
