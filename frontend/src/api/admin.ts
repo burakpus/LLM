@@ -46,8 +46,44 @@ export interface CollectionRow {
 }
 
 export interface SkillRow {
-  id:   string
-  size: number
+  id:              string
+  name?:           string
+  description?:    string
+  isFolder?:       boolean
+  referenceCount?: number
+  size:            number
+}
+
+export interface AnthropicSkillInfo {
+  name:        string
+  description: string
+  hasRefs:     boolean
+}
+
+// Pre-defined catalog of all 17 skills in anthropics/skills repo
+export const ANTHROPIC_SKILLS: Record<string, AnthropicSkillInfo> = {
+  'algorithmic-art':       { name: 'Algorithmic Art',       description: 'Generative art with JavaScript canvas',          hasRefs: false },
+  'brand-guidelines':      { name: 'Brand Guidelines',      description: 'Brand voice and visual consistency',             hasRefs: false },
+  'canvas-design':         { name: 'Canvas Design',         description: 'HTML Canvas 2D graphics and typography',         hasRefs: false },
+  'claude-api':            { name: 'Claude API',            description: 'Anthropic API: models, tools, streaming',        hasRefs: true  },
+  'doc-coauthoring':       { name: 'Doc Co-authoring',      description: 'Document collaboration workflows',               hasRefs: false },
+  'docx':                  { name: 'DOCX Processing',       description: 'Word document creation and manipulation',        hasRefs: false },
+  'frontend-design':       { name: 'Frontend Design',       description: 'UI/UX, responsive design best practices',        hasRefs: false },
+  'internal-comms':        { name: 'Internal Comms',        description: 'Company internal communication templates',       hasRefs: true  },
+  'mcp-builder':           { name: 'MCP Builder',           description: 'Build Model Context Protocol servers',           hasRefs: true  },
+  'pdf':                   { name: 'PDF Processing',        description: 'PDF read, merge, split, forms, OCR',             hasRefs: true  },
+  'pptx':                  { name: 'PPTX Processing',       description: 'PowerPoint creation and editing',                hasRefs: true  },
+  'skill-creator':         { name: 'Skill Creator',         description: 'Design and evaluate Claude Code skills',         hasRefs: true  },
+  'slack-gif-creator':     { name: 'Slack GIF Creator',     description: 'Animated GIF generation for Slack',              hasRefs: false },
+  'theme-factory':         { name: 'Theme Factory',         description: '10 pre-built design themes with palettes',       hasRefs: true  },
+  'web-artifacts-builder': { name: 'Web Artifacts Builder', description: 'Build deployable HTML/React artifacts',          hasRefs: false },
+  'webapp-testing':        { name: 'Web App Testing',       description: 'Browser automation and testing',                 hasRefs: false },
+  'xlsx':                  { name: 'XLSX Processing',       description: 'Excel spreadsheet creation and manipulation',    hasRefs: false },
+}
+
+export interface ImportAnthropicResult {
+  results:  { skill: string; ok: boolean; action?: string; error?: string; files?: number }[]
+  imported: number
 }
 
 // ── Calls ────────────────────────────────────────────────────────────────────
@@ -129,6 +165,19 @@ export async function deleteSkill(id: string): Promise<{ deleted: string }> {
     headers: authHeaders(),
   })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export async function importAnthropicSkills(skills: string[], overwrite = false): Promise<ImportAnthropicResult> {
+  const r = await fetch('/api/admin/skills/import-anthropic', {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify({ skills, overwrite }),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
   return r.json()
 }
 

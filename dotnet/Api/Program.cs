@@ -41,6 +41,14 @@ var services = builder.Services;
 // ── In-process cache (embedding results, etc.) ────────────────────────────────
 services.AddMemoryCache(o => o.SizeLimit = 2000);
 
+// ── HTTP client for outbound requests (GitHub API for skill imports, etc.) ────
+services.AddHttpClient("github", c =>
+{
+    c.DefaultRequestHeaders.Add("User-Agent", "SetYazilim-LLM/1.0");
+    c.DefaultRequestHeaders.Add("Accept",     "application/vnd.github+json");
+    c.Timeout = TimeSpan.FromSeconds(45);
+});
+
 // ── JWT ───────────────────────────────────────────────────────────────────────
 services.AddOptions<JwtOptions>()
     .BindConfiguration(JwtOptions.SectionName)
@@ -1729,38 +1737,19 @@ app.MapGet("/api/models/capabilities", [Authorize] () => Results.Ok(new Dictiona
 
 app.MapGet("/api/skills", [Authorize] (SkillRegistry registry) =>
 {
-    var skills = registry.All.Select(kv =>
-    {
-        var content = kv.Value;
-        var name = kv.Key;
-        var desc = "";
-        var icon = "sparkles";
-        var collection = (string?)null;
-
-        // Parse frontmatter if present
-        if (content.TrimStart().StartsWith("---"))
+    var skills = registry.Metadata.Values
+        .OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
+        .Select(m => new
         {
-            var trimmed = content.TrimStart();
-            var end = trimmed.IndexOf("---", 3, StringComparison.Ordinal);
-            if (end > 0)
-            {
-                foreach (var line in trimmed[3..end].Split('\n'))
-                {
-                    var colon = line.IndexOf(':');
-                    if (colon < 0) continue;
-                    var k = line[..colon].Trim().ToLowerInvariant();
-                    var v = line[(colon + 1)..].Trim();
-                    if (k == "name")        name = v;
-                    if (k == "description") desc = v;
-                    if (k == "icon")        icon = v;
-                    if (k == "collection")  collection = v;
-                }
-            }
-        }
-
-        return new { id = kv.Key, name, description = desc, icon, collection };
-    });
-
+            id              = m.Id,
+            name            = m.Name,
+            description     = m.Description,
+            icon            = m.Icon,
+            collection      = m.Collection,
+            isFolder        = m.IsFolder,
+            referenceCount  = m.ReferenceCount,
+            contentBytes    = m.ContentBytes,
+        });
     return Results.Ok(skills);
 });
 
@@ -2230,7 +2219,17 @@ app.MapGet("/api/admin/usage/end-users", [Authorize("AdminOnly")] async (
 
 // GET /api/admin/skills
 app.MapGet("/api/admin/skills", [Authorize("AdminOnly")] (SkillRegistry registry) =>
-    Results.Ok(registry.All.Select(kv => new { id = kv.Key, size = kv.Value.Length })));
+    Results.Ok(registry.Metadata.Values
+        .OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
+        .Select(m => new
+        {
+            id              = m.Id,
+            name            = m.Name,
+            description     = m.Description,
+            isFolder        = m.IsFolder,
+            referenceCount  = m.ReferenceCount,
+            size            = (int)m.ContentBytes,
+        })));
 
 // GET /api/admin/skills/{id}
 app.MapGet("/api/admin/skills/{id}", [Authorize("AdminOnly")] (string id, SkillRegistry registry) =>
@@ -2239,7 +2238,7 @@ app.MapGet("/api/admin/skills/{id}", [Authorize("AdminOnly")] (string id, SkillR
     return Results.Text(registry.All[id], "text/plain; charset=utf-8");
 });
 
-// POST /api/admin/skills — upload a .md skill file
+// POST /api/admin/skills — upload a .md skill file OR a .zip skill folder
 app.MapPost("/api/admin/skills", [Authorize("AdminOnly")] async (
     HttpContext http,
     SkillRegistry registry,
@@ -2256,28 +2255,224 @@ app.MapPost("/api/admin/skills", [Authorize("AdminOnly")] async (
 
     foreach (var file in form.Files)
     {
-        if (!file.FileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+        var fname = file.FileName;
+        var ext   = Path.GetExtension(fname).ToLowerInvariant();
+
+        if (ext == ".zip")
         {
-            results.Add(new { file = file.FileName, ok = false, error = "Only .md files allowed" });
+            // Folder-based skill upload via zip
+            if (registry.SkillsPath is null)
+            {
+                results.Add(new { file = fname, ok = false, error = "SkillsPath not configured" });
+                continue;
+            }
+            try
+            {
+                using var ms = new MemoryStream();
+                await file.CopyToAsync(ms, ct);
+                ms.Position = 0;
+                using var zip = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Read);
+
+                // Determine skill id from zip: look for SKILL.md entry
+                string? skillId = null;
+                foreach (var entry in zip.Entries)
+                {
+                    if (entry.Name.Equals("SKILL.md", StringComparison.OrdinalIgnoreCase))
+                    {
+                        skillId = entry.FullName.Contains('/')
+                            ? entry.FullName.Split('/')[0]
+                            : Path.GetFileNameWithoutExtension(fname);
+                        break;
+                    }
+                }
+                skillId ??= Path.GetFileNameWithoutExtension(fname);
+
+                var destDir = Path.GetFullPath(Path.Combine(registry.SkillsPath, skillId));
+                if (!destDir.StartsWith(registry.SkillsPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    results.Add(new { file = fname, ok = false, error = "invalid skill id" });
+                    continue;
+                }
+                Directory.CreateDirectory(destDir);
+
+                foreach (var entry in zip.Entries)
+                {
+                    if (string.IsNullOrEmpty(entry.Name)) continue; // directory entry
+                    var relPath = entry.FullName;
+                    if (relPath.StartsWith(skillId + "/", StringComparison.OrdinalIgnoreCase))
+                        relPath = relPath[(skillId.Length + 1)..];
+
+                    var destPath = Path.GetFullPath(Path.Combine(destDir, relPath));
+                    if (!destPath.StartsWith(destDir + Path.DirectorySeparatorChar) &&
+                        !destPath.Equals(destDir, StringComparison.OrdinalIgnoreCase))
+                        continue; // zip-slip guard
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+                    using var stream = entry.Open();
+                    using var fs     = File.Create(destPath);
+                    await stream.CopyToAsync(fs, ct);
+                }
+
+                // Hot reload skills
+                registry.LoadFromDirectory(registry.SkillsPath);
+                results.Add(new { file = fname, ok = true, id = skillId });
+                _ = LogActivity(ds, username, "skill.upload", skillId, $"type=zip size={file.Length}");
+            }
+            catch (Exception ex)
+            {
+                results.Add(new { file = fname, ok = false, error = ex.Message });
+            }
+            continue;
+        }
+
+        if (ext != ".md")
+        {
+            results.Add(new { file = fname, ok = false, error = "Only .md or .zip files allowed" });
             continue;
         }
 
         using var reader = new StreamReader(file.OpenReadStream());
         var content = (await reader.ReadToEndAsync(ct)).Trim();
-        var skillId = Path.GetFileNameWithoutExtension(file.FileName);
+        var skillId2 = Path.GetFileNameWithoutExtension(fname);
 
         if (registry.SkillsPath is not null)
         {
-            var filePath = Path.Combine(registry.SkillsPath, file.FileName);
+            var filePath = Path.Combine(registry.SkillsPath, fname);
             await File.WriteAllTextAsync(filePath, content, ct);
         }
 
-        registry.Register(skillId, content);
-        results.Add(new { file = file.FileName, ok = true, id = skillId });
-        _ = LogActivity(ds, username, "skill.upload", skillId, $"size={file.Length}");
+        registry.Register(skillId2, content);
+        results.Add(new { file = fname, ok = true, id = skillId2 });
+        _ = LogActivity(ds, username, "skill.upload", skillId2, $"size={file.Length}");
     }
 
     return Results.Ok(results);
+});
+
+// POST /api/admin/skills/import-anthropic — download selected skills from anthropics/skills GitHub repo
+app.MapPost("/api/admin/skills/import-anthropic", [Authorize("AdminOnly")] async (
+    [FromBody] AnthropicSkillImportRequest req,
+    SkillRegistry registry,
+    ClaimsPrincipal user,
+    NpgsqlDataSource ds,
+    IHttpClientFactory httpClientFactory,
+    CancellationToken ct) =>
+{
+    if (registry.SkillsPath is null)
+        return Results.BadRequest(new { error = "SkillsPath not configured" });
+    if (req.Skills is null || req.Skills.Length == 0)
+        return Results.BadRequest(new { error = "No skills specified" });
+
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "unknown";
+    var http     = httpClientFactory.CreateClient("github");
+    var results  = new List<object>();
+
+    // Subdirectory names we never download — scripts/templates/schemas etc.
+    var skipDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { "scripts", "schemas", "templates", "assets", "canvas-fonts", "core", "eval-viewer" };
+
+    // Get full repo tree once (single API call)
+    List<GithubTreeItem>? tree = null;
+    try
+    {
+        var treeResp = await http.GetFromJsonAsync<GithubTreeResponse>(
+            "https://api.github.com/repos/anthropics/skills/git/trees/main?recursive=1",
+            ct);
+        tree = treeResp?.Tree ?? new();
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = $"GitHub tree fetch failed: {ex.Message}" });
+    }
+
+    foreach (var rawName in req.Skills)
+    {
+        ct.ThrowIfCancellationRequested();
+        var skillName = (rawName ?? "").Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(skillName)) continue;
+
+        try
+        {
+            // Path-safety: skillName must be a simple folder name
+            if (skillName.Contains('/') || skillName.Contains('\\') || skillName.Contains(".."))
+            {
+                results.Add(new { skill = skillName, ok = false, error = "invalid skill name" });
+                continue;
+            }
+
+            var destDir = Path.GetFullPath(Path.Combine(registry.SkillsPath, skillName));
+            if (!destDir.StartsWith(registry.SkillsPath, StringComparison.OrdinalIgnoreCase))
+            {
+                results.Add(new { skill = skillName, ok = false, error = "path traversal" });
+                continue;
+            }
+
+            if (Directory.Exists(destDir) && !req.Overwrite)
+            {
+                results.Add(new { skill = skillName, ok = true, action = "skipped (already exists)" });
+                continue;
+            }
+            if (Directory.Exists(destDir)) Directory.Delete(destDir, recursive: true);
+            Directory.CreateDirectory(destDir);
+
+            var prefix = $"skills/{skillName}/";
+            var mdFiles = tree
+                .Where(i => i.Type == "blob"
+                            && i.Path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                            && i.Path.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (mdFiles.Count == 0)
+            {
+                results.Add(new { skill = skillName, ok = false, error = "no .md files found in repo" });
+                Directory.Delete(destDir, recursive: true);
+                continue;
+            }
+
+            var downloaded = new List<string>();
+            foreach (var item in mdFiles)
+            {
+                var pathInSkill = item.Path[prefix.Length..];
+                var firstSeg    = pathInSkill.Contains('/') ? pathInSkill.Split('/')[0] : "";
+                if (!string.IsNullOrEmpty(firstSeg) && skipDirs.Contains(firstSeg)) continue;
+
+                var rawUrl = $"https://raw.githubusercontent.com/anthropics/skills/main/{item.Path}";
+                var content = await http.GetStringAsync(rawUrl, ct);
+                var localPath = Path.GetFullPath(Path.Combine(destDir, pathInSkill));
+                if (!localPath.StartsWith(destDir + Path.DirectorySeparatorChar) &&
+                    !localPath.Equals(destDir, StringComparison.OrdinalIgnoreCase))
+                    continue; // path-traversal guard
+                Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
+                await File.WriteAllTextAsync(localPath, content, ct);
+                downloaded.Add(pathInSkill);
+            }
+
+            if (!downloaded.Any(f => f.Equals("SKILL.md", StringComparison.OrdinalIgnoreCase)))
+            {
+                Directory.Delete(destDir, recursive: true);
+                results.Add(new { skill = skillName, ok = false, error = "SKILL.md missing after download" });
+                continue;
+            }
+
+            results.Add(new { skill = skillName, ok = true, action = "imported", files = downloaded.Count });
+            _ = LogActivity(ds, username, "skill.import", skillName, $"files={downloaded.Count}");
+        }
+        catch (Exception ex)
+        {
+            results.Add(new { skill = skillName, ok = false, error = ex.Message });
+        }
+    }
+
+    // Hot-reload all skills from directory
+    registry.LoadFromDirectory(registry.SkillsPath);
+
+    var imported = results.Count(r =>
+    {
+        var ok = r.GetType().GetProperty("ok")?.GetValue(r);
+        var action = r.GetType().GetProperty("action")?.GetValue(r) as string;
+        return ok is true && action != null && action.StartsWith("imported");
+    });
+    return Results.Ok(new { results, imported });
 });
 
 // DELETE /api/admin/skills/{id}
@@ -2290,8 +2485,17 @@ app.MapDelete("/api/admin/skills/{id}", [Authorize("AdminOnly")] (
 
     if (registry.SkillsPath is not null)
     {
-        var filePath = Path.Combine(registry.SkillsPath, id + ".md");
-        if (File.Exists(filePath)) File.Delete(filePath);
+        // Folder-based skill?
+        var folderPath = Path.Combine(registry.SkillsPath, id);
+        if (Directory.Exists(folderPath))
+        {
+            Directory.Delete(folderPath, recursive: true);
+        }
+        else
+        {
+            var filePath = Path.Combine(registry.SkillsPath, id + ".md");
+            if (File.Exists(filePath)) File.Delete(filePath);
+        }
     }
 
     registry.Remove(id);
@@ -2684,6 +2888,23 @@ static class LlmMetrics
 public sealed record RatingRequest(string MessageId, string ConvId, int Rating, string? Model);
 public sealed record SkillExampleRequest(string UserMessage, string AssistantMessage);
 public sealed record BulkAssignGroupRequest(int[] TableConfigIds, int? GroupId);
+
+public sealed record AnthropicSkillImportRequest(string[] Skills, bool Overwrite = false);
+
+public sealed class GithubTreeResponse
+{
+    [System.Text.Json.Serialization.JsonPropertyName("tree")]
+    public List<GithubTreeItem> Tree { get; set; } = new();
+}
+
+public sealed class GithubTreeItem
+{
+    [System.Text.Json.Serialization.JsonPropertyName("path")]
+    public string Path { get; set; } = "";
+
+    [System.Text.Json.Serialization.JsonPropertyName("type")]
+    public string Type { get; set; } = "";
+}
 
 public sealed record SqlConnectionUpsertRequest(
     string  Name,

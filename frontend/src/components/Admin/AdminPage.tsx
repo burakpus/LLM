@@ -4,6 +4,7 @@ import type { Endpoint } from '../../store'
 import {
   uploadFiles, listDocuments, listCollections,
   deleteDocument, listSkills, getSkill, uploadSkills, deleteSkill,
+  importAnthropicSkills, ANTHROPIC_SKILLS,
   getUsageUsers, getUsageModels, getUsageLogs,
   listTemplates, createTemplate, updateTemplate, deleteTemplate,
   getRatingStats,
@@ -24,6 +25,7 @@ import type {
   SqlObjectSummary, SqlIngestResult, SqlSyncResult,
   SqlTable, SqlTableSpec, SqlDataIngestResult,
   JobInfo, SqlIngestedStats, JobsPage,
+  ImportAnthropicResult,
 } from '../../api/admin'
 import SetLogo from '../SetLogo'
 import JobProgressModal from './JobProgressModal'
@@ -568,6 +570,12 @@ function SkillsTab() {
   const [exAssistant, setExAssistant] = useState('')
   const [exSaving,    setExSaving]    = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  // Anthropic Import modal
+  const [showImport,    setShowImport]    = useState(false)
+  const [importSelected, setImportSelected] = useState<Set<string>>(new Set())
+  const [importOverwrite, setImportOverwrite] = useState(false)
+  const [importing,      setImporting]     = useState(false)
+  const [importResult,   setImportResult]  = useState<ImportAnthropicResult | null>(null)
 
   const reload = () => listSkills().then(setSkills).catch(e => setError(e.message ?? String(e)))
 
@@ -635,13 +643,21 @@ function SkillsTab() {
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <input ref={fileRef} type="file" accept=".md" multiple className="hidden" onChange={onUpload} />
+          <input ref={fileRef} type="file" accept=".md,.zip" multiple className="hidden" onChange={onUpload} />
+          <button
+            onClick={() => { setShowImport(true); setImportResult(null) }}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition"
+            style={{ background: 'rgba(138,180,248,0.15)', color: 'var(--accent-hi)', border: '1px solid rgba(138,180,248,0.3)' }}
+            title="anthropics/skills GitHub repo'sundan resmi skill'leri indir"
+          >
+            📥 Anthropic Import
+          </button>
           <button
             onClick={() => fileRef.current?.click()}
             className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition"
             style={{ background: 'var(--accent)', color: '#0b1929' }}
           >
-            + Skill Yükle (.md)
+            + Skill Yükle (.md/.zip)
           </button>
         </div>
       </div>
@@ -679,11 +695,20 @@ function SkillsTab() {
                   >
                     <button
                       onClick={() => openSkill(s.id)}
-                      className="flex-1 text-left px-3 py-2.5 text-sm cursor-pointer transition flex items-center justify-between"
+                      className="flex-1 text-left px-3 py-2.5 text-sm cursor-pointer transition flex items-center justify-between gap-2"
                       style={{ color: active ? 'var(--accent-hi)' : 'var(--text)' }}
                     >
-                      <span className="truncate">{s.id}</span>
-                      <span className="text-[10px] shrink-0 ml-2" style={{ color: 'var(--mute)' }}>
+                      <span className="truncate flex items-center gap-1.5 min-w-0">
+                        <span className="truncate">{s.name || s.id}</span>
+                        {s.isFolder && (
+                          <span className="px-1 py-0.5 text-[9px] rounded shrink-0"
+                                style={{ background: 'rgba(52,168,83,0.15)', color: '#34a853', border: '1px solid rgba(52,168,83,0.25)' }}
+                                title={`Folder skill: ${s.referenceCount ?? 0} referans dosyası`}>
+                            📁 {s.referenceCount ?? 0}
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-[10px] shrink-0" style={{ color: 'var(--mute)' }}>
                         {formatBytes(s.size)}
                       </span>
                     </button>
@@ -823,6 +848,137 @@ function SkillsTab() {
           )}
         </div>
       </div>
+
+      {/* Anthropic Skills Import Modal */}
+      {showImport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+             style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+             onClick={e => { if (e.target === e.currentTarget && !importing) setShowImport(false) }}>
+          <div className="w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+               style={{ background: 'var(--bg)', border: '1px solid var(--border)', maxHeight: '85vh' }}>
+            <div className="px-5 py-4 flex items-center gap-3 shrink-0"
+                 style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
+              <span className="text-2xl">📥</span>
+              <div className="flex-1">
+                <div className="font-semibold" style={{ color: 'var(--text)' }}>Anthropic Skills Import</div>
+                <div className="text-xs" style={{ color: 'var(--mute)' }}>
+                  anthropics/skills GitHub repo&apos;sundan direkt indir (SKILL.md + referans .md dosyaları)
+                </div>
+              </div>
+              <button onClick={() => !importing && setShowImport(false)}
+                      disabled={importing}
+                      className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer text-lg disabled:opacity-30"
+                      style={{ color: 'var(--mute)' }}>×</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-3">
+              <div className="flex items-center gap-3 text-xs flex-wrap" style={{ color: 'var(--mute)' }}>
+                <button onClick={() => setImportSelected(new Set(Object.keys(ANTHROPIC_SKILLS)))}
+                        className="cursor-pointer hover:underline"
+                        style={{ color: 'var(--accent-hi)' }}>
+                  Tümünü seç (17)
+                </button>
+                <span>·</span>
+                <button onClick={() => setImportSelected(new Set())}
+                        className="cursor-pointer hover:underline">
+                  Tümünü kaldır
+                </button>
+                <span>·</span>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" checked={importOverwrite}
+                         onChange={e => setImportOverwrite(e.target.checked)} />
+                  Mevcut olanların üzerine yaz
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {Object.entries(ANTHROPIC_SKILLS).map(([id, info]) => {
+                  const checked = importSelected.has(id)
+                  return (
+                    <label key={id}
+                           className="flex items-start gap-2 p-2 rounded-lg cursor-pointer text-xs"
+                           style={{
+                             background: checked ? 'rgba(138,180,248,0.10)' : 'var(--surface-2)',
+                             border: `1px solid ${checked ? 'rgba(138,180,248,0.35)' : 'var(--border)'}`,
+                           }}>
+                      <input type="checkbox" checked={checked} className="mt-0.5 cursor-pointer"
+                             onChange={e => setImportSelected(prev => {
+                               const next = new Set(prev)
+                               if (e.target.checked) next.add(id); else next.delete(id)
+                               return next
+                             })} />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium flex items-center gap-1.5" style={{ color: 'var(--text)' }}>
+                          <span className="font-mono">{id}</span>
+                          {info.hasRefs && (
+                            <span className="px-1 py-0.5 text-[9px] rounded"
+                                  style={{ background: 'rgba(52,168,83,0.15)', color: '#34a853' }}>
+                              +refs
+                            </span>
+                          )}
+                        </div>
+                        <div className="truncate" style={{ color: 'var(--mute)' }}>{info.description}</div>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+
+              {importResult && (
+                <div className="rounded-xl p-3 space-y-1 text-xs"
+                     style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+                  <div className="font-semibold mb-2" style={{ color: 'var(--text)' }}>
+                    İçe aktarıldı: {importResult.imported} / {importResult.results.length}
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-0.5">
+                    {importResult.results.map((r, i) => (
+                      <div key={i} className="flex items-center gap-2"
+                           style={{ color: r.ok ? '#34a853' : '#ea4335' }}>
+                        <span>{r.ok ? '✓' : '✕'}</span>
+                        <span className="font-mono">{r.skill}</span>
+                        <span style={{ color: 'var(--mute)' }}>
+                          {r.action ?? r.error}
+                          {r.files ? ` (${r.files} dosya)` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-4 flex gap-2 shrink-0"
+                 style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+              <button onClick={async () => {
+                        if (importSelected.size === 0) return
+                        setImporting(true); setImportResult(null); setError(null)
+                        try {
+                          const res = await importAnthropicSkills(Array.from(importSelected), importOverwrite)
+                          setImportResult(res)
+                          reload()
+                        } catch (e: any) {
+                          setError(`Import hatası: ${e.message}`)
+                        } finally {
+                          setImporting(false)
+                        }
+                      }}
+                      disabled={importing || importSelected.size === 0}
+                      className="flex-1 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-50"
+                      style={{ background: 'var(--accent)', color: '#0b1929' }}>
+                {importing
+                  ? `İndiriliyor… (${importSelected.size} skill)`
+                  : `📥 ${importSelected.size > 0 ? importSelected.size : 'Seçili'} Skill İndir`}
+              </button>
+              <button onClick={() => !importing && setShowImport(false)}
+                      disabled={importing}
+                      className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
+                      style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                Kapat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }

@@ -406,10 +406,11 @@ function ContentAdmin() {
           'Delete → Confirm ile döküman silinir (RAG\'dan da çıkar)',
         ]},
         { tab: 'Skills', icon: '🎯', items: [
-          'Mevcut skill .md dosyaları listelenir',
-          '+ Skill Yükle (.md) ile yeni skill eklenebilir',
+          'Mevcut skill .md dosyaları VEYA klasör tabanlı skill\'ler listelenir',
+          '+ Skill Yükle (.md/.zip) — tek dosya veya skill klasörü zip',
+          '📥 Anthropic Import — anthropics/skills repo\'sundan 17 skill seçip indirme',
           'Listeden seçince içerik sağda önizlenir',
-          'Hover → çöp kutusu ile silinebilir',
+          'Folder skill\'ler 📁 N rozetiyle gösterilir (N = referans .md sayısı)',
           'Skill\'in name: alanı dropdown\'da gösterilir',
         ]},
         { tab: 'Şablonlar', icon: '📝', items: [
