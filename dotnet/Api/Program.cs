@@ -1891,7 +1891,8 @@ app.MapGet("/api/models/capabilities", [Authorize] () => Results.Ok(new Dictiona
 app.MapGet("/api/skills", [Authorize] (SkillRegistry registry) =>
 {
     var skills = registry.Metadata.Values
-        .OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
+        .OrderBy(m => m.Order)
+        .ThenBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
         .Select(m => new
         {
             id              = m.Id,
@@ -1899,6 +1900,7 @@ app.MapGet("/api/skills", [Authorize] (SkillRegistry registry) =>
             description     = m.Description,
             icon            = m.Icon,
             collection      = m.Collection,
+            order           = m.Order,
             isFolder        = m.IsFolder,
             referenceCount  = m.ReferenceCount,
             contentBytes    = m.ContentBytes,
@@ -2373,12 +2375,14 @@ app.MapGet("/api/admin/usage/end-users", [Authorize("AdminOnly")] async (
 // GET /api/admin/skills
 app.MapGet("/api/admin/skills", [Authorize("AdminOnly")] (SkillRegistry registry) =>
     Results.Ok(registry.Metadata.Values
-        .OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
+        .OrderBy(m => m.Order)
+        .ThenBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
         .Select(m => new
         {
             id              = m.Id,
             name            = m.Name,
             description     = m.Description,
+            order           = m.Order,
             isFolder        = m.IsFolder,
             referenceCount  = m.ReferenceCount,
             size            = (int)m.ContentBytes,
@@ -2626,6 +2630,39 @@ app.MapPost("/api/admin/skills/import-anthropic", [Authorize("AdminOnly")] async
         return ok is true && action != null && action.StartsWith("imported");
     });
     return Results.Ok(new { results, imported });
+});
+
+// PUT /api/admin/skills/{id}/order — update skill order (writes 'order:' to frontmatter)
+// body: { order: number }
+app.MapPut("/api/admin/skills/{id}/order", [Authorize("AdminOnly")] async (
+    string id, [FromBody] SkillOrderRequest req,
+    SkillRegistry registry, ClaimsPrincipal user, NpgsqlDataSource ds,
+    CancellationToken ct) =>
+{
+    if (!registry.All.ContainsKey(id))
+        return Results.NotFound(new { error = $"Skill '{id}' not found" });
+    if (registry.SkillsPath is null)
+        return Results.BadRequest(new { error = "SkillsPath not configured" });
+
+    // Determine target .md path (folder skill → SKILL.md inside folder, else flat .md)
+    var folderPath = Path.Combine(registry.SkillsPath, id);
+    var targetPath = Directory.Exists(folderPath)
+        ? Path.Combine(folderPath, "SKILL.md")
+        : Path.Combine(registry.SkillsPath, id + ".md");
+
+    if (!File.Exists(targetPath))
+        return Results.NotFound(new { error = $"Skill file missing: {targetPath}" });
+
+    var content = await File.ReadAllTextAsync(targetPath, ct);
+    var newContent = SkillFrontmatter.UpsertKey(content, "order", req.Order.ToString());
+    await File.WriteAllTextAsync(targetPath, newContent, ct);
+
+    // Hot-reload all skills (cheap — just file scan)
+    registry.LoadFromDirectory(registry.SkillsPath);
+
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "unknown";
+    _ = LogActivity(ds, username, "skill.order.update", id, $"order={req.Order}");
+    return Results.Ok(new { id, order = req.Order });
 });
 
 // DELETE /api/admin/skills/{id}
@@ -3043,6 +3080,36 @@ public sealed record SkillExampleRequest(string UserMessage, string AssistantMes
 public sealed record BulkAssignGroupRequest(int[] TableConfigIds, int? GroupId);
 
 public sealed record AnthropicSkillImportRequest(string[] Skills, bool Overwrite = false);
+public sealed record SkillOrderRequest(int Order);
+
+// Upsert a single key/value into a markdown YAML-frontmatter block.
+// If the file has no frontmatter, one is created at the top.
+// If the key exists, the value is replaced. Otherwise the key is appended before `---`.
+public static class SkillFrontmatter
+{
+    public static string UpsertKey(string content, string key, string value)
+    {
+        var nl = content.Contains("\r\n") ? "\r\n" : "\n";
+        var trimmed = content.TrimStart();
+        if (trimmed.StartsWith("---"))
+        {
+            var end = trimmed.IndexOf("---", 3, StringComparison.Ordinal);
+            if (end > 0)
+            {
+                var fm   = trimmed[3..end];
+                var rest = trimmed[(end + 3)..];
+                var lines = fm.Trim('\n', '\r').Split('\n').Select(l => l.TrimEnd()).ToList();
+                var ki = lines.FindIndex(l => l.TrimStart().StartsWith(key + ":", StringComparison.OrdinalIgnoreCase));
+                var newLine = $"{key}: {value}";
+                if (ki >= 0) lines[ki] = newLine;
+                else lines.Add(newLine);
+                lines = lines.Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
+                return "---" + nl + string.Join(nl, lines) + nl + "---" + rest;
+            }
+        }
+        return "---" + nl + $"{key}: {value}" + nl + "---" + nl + nl + content;
+    }
+}
 
 public sealed class GithubTreeResponse
 {

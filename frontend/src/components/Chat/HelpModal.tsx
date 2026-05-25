@@ -412,6 +412,7 @@ function ContentAdmin() {
           'Listeden seçince içerik sağda önizlenir',
           'Folder skill\'ler 📁 N rozetiyle gösterilir (N = referans .md sayısı)',
           'Skill\'in name: alanı dropdown\'da gösterilir',
+          'Sıra: her satırın başındaki SIRA input\'una sayı yaz → Enter/Tab ile kaydet (düşük = önce). Frontmatter\'a order: yazılır',
         ]},
         { tab: 'Şablonlar', icon: '📝', items: [
           'Prompt şablonları kütüphanesi (slash command picker için)',

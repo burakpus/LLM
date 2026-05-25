@@ -4,7 +4,7 @@ import type { Endpoint } from '../../store'
 import {
   uploadFiles, listDocuments, listCollections,
   deleteDocument, listSkills, getSkill, uploadSkills, deleteSkill,
-  importAnthropicSkills, ANTHROPIC_SKILLS,
+  importAnthropicSkills, ANTHROPIC_SKILLS, setSkillOrder,
   getUsageUsers, getUsageModels, getUsageLogs,
   listTemplates, createTemplate, updateTemplate, deleteTemplate,
   getRatingStats,
@@ -687,6 +687,12 @@ function SkillsTab() {
                style={{ color: 'var(--mute)', borderBottom: '1px solid var(--border)' }}>
             {skills.length} skill{skills.length === 1 ? '' : 's'}
           </div>
+          <div className="px-3 py-1.5 text-[10px] flex items-center justify-between"
+               style={{ background: 'var(--surface-2)', color: 'var(--mute)', borderBottom: '1px solid var(--border)' }}>
+            <span>SIRA</span>
+            <span>SKILL</span>
+            <span>BOYUT</span>
+          </div>
           <ul className="max-h-[60vh] overflow-y-auto">
             {skills.map(s => {
               const active = selected === s.id
@@ -696,9 +702,20 @@ function SkillsTab() {
                     className="flex items-center group"
                     style={{ borderBottom: '1px solid var(--border)', background: active ? 'rgba(138,180,248,0.15)' : 'transparent' }}
                   >
+                    {/* Order input — inline edit */}
+                    <SkillOrderInput
+                      skillId={s.id}
+                      initialOrder={s.order ?? 999}
+                      onSaved={(newOrder) => setSkills(prev => {
+                        const next = prev.map(x => x.id === s.id ? { ...x, order: newOrder } : x)
+                        // Re-sort: order asc, name asc
+                        next.sort((a, b) => (a.order ?? 999) - (b.order ?? 999) || (a.name || a.id).localeCompare(b.name || b.id))
+                        return next
+                      })}
+                    />
                     <button
                       onClick={() => openSkill(s.id)}
-                      className="flex-1 text-left px-3 py-2.5 text-sm cursor-pointer transition flex items-center justify-between gap-2"
+                      className="flex-1 text-left px-3 py-2.5 text-sm cursor-pointer transition flex items-center justify-between gap-2 min-w-0"
                       style={{ color: active ? 'var(--accent-hi)' : 'var(--text)' }}
                     >
                       <span className="truncate flex items-center gap-1.5 min-w-0">
@@ -983,6 +1000,51 @@ function SkillsTab() {
         </div>
       )}
     </section>
+  )
+}
+
+// Small inline-editable order input for skill list
+function SkillOrderInput({ skillId, initialOrder, onSaved }: {
+  skillId: string
+  initialOrder: number
+  onSaved: (order: number) => void
+}) {
+  const [val, setVal] = useState(String(initialOrder))
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => { setVal(String(initialOrder)) }, [initialOrder])
+
+  const commit = async () => {
+    const n = parseInt(val, 10)
+    if (isNaN(n) || n === initialOrder) { setVal(String(initialOrder)); return }
+    setSaving(true); setErr(null)
+    try {
+      const res = await setSkillOrder(skillId, n)
+      onSaved(res.order)
+    } catch (e: any) {
+      setErr(e.message)
+      setVal(String(initialOrder))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <input type="number" min={0} max={9999}
+           value={val}
+           onChange={e => setVal(e.target.value)}
+           onBlur={commit}
+           onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+           disabled={saving}
+           title={err ?? 'Skill sırası (düşük = önce). Enter veya Tab ile kaydet.'}
+           className="w-12 ml-2 my-1 px-1 py-0.5 text-[11px] text-center rounded outline-none font-mono shrink-0"
+           style={{
+             background: err ? 'rgba(234,67,53,0.12)' : 'var(--input-bg)',
+             border: `1px solid ${err ? '#ea4335' : 'var(--border)'}`,
+             color: 'var(--text)',
+             opacity: saving ? 0.5 : 1,
+           }} />
   )
 }
 

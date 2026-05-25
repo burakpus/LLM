@@ -10,9 +10,16 @@ public sealed record SkillMeta(
     string Description,
     string Icon,
     string? Collection,
+    int    Order,
     bool   IsFolder,
     int    ReferenceCount,
     long   ContentBytes);
+
+/// <summary>Default order value when frontmatter doesn't specify one (sorts last alphabetically).</summary>
+public static class SkillDefaults
+{
+    public const int DefaultOrder = 999;
+}
 
 /// <summary>
 /// Loads skill system prompts from Markdown files at startup.
@@ -160,6 +167,7 @@ public sealed class SkillRegistry
     private static SkillMeta BuildMeta(string id, string rawContent, bool isFolder, int refCount)
     {
         var name = id; var desc = ""; var icon = "sparkles"; string? collection = null;
+        var order = SkillDefaults.DefaultOrder;
         var trimmed = rawContent.TrimStart();
         if (trimmed.StartsWith("---"))
         {
@@ -176,6 +184,7 @@ public sealed class SkillRegistry
                     if (k == "description") desc       = v;
                     if (k == "icon")        icon       = v;
                     if (k == "collection")  collection = v;
+                    if (k == "order" && int.TryParse(v, out var parsedOrder)) order = parsedOrder;
                 }
             }
         }
@@ -189,7 +198,7 @@ public sealed class SkillRegistry
                 if (nl > 0) name = body[2..nl].Trim();
             }
         }
-        return new SkillMeta(id, name, desc, icon, collection, isFolder, refCount,
+        return new SkillMeta(id, name, desc, icon, collection, order, isFolder, refCount,
             Encoding.UTF8.GetByteCount(rawContent));
     }
 

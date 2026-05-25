@@ -49,6 +49,7 @@ export interface SkillRow {
   id:              string
   name?:           string
   description?:    string
+  order?:          number
   isFolder?:       boolean
   referenceCount?: number
   size:            number
@@ -165,6 +166,19 @@ export async function deleteSkill(id: string): Promise<{ deleted: string }> {
     headers: authHeaders(),
   })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export async function setSkillOrder(id: string, order: number): Promise<{ id: string; order: number }> {
+  const r = await fetch(`/api/admin/skills/${encodeURIComponent(id)}/order`, {
+    method: 'PUT',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ order }),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
   return r.json()
 }
 
