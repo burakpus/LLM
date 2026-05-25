@@ -733,6 +733,82 @@ export async function getActivityLog(page = 1, pageSize = 50, action?: string): 
   return r.json()
 }
 
+// ── OWASP Event Log ──────────────────────────────────────────────────────────
+
+export interface EventLogEntry {
+  id:         number
+  ts:         string
+  category:   'Auth' | 'Authz' | 'Session' | 'Input' | 'Config' | 'Data' | 'Security' | 'System'
+  severity:   'Debug' | 'Info' | 'Warn' | 'Error' | 'Critical'
+  eventType:  string
+  username?:  string | null
+  sourceIp?:  string | null
+  userAgent?: string | null
+  requestId?: string | null
+  sessionId?: string | null
+  endpoint?:  string | null
+  action?:    string | null
+  resource?:  string | null
+  result:     'Success' | 'Failure' | 'Denied' | 'Error'
+  reason?:    string | null
+  details?:   string | null
+}
+
+export interface EventLogPage {
+  total:    number
+  page:     number
+  pageSize: number
+  items:    EventLogEntry[]
+}
+
+export interface EventLogFilters {
+  page?:      number
+  pageSize?:  number
+  category?:  string
+  severity?:  string
+  eventType?: string
+  username?:  string
+  sourceIp?:  string
+  result?:    string
+  q?:        string
+  since?:    string
+  until?:    string
+}
+
+export async function getEventLog(f: EventLogFilters = {}): Promise<EventLogPage> {
+  const p = new URLSearchParams()
+  if (f.page)      p.set('page',      String(f.page))
+  if (f.pageSize)  p.set('pageSize',  String(f.pageSize))
+  if (f.category)  p.set('category',  f.category)
+  if (f.severity)  p.set('severity',  f.severity)
+  if (f.eventType) p.set('eventType', f.eventType)
+  if (f.username)  p.set('username',  f.username)
+  if (f.sourceIp)  p.set('sourceIp',  f.sourceIp)
+  if (f.result)    p.set('result',    f.result)
+  if (f.q)         p.set('q',         f.q)
+  if (f.since)     p.set('since',     f.since)
+  if (f.until)     p.set('until',     f.until)
+  const r = await fetch(`/api/admin/event-log?${p}`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
+export interface EventLogSummaryRow {
+  category: string
+  severity: string
+  count:    number
+}
+export interface EventLogSummary {
+  since: string
+  rows:  EventLogSummaryRow[]
+}
+
+export async function getEventLogSummary(): Promise<EventLogSummary> {
+  const r = await fetch('/api/admin/event-log/summary', { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
 // ── Rating stats ─────────────────────────────────────────────────────────────
 export interface RatingStats {
   total: number; ups: number; downs: number

@@ -433,10 +433,19 @@ function ContentAdmin() {
           'Son 50 istek detayı + 👍/👎 oy geri bildirimleri',
         ]},
         { tab: 'Aktivite', icon: '📋', items: [
-          'Tüm yönetici işlemlerinin kronolojik kaydı',
+          'Tüm yönetici işlemlerinin kronolojik kaydı (legacy)',
           'Döküman/skill/şablon/SQL bağlantı eylemleri',
           'Filtre: action tipi (örn: sql.connection.create)',
           'Her satır: kullanıcı + tarih + hedef + detay',
+        ]},
+        { tab: '🛡 Güvenlik', icon: '🛡', items: [
+          'OWASP Logging Cheat Sheet uyumlu denetim kaydı (event_log)',
+          'Kategoriler: Auth · Authz · Session · Input · Config · Data · Security · System',
+          'Severity: Debug · Info · Warn · Error · Critical',
+          'Her olay: zaman + kim + IP + User-Agent + Request ID + sebep + JSON detay',
+          'Otomatik: login fail, 401/403, rate limit, config değişimi',
+          'Filtre: kategori × severity × tip × kullanıcı × IP × sonuç + serbest arama',
+          'Son 24 saat özeti — chip\'e tıkla → o filtreyle listele',
         ]},
         { tab: '⚙ Ayarlar', icon: '⚙️', items: [
           'Connection (LLM endpoint) ayarları',

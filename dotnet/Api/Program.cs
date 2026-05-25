@@ -96,6 +96,10 @@ services.AddOptions<LdapOptions>()
     .BindConfiguration(LdapOptions.SectionName);
 services.AddSingleton<ILdapAuthService, LdapAuthService>();
 
+// ── OWASP-aligned event logging ───────────────────────────────────────────────
+services.AddHttpContextAccessor();
+services.AddScoped<IEventLog, EventLog>();
+
 // ── SQL external sources (Phase 1: connection mgmt + test) ────────────────────
 services.AddDataProtection().SetApplicationName("set-llm-api");
 services.AddSingleton<ISqlConnectionService, SqlConnectionService>();
@@ -180,6 +184,29 @@ var app = builder.Build();
             details     TEXT         NOT NULL DEFAULT '',
             created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS event_log (
+            id          BIGSERIAL    PRIMARY KEY,
+            ts          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            category    VARCHAR(20)  NOT NULL,
+            severity    VARCHAR(10)  NOT NULL,
+            event_type  VARCHAR(100) NOT NULL,
+            username    VARCHAR(200),
+            source_ip   VARCHAR(64),
+            user_agent  VARCHAR(500),
+            request_id  VARCHAR(64),
+            session_id  VARCHAR(128),
+            endpoint    VARCHAR(500),
+            action      VARCHAR(100),
+            resource    VARCHAR(500),
+            result      VARCHAR(20)  NOT NULL,
+            reason      TEXT,
+            details     JSONB
+        );
+        CREATE INDEX IF NOT EXISTS idx_event_log_ts        ON event_log (ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_event_log_cat_sev   ON event_log (category, severity);
+        CREATE INDEX IF NOT EXISTS idx_event_log_user      ON event_log (username);
+        CREATE INDEX IF NOT EXISTS idx_event_log_ip        ON event_log (source_ip);
+        CREATE INDEX IF NOT EXISTS idx_event_log_type      ON event_log (event_type);
         CREATE TABLE IF NOT EXISTS sql_connections (
             id                  SERIAL PRIMARY KEY,
             name                VARCHAR(200) NOT NULL,
@@ -281,6 +308,33 @@ app.UseHttpMetrics();          // built-in: http_requests_total, http_request_du
 app.UseAuthentication();
 app.UseAuthorization();
 
+// ── OWASP: automatic 401/403 event logging via response interceptor ───────────
+app.Use(async (ctx, next) =>
+{
+    await next();
+
+    // Only log auth/authz denials for API endpoints (skip static + health)
+    var path = ctx.Request.Path.Value ?? "";
+    if (!path.StartsWith("/api/")) return;
+    if (path == "/api/auth/login")  return;  // already logged inside handler
+    if (ctx.Response.StatusCode != 401 && ctx.Response.StatusCode != 403) return;
+
+    try
+    {
+        var evt = ctx.RequestServices.GetRequiredService<IEventLog>();
+        await evt.LogAsync(
+            EventCategory.Authz,
+            EventSeverity.Warn,
+            ctx.Response.StatusCode == 401 ? "authz.unauthenticated" : "authz.forbidden",
+            EventResult.Denied,
+            reason: $"HTTP {ctx.Response.StatusCode}",
+            action: ctx.Request.Method,
+            resource: path,
+            ct: ctx.RequestAborted);
+    }
+    catch { /* never break the response */ }
+});
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -304,20 +358,35 @@ app.MapGet("/api/auth/domains", (ILdapAuthService ldap) =>
     Results.Ok(ldap.GetDomains()));
 
 // POST /api/auth/login
-app.MapPost("/api/auth/login", (
+app.MapPost("/api/auth/login", async (
     [FromBody] LoginRequest req,
     ILdapAuthService ldap,
-    IJwtTokenService jwt) =>
+    IJwtTokenService jwt,
+    IEventLog evt,
+    CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(req.Username) || string.IsNullOrWhiteSpace(req.Password))
+    {
+        await evt.LogAsync(EventCategory.Auth, EventSeverity.Warn, "auth.login.bad_request",
+            EventResult.Failure, reason: "missing credentials",
+            action: "login", resource: $"domain:{req.Domain}", username: req.Username, ct: ct);
         return Results.BadRequest(new { error = "Username and password are required." });
+    }
 
     if (!ldap.Authenticate(req.Domain, req.Username, req.Password))
+    {
+        await evt.AuthFailAsync(req.Username, req.Domain, "ldap_reject", ct);
         return Results.Unauthorized();
+    }
 
     var isAdmin = ldap.IsAdmin(req.Domain, req.Username, req.Password);
     var groups  = ldap.GetUserGroups(req.Domain, req.Username, req.Password);
     var token   = jwt.Generate(req.Username, req.Domain, isAdmin, groups);
+    await evt.LogAsync(EventCategory.Auth, EventSeverity.Info, "auth.login.success",
+        EventResult.Success, reason: null,
+        action: "login", resource: $"domain:{req.Domain}",
+        details: new { isAdmin, groupCount = groups.Length },
+        username: req.Username, ct: ct);
     return Results.Ok(token);
 });
 
@@ -625,11 +694,14 @@ app.MapDelete("/api/admin/sql-connections/{id:int}", [Authorize("AdminOnly")] as
 app.MapPost("/api/admin/sql-connections/{id:int}/test", [Authorize("AdminOnly")] async (
     int id, ISqlConnectionService svc, NpgsqlDataSource ds,
     Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
-    System.Security.Claims.ClaimsPrincipal user, CancellationToken ct) =>
+    System.Security.Claims.ClaimsPrincipal user, IEventLog evt, CancellationToken ct) =>
 {
     var who = user.FindFirstValue(ClaimTypes.Name) ?? "anon";
     if (!SqlConnTestRateLimit.TryAcquire(cache, who, out var retryAfter))
+    {
+        await evt.SecurityAsync("security.rate_limit", "sql-conn-test", new { retryAfter, connectionId = id }, ct);
         return Results.Json(new { ok = false, error = $"Çok fazla istek. {retryAfter}sn sonra tekrar deneyin." }, statusCode: 429);
+    }
 
     await using var conn = await ds.OpenConnectionAsync(ct);
     await using var cmd  = conn.CreateCommand();
@@ -1150,11 +1222,14 @@ static async Task<(DbType dbType, string? connStr)> LoadConnectionAsync(
 app.MapPost("/api/admin/sql-connections/test-credentials", [Authorize("AdminOnly")] async (
     [FromBody] SqlConnectionUpsertRequest req, ISqlConnectionService svc,
     Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
-    System.Security.Claims.ClaimsPrincipal user, CancellationToken ct) =>
+    System.Security.Claims.ClaimsPrincipal user, IEventLog evt, CancellationToken ct) =>
 {
     var who = user.FindFirstValue(ClaimTypes.Name) ?? "anon";
     if (!SqlConnTestRateLimit.TryAcquire(cache, who, out var retryAfter))
+    {
+        await evt.SecurityAsync("security.rate_limit", "sql-conn-test-cred", new { retryAfter, host = req.Host }, ct);
         return Results.Json(new { ok = false, error = $"Çok fazla istek. {retryAfter}sn sonra tekrar deneyin." }, statusCode: 429);
+    }
 
     DbType dbType;
     try { dbType = ParseDbType(req.DbType); }
@@ -1506,6 +1581,116 @@ app.MapGet("/api/admin/activity-log", [Authorize("AdminOnly")] async (
         });
 
     return Results.Ok(new { total, page, pageSize, items });
+});
+
+// GET /api/admin/event-log — OWASP-aligned event log query
+// Filters: category, severity, eventType, username, sourceIp, result, q (free text), since, until
+app.MapGet("/api/admin/event-log", [Authorize("AdminOnly")] async (
+    int? page, int? pageSize,
+    string? category, string? severity, string? eventType,
+    string? username, string? sourceIp, string? result, string? q,
+    DateTime? since, DateTime? until,
+    NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    var p  = Math.Max(1, page ?? 1);
+    var ps = Math.Clamp(pageSize ?? 50, 10, 500);
+    var offset = (p - 1) * ps;
+
+    var clauses = new List<string>();
+    var args    = new List<object>();
+    void Add(string col, string? v)
+    {
+        if (string.IsNullOrEmpty(v)) return;
+        args.Add(v);
+        clauses.Add($"{col}=${args.Count}");
+    }
+
+    Add("category",   category);
+    Add("severity",   severity);
+    Add("event_type", eventType);
+    Add("username",   username);
+    Add("source_ip",  sourceIp);
+    Add("result",     result);
+
+    if (!string.IsNullOrEmpty(q))
+    {
+        args.Add($"%{q}%");
+        clauses.Add($"(event_type ILIKE ${args.Count} OR action ILIKE ${args.Count} OR resource ILIKE ${args.Count} OR reason ILIKE ${args.Count})");
+    }
+    if (since.HasValue)
+    {
+        args.Add(since.Value);
+        clauses.Add($"ts >= ${args.Count}");
+    }
+    if (until.HasValue)
+    {
+        args.Add(until.Value);
+        clauses.Add($"ts <= ${args.Count}");
+    }
+
+    var where = clauses.Count > 0 ? " WHERE " + string.Join(" AND ", clauses) : "";
+
+    await using var conn = await ds.OpenConnectionAsync(ct);
+
+    await using var countCmd = conn.CreateCommand();
+    countCmd.CommandText = "SELECT COUNT(*) FROM event_log" + where;
+    foreach (var a in args) countCmd.Parameters.AddWithValue(a);
+    var total = Convert.ToInt64(await countCmd.ExecuteScalarAsync(ct));
+
+    await using var cmd = conn.CreateCommand();
+    cmd.CommandText = @"SELECT id, ts, category, severity, event_type, username, source_ip,
+                               user_agent, request_id, session_id, endpoint, action, resource,
+                               result, reason, details
+                        FROM event_log" + where +
+        $" ORDER BY ts DESC LIMIT ${args.Count + 1} OFFSET ${args.Count + 2}";
+    foreach (var a in args) cmd.Parameters.AddWithValue(a);
+    cmd.Parameters.AddWithValue(ps);
+    cmd.Parameters.AddWithValue(offset);
+
+    var items = new List<object>();
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    while (await r.ReadAsync(ct))
+    {
+        items.Add(new
+        {
+            id         = r.GetInt64(0),
+            ts         = r.GetDateTime(1),
+            category   = r.GetString(2),
+            severity   = r.GetString(3),
+            eventType  = r.GetString(4),
+            username   = r.IsDBNull(5)  ? null : r.GetString(5),
+            sourceIp   = r.IsDBNull(6)  ? null : r.GetString(6),
+            userAgent  = r.IsDBNull(7)  ? null : r.GetString(7),
+            requestId  = r.IsDBNull(8)  ? null : r.GetString(8),
+            sessionId  = r.IsDBNull(9)  ? null : r.GetString(9),
+            endpoint   = r.IsDBNull(10) ? null : r.GetString(10),
+            action     = r.IsDBNull(11) ? null : r.GetString(11),
+            resource   = r.IsDBNull(12) ? null : r.GetString(12),
+            result     = r.GetString(13),
+            reason     = r.IsDBNull(14) ? null : r.GetString(14),
+            details    = r.IsDBNull(15) ? null : r.GetString(15),
+        });
+    }
+
+    return Results.Ok(new { total, page = p, pageSize = ps, items });
+});
+
+// GET /api/admin/event-log/summary — counts by category and severity for last 24h
+app.MapGet("/api/admin/event-log/summary", [Authorize("AdminOnly")] async (
+    NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    await using var conn = await ds.OpenConnectionAsync(ct);
+    await using var cmd  = conn.CreateCommand();
+    cmd.CommandText = @"SELECT category, severity, COUNT(*)::bigint AS n
+                        FROM event_log
+                        WHERE ts >= NOW() - INTERVAL '24 hours'
+                        GROUP BY category, severity
+                        ORDER BY category, severity";
+    var rows = new List<object>();
+    await using var r = await cmd.ExecuteReaderAsync(ct);
+    while (await r.ReadAsync(ct))
+        rows.Add(new { category = r.GetString(0), severity = r.GetString(1), count = r.GetInt64(2) });
+    return Results.Ok(new { since = DateTime.UtcNow.AddHours(-24), rows });
 });
 
 // =============================================================================
