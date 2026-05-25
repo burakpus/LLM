@@ -1893,9 +1893,10 @@ app.MapGet("/api/models/capabilities", [Authorize] () => Results.Ok(new Dictiona
                        description = "nomic-embed-text-v1.5 — 768 boyut embedding" },
 }));
 
-app.MapGet("/api/skills", [Authorize] async (SkillRegistry registry, NpgsqlDataSource ds, CancellationToken ct) =>
+app.MapGet("/api/skills", [Authorize] async (SkillRegistry registry, NpgsqlDataSource ds,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache cache, CancellationToken ct) =>
 {
-    var overrides = await LoadSkillOrderOverrides(ds, ct);
+    var overrides = await GetCachedSkillOrders(cache, ds, ct);
     var skills = registry.Metadata.Values
         .Select(m =>
         {
@@ -1918,7 +1919,7 @@ app.MapGet("/api/skills", [Authorize] async (SkillRegistry registry, NpgsqlDataS
     return Results.Ok(skills);
 });
 
-// Helper — load DB order overrides into a dictionary
+// Helper — load DB order overrides (cached 30s in IMemoryCache to avoid hit on every /api/skills call)
 static async Task<Dictionary<string, int>> LoadSkillOrderOverrides(NpgsqlDataSource ds, CancellationToken ct)
 {
     var dict = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -1933,6 +1934,21 @@ static async Task<Dictionary<string, int>> LoadSkillOrderOverrides(NpgsqlDataSou
     }
     catch { /* table may not exist yet — fall through with empty dict */ }
     return dict;
+}
+
+static async Task<Dictionary<string, int>> GetCachedSkillOrders(
+    Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
+    NpgsqlDataSource ds, CancellationToken ct)
+{
+    const string key = "skillOrderOverrides";
+    if (cache.TryGetValue(key, out object? rawCached) && rawCached is Dictionary<string, int> cached)
+        return cached;
+    var fresh = await LoadSkillOrderOverrides(ds, ct);
+    using var ce = cache.CreateEntry(key);
+    ce.Value = fresh;
+    ce.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30);
+    ce.Size = 1;
+    return fresh;
 }
 
 // GET /api/skills/{id} — get skill system prompt body (no frontmatter)
@@ -2401,9 +2417,10 @@ app.MapGet("/api/admin/usage/end-users", [Authorize("AdminOnly")] async (
 
 // GET /api/admin/skills
 app.MapGet("/api/admin/skills", [Authorize("AdminOnly")] async (
-    SkillRegistry registry, NpgsqlDataSource ds, CancellationToken ct) =>
+    SkillRegistry registry, NpgsqlDataSource ds,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache cache, CancellationToken ct) =>
 {
-    var overrides = await LoadSkillOrderOverrides(ds, ct);
+    var overrides = await GetCachedSkillOrders(cache, ds, ct);
     var items = registry.Metadata.Values
         .Select(m =>
         {
@@ -2673,6 +2690,7 @@ app.MapPost("/api/admin/skills/import-anthropic", [Authorize("AdminOnly")] async
 app.MapPut("/api/admin/skills/{id}/order", [Authorize("AdminOnly")] async (
     string id, [FromBody] SkillOrderRequest req,
     SkillRegistry registry, ClaimsPrincipal user, NpgsqlDataSource ds,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
     CancellationToken ct) =>
 {
     if (!registry.All.ContainsKey(id))
@@ -2687,6 +2705,8 @@ app.MapPut("/api/admin/skills/{id}/order", [Authorize("AdminOnly")] async (
     cmd.Parameters.AddWithValue(id);
     cmd.Parameters.AddWithValue(req.Order);
     await cmd.ExecuteNonQueryAsync(ct);
+
+    cache.Remove("skillOrderOverrides");  // invalidate cached list
 
     var username = user.FindFirstValue(ClaimTypes.Name) ?? "unknown";
     _ = LogActivity(ds, username, "skill.order.update", id, $"order={req.Order}");

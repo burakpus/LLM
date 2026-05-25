@@ -154,7 +154,8 @@ public static class ServiceCollectionExtensions
             services.PostConfigure(kbOpts);
         services.AddSingleton<IHybridSearch, PgHybridSearch>();
 
-        // Skill registry — load .md files at startup
+        // Skill registry — load .md files at startup (eager)
+        // Without this, the first /api/skills request pays the file I/O cost (86+ files).
         services.AddSingleton(sp =>
         {
             var log = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<SkillRegistry>>();
@@ -162,6 +163,7 @@ public static class ServiceCollectionExtensions
             registry.LoadFromDirectory(skillsDirectory, setPath: true);
             return registry;
         });
+        services.AddHostedService<SkillRegistryEagerInitializer>();
 
         // Context builder + agent chat
         services.AddSingleton<IContextBuilder, ContextBuilder>();
@@ -169,4 +171,34 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
+}
+
+/// <summary>
+/// Forces SkillRegistry to be resolved at host startup (not lazily on first request).
+/// Without this, the first /api/skills call has to read 80+ files synchronously,
+/// blocking the response for several hundred ms.
+/// </summary>
+internal sealed class SkillRegistryEagerInitializer : Microsoft.Extensions.Hosting.IHostedService
+{
+    private readonly SkillRegistry _registry;
+    private readonly Microsoft.Extensions.Logging.ILogger _log;
+
+    public SkillRegistryEagerInitializer(SkillRegistry registry,
+        Microsoft.Extensions.Logging.ILoggerFactory loggerFactory)
+    {
+        _registry = registry;
+        _log      = loggerFactory.CreateLogger("SkillRegistryEagerInitializer");
+    }
+
+    public System.Threading.Tasks.Task StartAsync(System.Threading.CancellationToken ct)
+    {
+        // Force resolution (the registry is created/loaded by the Singleton factory the moment
+        // it's first requested — taking it as a constructor parameter is enough).
+        Microsoft.Extensions.Logging.LoggerExtensions.LogInformation(_log,
+            "Skill registry eager-loaded with {Count} skills", _registry.Metadata.Count);
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    public System.Threading.Tasks.Task StopAsync(System.Threading.CancellationToken ct) =>
+        System.Threading.Tasks.Task.CompletedTask;
 }
