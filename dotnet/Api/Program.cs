@@ -305,15 +305,14 @@ var app = builder.Build();
 
 app.UseCors("ui");
 app.UseHttpMetrics();          // built-in: http_requests_total, http_request_duration_seconds
-app.UseAuthentication();
-app.UseAuthorization();
 
-// ── OWASP: automatic 401/403 event logging via response interceptor ───────────
+// ── OWASP: automatic 401/403 event logging — wraps auth pipeline ──────────────
+// Must run BEFORE UseAuthentication/UseAuthorization so we observe their final
+// status codes (they short-circuit on failure).
 app.Use(async (ctx, next) =>
 {
     await next();
 
-    // Only log auth/authz denials for API endpoints (skip static + health)
     var path = ctx.Request.Path.Value ?? "";
     if (!path.StartsWith("/api/")) return;
     if (path == "/api/auth/login")  return;  // already logged inside handler
@@ -334,6 +333,9 @@ app.Use(async (ctx, next) =>
     }
     catch { /* never break the response */ }
 });
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 if (app.Environment.IsDevelopment())
 {
