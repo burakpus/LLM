@@ -134,7 +134,7 @@ export function useGeneration() {
   }
 
   // ── Build message list for the next LLM call ───────────────────────────────
-  const buildMessages = (conv: Conversation): ChatApiMessage[] => {
+  const buildMessages = (conv: Conversation, opts: { toolsAvailable?: boolean } = {}): ChatApiMessage[] => {
     // Token budget for conversation history.
     // Model context = 16384. Reserve 750 for system prompt, 2048 for response.
     const MAX_HISTORY_TOKENS = 6000
@@ -182,6 +182,27 @@ export function useGeneration() {
     if (fmt && fmt !== 'free' && FORMAT_HINTS[fmt]) {
       const hint = `ÇIKTI FORMATI: ${FORMAT_HINTS[fmt]}`
       effectiveSystem = effectiveSystem ? `${effectiveSystem}\n\n${hint}` : hint
+    }
+
+    // Tool nudge: model has generate_file available — must use it instead of
+    // teaching the user how to run Python. Anthropic skills (docx/xlsx/pdf/pptx)
+    // were written for Claude Code which executes Python; in our environment
+    // the tool does that for us. Inject at END of system so it overrides skill.
+    if (opts.toolsAvailable) {
+      const fileGenInstruction =
+        'DOSYA ÜRETİMİ — SIKI KURAL:\n' +
+        'Kullanıcı bir Word/.docx, Excel/.xlsx, PDF/.pdf veya PowerPoint/.pptx ' +
+        "çıktısı istediğinde:\n" +
+        '• Python kodu, VBA, terminal komutu YAZMA. "şu kodu çalıştırın" deme.\n' +
+        '• Doğrudan generate_file aracını çağır (kind="docx"|"xlsx"|"pdf"|"pptx").\n' +
+        '• spec\'i kullanıcının istediği içerikten çıkar, çağrıyı yap.\n' +
+        '• İndirme bağlantısı tool sonucu kutusunda otomatik gösterilir; ' +
+        'sen sadece kısaca "Hazırladım, aşağıdan indirebilirsin" yaz.\n' +
+        '• Skill\'lerdeki Python örnek kodları bilgi amaçlıdır — bu ortamda ' +
+        "kullanıcı için generate_file ÇAĞIRMAK zorundasın."
+      effectiveSystem = effectiveSystem
+        ? `${effectiveSystem}\n\n${fileGenInstruction}`
+        : fileGenInstruction
     }
 
     if (effectiveSystem) msgs.push({ role: 'system', content: effectiveSystem })
@@ -307,7 +328,7 @@ export function useGeneration() {
             : undefined
 
           const rid = (window as any).__visionRid || '-'
-          const builtMsgs = buildMessages(conv)
+          const builtMsgs = buildMessages(conv, { toolsAvailable: tools != null })
           if (lastMsgHasImage && isVisionDebug()) {
             const imgCount = builtMsgs.reduce((n, m) => n + (Array.isArray(m.content) ? (m.content as any[]).filter((c: any) => c.type === 'image_url').length : 0), 0)
             console.log(`[VISION ${rid}] 4. streamCompletion params — model=${conv.settings.model ?? 'chat'}, msgs=${builtMsgs.length}, images=${imgCount}, tools=${tools ? tools.length : 0}, stream=${conv.settings.stream}`)

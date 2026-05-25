@@ -302,6 +302,13 @@ function ContentAgent() {
         <Step n={4}>Model spec çıkarır → generate_file çağrılır → tool kutusunda indir butonu çıkar</Step>
       </div>
 
+      <Warn>
+        <strong>Önemli:</strong> Chating modu (Gemma) tool çağrısı desteklemez —
+        bu modda model sana yalnızca Python kod örneği verir. Gerçek dosya
+        üretimi için <strong>Coding modu (Qwen) + Otonom işaretli</strong>
+        olması zorunludur. Üst bardan <Code>Mod ▾</Code> ile mod değiştir.
+      </Warn>
+
       <Tip>Üretilen dosyalar sunucuda kullanıcıya özel klasörde saklanır, JWT korumalı bağlantı ile sadece sen indirebilirsin. Path-traversal koruması var.</Tip>
 
       <H>RAG Agent Modu</H>
