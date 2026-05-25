@@ -397,7 +397,7 @@ app.MapPost("/api/auth/login", async (
     return Results.Ok(token);
 });
 
-// GET /api/auth/groups — debug: shows user's actual AD group CNs (authenticated)
+// GET /api/auth/groups — shows current admin config (authenticated, admin context)
 app.MapGet("/api/auth/groups", [Authorize] (
     ClaimsPrincipal user,
     IOptions<LdapOptions> ldapOpts) =>
@@ -406,20 +406,14 @@ app.MapGet("/api/auth/groups", [Authorize] (
     var username = user.FindFirstValue(ClaimTypes.Name) ?? "";
     var domain   = user.FindFirstValue("domain") ?? "";
 
-    if (opts.Bypass)
-        return Results.Ok(new { username, domain, bypass = true, groups = Array.Empty<string>() });
-
-    if (!opts.Domains.TryGetValue(domain.ToUpperInvariant(), out var cfg))
+    if (!opts.Domains.TryGetValue(domain.ToUpperInvariant(), out _))
         return Results.BadRequest(new { error = $"Domain not configured: {domain}" });
 
-    // Re-auth requires password — not available here, so we use a read-only bind attempt
-    // by checking the Authorization header for a Basic token if available
     return Results.Ok(new {
         username,
         domain,
         adminUserSet  = opts.AdminUserSet.ToArray(),
         adminGroupSet = opts.AdminGroupSet.ToArray(),
-        note = "Password not available after login — use /api/auth/debug-bind to test with credentials"
     });
 });
 
@@ -429,20 +423,6 @@ app.MapPost("/api/auth/debug-ldap", [Authorize("AdminOnly")] (
     [FromBody] LoginRequest req,
     ILdapAuthService ldap) =>
 {
-    var result = ldap.Diagnose(req.Domain, req.Username ?? "", req.Password ?? "");
-    return Results.Ok(result);
-});
-
-// POST /api/auth/debug-ldap-anonymous — same diagnostic but unauthenticated
-// (necessary for first-time setup when no admin user can log in yet — restricted to localhost-ish use)
-app.MapPost("/api/auth/debug-ldap-anonymous", (
-    [FromBody] LoginRequest req,
-    ILdapAuthService ldap,
-    IOptions<LdapOptions> opts) =>
-{
-    // Only allow when no admin user is configured OR when LDAP is unconfigured (recovery scenario)
-    if (opts.Value.Domains.Count > 0 && opts.Value.AdminUserSet.Count > 0)
-        return Results.Forbid();
     var result = ldap.Diagnose(req.Domain, req.Username ?? "", req.Password ?? "");
     return Results.Ok(result);
 });

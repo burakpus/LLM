@@ -11,18 +11,18 @@ public sealed class LdapOptions
 {
     public const string SectionName = "Ldap";
 
-    /// <summary>"SETYAZILIM;SETSOFTWARE" — semicolon-separated domain keys (shown in login UI)</summary>
+    /// <summary>"SETYAZILIM;SETSOFTWARE" — semicolon-separated domain keys (login UI dropdown).</summary>
     public string DomainNames { get; init; } = string.Empty;
 
     public Dictionary<string, LdapDomainConfig> Domains { get; init; } = new();
 
-    /// <summary>Set true to skip LDAP and accept any credentials (dev/test).</summary>
-    public bool Bypass { get; init; } = false;
-
     /// <summary>Comma-separated AD group CN names whose members get admin access.</summary>
-    public string AdminGroups { get; init; } = "setmanagement,Set AIAdmin";
+    public string AdminGroups { get; init; } = "";
 
-    /// <summary>Comma-separated usernames that always get admin access regardless of group.</summary>
+    /// <summary>
+    /// Comma-separated usernames that always get admin access regardless of group membership.
+    /// Use sparingly — bypasses AD-group-based authorization for these specific users.
+    /// </summary>
     public string AdminUsers { get; init; } = "";
 
     public IReadOnlyList<string> DomainList =>
@@ -40,65 +40,47 @@ public sealed class LdapOptions
 public sealed class LdapDomainConfig
 {
     // ── Connection ─────────────────────────────────────────────────────
-    /// <summary>LDAP host (e.g. "setyazilim.com" or "172.16.0.5"). Inferred from Path if empty.</summary>
+    /// <summary>LDAP host (FQDN or IP). Required.</summary>
     public string Host { get; init; } = "";
 
-    /// <summary>389 = LDAP, 636 = LDAPS. Defaults from UseSsl/StartTls if 0.</summary>
+    /// <summary>389 = LDAP, 636 = LDAPS. Defaults: 636 when UseSsl, else 389.</summary>
     public int Port { get; init; } = 0;
 
-    /// <summary>LDAPS (port 636 with SSL from the start).</summary>
+    /// <summary>LDAPS (SSL from start).</summary>
     public bool UseSsl { get; init; } = false;
 
-    /// <summary>StartTLS (port 389, upgrade to TLS after connect).</summary>
+    /// <summary>StartTLS upgrade after plain connect.</summary>
     public bool StartTls { get; init; } = false;
 
-    /// <summary>Skip server certificate validation (only for self-signed in dev).</summary>
+    /// <summary>Skip server certificate validation (dev only, accepts self-signed).</summary>
     public bool IgnoreCertErrors { get; init; } = false;
 
     // ── Directory schema ───────────────────────────────────────────────
     /// <summary>Search base DN (e.g. "DC=setyazilim,DC=com"). Auto-derived from Host if empty.</summary>
     public string BaseDn { get; init; } = "";
 
-    /// <summary>NETBIOS short domain name for `DOMAIN\user` bind (AD only). Legacy: Domain field.</summary>
+    /// <summary>NETBIOS short domain name for `DOMAIN\user` bind (AD).</summary>
     public string NetbiosDomain { get; init; } = "";
 
-    /// <summary>UPN suffix for `user@suffix` bind (e.g. "setyazilim.com"). AD-friendly.</summary>
+    /// <summary>UPN suffix for `user@suffix` bind (e.g. "setyazilim.com").</summary>
     public string UpnSuffix { get; init; } = "";
 
-    /// <summary>LDAP filter to find user by username — {0} is replaced with the username.</summary>
+    /// <summary>LDAP filter to find user by username — {0} is replaced.</summary>
     public string UserSearchFilter { get; init; } = "(sAMAccountName={0})";
 
     /// <summary>Attribute holding group memberships (default "memberOf" for AD).</summary>
     public string GroupAttribute { get; init; } = "memberOf";
 
-    // ── Service account (recommended) ──────────────────────────────────
-    /// <summary>Service account DN or UPN used to search for users (e.g. "CN=svc-ldap,OU=Users,DC=...")</summary>
+    // ── Service account (optional, recommended for group lookup) ───────
+    /// <summary>Service account DN/UPN used to search the directory (e.g. "CN=svc-ldap,OU=Users,DC=…").</summary>
     public string ServiceAccountDn { get; init; } = "";
-
-    /// <summary>Password for the service account (encrypted at rest in production deployments).</summary>
     public string ServiceAccountPassword { get; init; } = "";
 
-    // ── Legacy fields (backward compatibility) ─────────────────────────
-    /// <summary>e.g. "LDAP://setyazilim.com" — parsed to Host if Host is empty.</summary>
-    public string Path { get; init; } = "";
+    // ── Derived helpers ────────────────────────────────────────────────
+    public int    EffectivePort   => Port > 0 ? Port : (UseSsl ? 636 : 389);
+    public string EffectiveBaseDn => string.IsNullOrEmpty(BaseDn) ? BaseDnFromHost(Host) : BaseDn;
 
-    /// <summary>Legacy NETBIOS domain (e.g. "setyazilim"). Used if NetbiosDomain is empty.</summary>
-    public string Domain { get; init; } = "";
-
-    // ── Derived (read-only) helpers ────────────────────────────────────
-    public string EffectiveHost => string.IsNullOrEmpty(Host) ? HostFromPath(Path) : Host;
-    public int    EffectivePort => Port > 0 ? Port : (UseSsl ? 636 : 389);
-    public string EffectiveBaseDn => string.IsNullOrEmpty(BaseDn) ? BaseDnFromHost(EffectiveHost) : BaseDn;
-    public string EffectiveNetbios => string.IsNullOrEmpty(NetbiosDomain) ? Domain : NetbiosDomain;
-
-    private static string HostFromPath(string path)
-    {
-        if (string.IsNullOrEmpty(path)) return "";
-        var lower = path.Replace("LDAP://", "ldap://", StringComparison.OrdinalIgnoreCase)
-                        .Replace("LDAPS://", "ldaps://", StringComparison.OrdinalIgnoreCase);
-        return new Uri(lower).Host;
-    }
-
+    /// <summary>"setyazilim.com" → "DC=setyazilim,DC=com".</summary>
     private static string BaseDnFromHost(string host) =>
         string.IsNullOrEmpty(host) ? "" :
         string.Join(",", host.Split('.').Select(p => $"DC={p}"));
@@ -111,10 +93,10 @@ public sealed class LdapDomainConfig
 public sealed record LdapDiagnosticStep(string Name, bool Ok, string Message, long DurationMs);
 
 public sealed record LdapDiagnosticResult(
-    string                       Domain,
-    string                       Username,
-    bool                         OverallOk,
-    string                       Summary,
+    string                            Domain,
+    string                            Username,
+    bool                              OverallOk,
+    string                            Summary,
     IReadOnlyList<LdapDiagnosticStep> Steps);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -150,48 +132,38 @@ public sealed class LdapAuthService : ILdapAuthService
     // ── Connection factory ─────────────────────────────────────────────
     private LdapConnection CreateConnection(LdapDomainConfig cfg)
     {
+        if (string.IsNullOrEmpty(cfg.Host))
+            throw new InvalidOperationException("LDAP domain config missing Host");
+
         var opts = new LdapConnectionOptions();
         if (cfg.UseSsl) opts.UseSsl();
-
         if (cfg.IgnoreCertErrors)
-        {
-            opts.ConfigureRemoteCertificateValidationCallback(
-                (sender, cert, chain, errors) => true);
-        }
+            opts.ConfigureRemoteCertificateValidationCallback((_, _, _, _) => true);
 
         var conn = new LdapConnection(opts);
-        conn.Connect(cfg.EffectiveHost, cfg.EffectivePort);
+        conn.Connect(cfg.Host, cfg.EffectivePort);
 
-        if (cfg.StartTls && !cfg.UseSsl)
-            conn.StartTls();
+        if (cfg.StartTls && !cfg.UseSsl) conn.StartTls();
 
         return conn;
     }
 
-    // ── Build the bind DN/name from various AD/OpenLDAP conventions ────
+    // ── Bind candidate generator ───────────────────────────────────────
+    // Tried in order; first success wins.
     private static IEnumerable<string> CandidateBindNames(LdapDomainConfig cfg, string username)
     {
-        // 1) NETBIOS\user (most common AD form)
-        if (!string.IsNullOrEmpty(cfg.EffectiveNetbios))
-            yield return $"{cfg.EffectiveNetbios}\\{username}";
-        // 2) user@upn (works for AD with UPN suffix configured)
+        if (!string.IsNullOrEmpty(cfg.NetbiosDomain))
+            yield return $"{cfg.NetbiosDomain}\\{username}";
         if (!string.IsNullOrEmpty(cfg.UpnSuffix))
             yield return $"{username}@{cfg.UpnSuffix}";
-        // 3) Bare username (some OpenLDAP setups accept this)
         yield return username;
     }
 
-    // ── Search for user DN with service account bind ──────────────────
     private string? FindUserDn(LdapConnection conn, LdapDomainConfig cfg, string username)
     {
         var filter = string.Format(cfg.UserSearchFilter, EscapeFilter(username));
-        var results = conn.Search(
-            cfg.EffectiveBaseDn,
-            LdapConnection.ScopeSub,
-            filter,
-            new[] { "distinguishedName" },
-            typesOnly: false);
-
+        var results = conn.Search(cfg.EffectiveBaseDn, LdapConnection.ScopeSub, filter,
+            new[] { "distinguishedName" }, typesOnly: false);
         while (results.HasMore())
         {
             LdapEntry? entry = null;
@@ -209,7 +181,6 @@ public sealed class LdapAuthService : ILdapAuthService
              .Replace(")",  "\\29")
              .Replace("\0", "\\00");
 
-    // ── Extract CNs from list of DN strings ───────────────────────────
     private static IEnumerable<string> ExtractCns(IEnumerable<string> dns) =>
         dns.Select(dn =>
                 dn.Split(',')
@@ -223,31 +194,13 @@ public sealed class LdapAuthService : ILdapAuthService
 
     public bool Authenticate(string domain, string username, string password)
     {
-        if (_opts.Bypass)
-        {
-            _log.LogWarning("LDAP bypass enabled — accepting credentials for {User}@{Domain}", username, domain);
-            return true;
-        }
         if (!_opts.Domains.TryGetValue(domain.ToUpperInvariant(), out var cfg))
         {
             _log.LogWarning("LDAP domain not configured: {Domain}", domain);
             return false;
         }
 
-        return TryAuthenticateAndGet(cfg, username, password, out _);
-    }
-
-    /// <summary>
-    /// Tries all available bind strategies in priority order:
-    /// 1) Service account: search for user DN, then bind with that DN
-    /// 2) Direct bind: NETBIOS\user, user@upn, bare username
-    /// Returns the successful user DN (for further queries) via out param.
-    /// </summary>
-    private bool TryAuthenticateAndGet(LdapDomainConfig cfg, string username, string password, out string? userDn)
-    {
-        userDn = null;
-
-        // Strategy 1: Service account search → user bind
+        // Strategy 1: service account search → bind as found DN with user's password
         if (!string.IsNullOrEmpty(cfg.ServiceAccountDn))
         {
             try
@@ -262,18 +215,17 @@ public sealed class LdapAuthService : ILdapAuthService
                 }
                 using var userConn = CreateConnection(cfg);
                 userConn.Bind(dn, password);
-                userDn = dn;
                 _log.LogInformation("LDAP auth OK (svc-account) for {User} → {Dn}", username, dn);
                 return true;
             }
             catch (Exception ex)
             {
                 _log.LogWarning("LDAP svc-account auth failed for {User}: {Msg}", username, ex.Message);
-                // Fall through to direct bind attempts
+                // Fall through to direct bind
             }
         }
 
-        // Strategy 2: Direct bind attempts
+        // Strategy 2: direct bind with each candidate format
         foreach (var bindName in CandidateBindNames(cfg, username))
         {
             try
@@ -281,7 +233,6 @@ public sealed class LdapAuthService : ILdapAuthService
                 using var conn = CreateConnection(cfg);
                 conn.Bind(bindName, password);
                 _log.LogInformation("LDAP auth OK (direct '{Name}') for {User}", bindName, username);
-                userDn = bindName;
                 return true;
             }
             catch (LdapException ex)
@@ -295,7 +246,7 @@ public sealed class LdapAuthService : ILdapAuthService
         }
 
         _log.LogWarning("LDAP auth failed for {User}@{Domain} — all bind strategies exhausted",
-            username, cfg.EffectiveNetbios);
+            username, cfg.NetbiosDomain);
         return false;
     }
 
@@ -305,18 +256,12 @@ public sealed class LdapAuthService : ILdapAuthService
 
     public string[] GetUserGroups(string domain, string username, string password)
     {
-        if (_opts.Bypass)
-        {
-            return _opts.AdminUserSet.Contains(username)
-                ? _opts.AdminGroupSet.ToArray()
-                : [];
-        }
         if (!_opts.Domains.TryGetValue(domain.ToUpperInvariant(), out var cfg))
             return [];
 
         try
         {
-            // Prefer service account for group queries (more reliable than user-bound query)
+            // Prefer service account binding when configured (less reliance on user password)
             if (!string.IsNullOrEmpty(cfg.ServiceAccountDn))
             {
                 using var svc = CreateConnection(cfg);
@@ -325,11 +270,7 @@ public sealed class LdapAuthService : ILdapAuthService
             }
 
             // Fallback: bind as user, then query
-            if (!TryAuthenticateAndGet(cfg, username, password, out var _))
-                return [];
-
             using var conn = CreateConnection(cfg);
-            // Re-bind as user (TryAuthenticateAndGet already validated, but conn was disposed)
             foreach (var bn in CandidateBindNames(cfg, username))
             {
                 try { conn.Bind(bn, password); break; }
@@ -347,12 +288,8 @@ public sealed class LdapAuthService : ILdapAuthService
     private string[] ReadGroupsFor(LdapConnection conn, LdapDomainConfig cfg, string username)
     {
         var filter = string.Format(cfg.UserSearchFilter, EscapeFilter(username));
-        var results = conn.Search(
-            cfg.EffectiveBaseDn,
-            LdapConnection.ScopeSub,
-            filter,
-            new[] { cfg.GroupAttribute },
-            typesOnly: false);
+        var results = conn.Search(cfg.EffectiveBaseDn, LdapConnection.ScopeSub, filter,
+            new[] { cfg.GroupAttribute }, typesOnly: false);
 
         var memberOf = new List<string>();
         while (results.HasMore())
@@ -379,7 +316,6 @@ public sealed class LdapAuthService : ILdapAuthService
             _log.LogInformation("Admin granted to {User} via AdminUsers config", username);
             return true;
         }
-        if (_opts.Bypass) return false;
 
         var groups = GetUserGroups(domain, username, password);
         foreach (var g in groups)
@@ -400,115 +336,91 @@ public sealed class LdapAuthService : ILdapAuthService
     public LdapDiagnosticResult Diagnose(string domain, string username, string password)
     {
         var steps = new List<LdapDiagnosticStep>();
-        var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        void Add(string name, Action body, string okMsg)
+        void Run(string name, Action body, string okMsg)
         {
             var t = System.Diagnostics.Stopwatch.StartNew();
-            try
-            {
-                body();
-                steps.Add(new(name, true, okMsg, t.ElapsedMilliseconds));
-            }
+            try { body(); steps.Add(new(name, true, okMsg, t.ElapsedMilliseconds)); }
             catch (Exception ex)
-            {
-                steps.Add(new(name, false, $"{ex.GetType().Name}: {ex.Message}", t.ElapsedMilliseconds));
-                throw;
-            }
+            { steps.Add(new(name, false, $"{ex.GetType().Name}: {ex.Message}", t.ElapsedMilliseconds)); throw; }
         }
 
         try
         {
-            if (_opts.Bypass)
-            {
-                steps.Add(new("bypass-mode", true, "Ldap:Bypass=true — LDAP atlanır, tüm credential'lar kabul edilir", 0));
-                return new(domain, username, true, "Bypass active", steps);
-            }
-
             if (!_opts.Domains.TryGetValue(domain.ToUpperInvariant(), out var cfg))
             {
-                steps.Add(new("config-lookup", false, $"Domain '{domain}' yapılandırılmamış. Mevcut: {string.Join(",", _opts.Domains.Keys)}", 0));
+                steps.Add(new("config-lookup", false,
+                    $"Domain '{domain}' yapılandırılmamış. Mevcut: {string.Join(",", _opts.Domains.Keys)}", 0));
                 return new(domain, username, false, "Domain not configured", steps);
             }
 
             steps.Add(new("config-lookup", true,
-                $"Host={cfg.EffectiveHost} Port={cfg.EffectivePort} SSL={cfg.UseSsl} StartTLS={cfg.StartTls} BaseDn={cfg.EffectiveBaseDn}",
+                $"Host={cfg.Host} Port={cfg.EffectivePort} SSL={cfg.UseSsl} StartTLS={cfg.StartTls} BaseDn={cfg.EffectiveBaseDn}",
                 0));
 
-            // Step: connect
             LdapConnection? conn = null;
-            try { Add("connect", () => { conn = CreateConnection(cfg); }, "Bağlantı + TLS başarılı"); }
+            try { Run("connect", () => { conn = CreateConnection(cfg); }, "Bağlantı + TLS başarılı"); }
             catch { return Done(false, "Connection/TLS failed"); }
 
-            // Step: service account bind (if configured)
+            // Service account path
             if (!string.IsNullOrEmpty(cfg.ServiceAccountDn))
             {
-                try { Add("svc-account-bind", () => conn!.Bind(cfg.ServiceAccountDn, cfg.ServiceAccountPassword),
+                try { Run("svc-account-bind",
+                    () => conn!.Bind(cfg.ServiceAccountDn, cfg.ServiceAccountPassword),
                     $"Service account bind OK: {cfg.ServiceAccountDn}"); }
                 catch { return Done(false, "Service account bind failed"); }
 
-                // Step: user search via service account
                 string? userDn = null;
-                try { Add("user-search", () => { userDn = FindUserDn(conn!, cfg, username); if (userDn == null) throw new Exception("user not found"); },
-                    $"Kullanıcı DN bulundu"); }
+                try { Run("user-search",
+                    () => { userDn = FindUserDn(conn!, cfg, username); if (userDn == null) throw new Exception("user not found"); },
+                    "Kullanıcı DN bulundu"); }
                 catch { return Done(false, "User search failed"); }
                 steps[^1] = steps[^1] with { Message = $"DN={userDn}" };
 
-                // Step: bind as user (with their password) to verify credentials
                 if (!string.IsNullOrWhiteSpace(password))
                 {
-                    try
-                    {
-                        Add("user-bind", () =>
-                        {
-                            using var userConn = CreateConnection(cfg);
-                            userConn.Bind(userDn!, password);
-                        }, "Kullanıcı parolası doğrulandı");
-                    }
+                    try { Run("user-bind",
+                        () => { using var c = CreateConnection(cfg); c.Bind(userDn!, password); },
+                        "Kullanıcı parolası doğrulandı"); }
                     catch { return Done(false, "User password bind failed"); }
                 }
-                else
-                {
-                    steps.Add(new("user-bind", false, "Parola verilmedi — atlandı", 0));
-                }
+                else steps.Add(new("user-bind", false, "Parola verilmedi — atlandı", 0));
 
-                // Step: group fetch
                 try
                 {
                     string[] groups = [];
-                    Add("group-fetch", () => { groups = ReadGroupsFor(conn!, cfg, username); }, "");
+                    Run("group-fetch", () => { groups = ReadGroupsFor(conn!, cfg, username); }, "");
                     steps[^1] = steps[^1] with { Message = $"Gruplar: {(groups.Length > 0 ? string.Join(", ", groups) : "(yok)")}" };
                 }
-                catch { /* group fetch failure is non-fatal */ }
+                catch { /* non-fatal */ }
             }
             else
             {
-                // No service account — try direct user bind
+                // Direct bind path
                 if (string.IsNullOrWhiteSpace(password))
                 {
-                    steps.Add(new("user-bind", false, "Service account yok ve parola verilmedi — bind atlandı", 0));
+                    steps.Add(new("user-bind", false, "Service account yok ve parola verilmedi", 0));
                     return Done(false, "Cannot validate without service account or user password");
                 }
                 var bound = false;
                 foreach (var bindName in CandidateBindNames(cfg, username))
                 {
+                    var t = System.Diagnostics.Stopwatch.StartNew();
                     try
                     {
-                        var t = System.Diagnostics.Stopwatch.StartNew();
                         using var userConn = CreateConnection(cfg);
                         userConn.Bind(bindName, password);
-                        steps.Add(new($"user-bind ({bindName})", true, $"Bind OK", t.ElapsedMilliseconds));
+                        steps.Add(new($"user-bind ({bindName})", true, "Bind OK", t.ElapsedMilliseconds));
                         bound = true;
                         break;
                     }
                     catch (Exception ex)
                     {
-                        steps.Add(new($"user-bind ({bindName})", false, ex.Message, 0));
+                        steps.Add(new($"user-bind ({bindName})", false, ex.Message, t.ElapsedMilliseconds));
                     }
                 }
                 if (!bound) return Done(false, "All direct binds failed");
 
-                // Group fetch as user
                 try
                 {
                     var t = System.Diagnostics.Stopwatch.StartNew();
@@ -518,7 +430,9 @@ public sealed class LdapAuthService : ILdapAuthService
                         try { groupConn.Bind(bn, password); break; } catch { }
                     }
                     var groups = ReadGroupsFor(groupConn, cfg, username);
-                    steps.Add(new("group-fetch", true, $"Gruplar: {(groups.Length > 0 ? string.Join(", ", groups) : "(yok)")}", t.ElapsedMilliseconds));
+                    steps.Add(new("group-fetch", true,
+                        $"Gruplar: {(groups.Length > 0 ? string.Join(", ", groups) : "(yok)")}",
+                        t.ElapsedMilliseconds));
                 }
                 catch (Exception ex)
                 {
