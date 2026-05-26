@@ -46,19 +46,63 @@ Tipik süre: **20-25 saniye**.
 
 ## Audit Log Yönetimi
 
-(Faz 1.2 sonrası dolacak)
+`event_log` tablosu OWASP-uyumlu denetim kayıtlarını saklar.
 
-- `event_log` tablosu: 90 gün retention, günlük cleanup job
-- Manuel sorgu: `psql -h 172.16.0.8 -U setadmin -d mydb -c "SELECT category, COUNT(*) FROM event_log WHERE ts > NOW() - INTERVAL '1 day' GROUP BY 1"`
-- Admin UI: 🛡 Güvenlik sekmesinde filtre/arama
+**Retention**: 90 gün (varsayılan). `EventLogRetentionService : BackgroundService`
+servisi her 24 saatte bir 90 günden eski satırları siler. İlk tarama
+servis açıldıktan 2 dakika sonra çalışır.
+
+**Yapılandırma**: `appsettings.json` → `EventLog:RetentionDays` (7-3650 arası,
+varsayılan 90).
+
+**Manuel sorgu örnekleri**:
+```sql
+-- Son 24 saat kategori dağılımı
+SELECT category, COUNT(*) FROM event_log
+WHERE ts > NOW() - INTERVAL '1 day' GROUP BY 1;
+
+-- Bir kullanıcının son giriş denemeleri
+SELECT ts, event_type, result, source_ip, reason
+FROM event_log
+WHERE username = 'burakpus' AND category = 'Auth'
+ORDER BY ts DESC LIMIT 50;
+
+-- Brute-force şüphesi (1 saat içinde 3+ fail)
+SELECT source_ip, COUNT(*) AS fails
+FROM event_log
+WHERE ts > NOW() - INTERVAL '1 hour'
+  AND event_type IN ('auth.login.fail', 'security.rate_limit')
+GROUP BY 1 HAVING COUNT(*) >= 3
+ORDER BY fails DESC;
+```
+
+**UI**: Admin → 🛡 **Güvenlik** sekmesi — filtre/arama/expand-detail.
 
 ## Dosya Yaşam Döngüsü
 
-(Faz 1.3 sonrası dolacak)
+`generated/{user}/{uuid}/{filename}` altında üretilen Word/Excel/PDF/PowerPoint
+dosyaları **24 saat TTL** ile otomatik temizlenir.
 
-- `generated/{user}/{uuid}/file.docx` → kullanıcı `generate_file` çağrısı sonrası
-- 24 saat TTL — `GeneratedFilesCleanupService` saatte bir tarar, eski olanları siler
-- Manuel temizlik: `find /home/admin/setllm-api/generated -mtime +1 -delete`
+**Servis**: `GeneratedFilesCleanupService : BackgroundService`
+- Sunucu açılışından 3 dakika sonra başlar
+- Saatte bir tarar
+- TTL'i aşan dosyaları siler
+- Boş kalan token klasörlerini siler
+
+**Yapılandırma**: `appsettings.json` → `Tools:GeneratedTtlHours` (1-720, varsayılan 24).
+
+**Manuel temizlik** (zorunlu kalmazsa kullanma):
+```bash
+# 1 günden eski tüm üretilmiş dosyaları sil
+find /home/admin/setllm-api/generated -type f -mtime +1 -delete
+
+# Tüm üretilmiş içeriği temizle (riskli!)
+rm -rf /home/admin/setllm-api/generated/*
+```
+
+**Kullanıcı etkisi**: Kullanıcı tool sonucu chip'inden indirme bağlantısını
+24 saat içinde tıklamalı. Geçince link 404 döner; aynı içeriği isterse model
+`generate_file` aracını tekrar çağırır (saniyeler içinde yeni dosya).
 
 ## Health Probes
 

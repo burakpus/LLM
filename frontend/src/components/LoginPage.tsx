@@ -12,6 +12,16 @@ export default function LoginPage() {
   const [error,     setError]     = useState('')
   const [loading,   setLoading]   = useState(false)
 
+  // If we got bounced here by the auth interceptor (?expired=1), inform user.
+  const [expiredNotice, setExpiredNotice] = useState<string | null>(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search)
+      return sp.get('expired') === '1'
+        ? 'Oturumunuz sona erdi. Lütfen tekrar giriş yapın.'
+        : null
+    } catch { return null }
+  })
+
   useEffect(() => {
     getDomains().then(d => {
       setDomains(d)
@@ -56,6 +66,13 @@ export default function LoginPage() {
         <p className="text-[11px] text-center uppercase tracking-[.15em] font-semibold mt-1 mb-6"
            style={{ color: 'var(--color-mute)' }}>Active Directory Sign In</p>
 
+        {expiredNotice && !error && (
+          <div className="mb-3 px-3.5 py-2.5 rounded-lg text-sm text-center"
+               style={{ background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.30)', color: '#fbbf24' }}>
+            ⏳ {expiredNotice}
+          </div>
+        )}
+
         {error && (
           <div className="mb-5 px-3.5 py-2.5 rounded-lg text-sm text-center text-red-400
                           bg-red-500/10 border border-red-500/25">
@@ -63,7 +80,8 @@ export default function LoginPage() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4"
+              onChange={() => expiredNotice && setExpiredNotice(null)}>
           <div>
             <label className="block text-[11px] uppercase tracking-wider font-semibold mb-1.5"
                    style={{ color: 'var(--color-mute)' }}>Username</label>

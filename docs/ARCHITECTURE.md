@@ -101,5 +101,8 @@ Detaylı adımlar: `.github/workflows/deploy.yml` ve `scripts/merge_appsettings.
 1. Kullanıcı `/login` → POST `/api/auth/login` → JWT
 2. localStorage'a `setllm-token` + `setllm-user`
 3. Tüm istekler `Authorization: Bearer ...`
-4. 401 yanıt → otomatik logout + `/login`'e yönlendir (Faz 1.4 sonrası)
+4. **401 yanıt → otomatik logout + `/login`'e yönlendir** — `frontend/src/api/auth-interceptor.ts`
+   window.fetch'i wrap'liyor; bir kez `installAuthInterceptor()` `main.tsx`'te çağrılıyor.
+   `/api/auth/login` endpoint'i hariç tutulur (orada 401 = yanlış şifre, oturum süresi değil).
+   Login sayfasında `?expired=1` query'si "Oturumunuz sona erdi" uyarısı gösterir.
 5. JWT exp ~8 saat, refresh yok (yeniden login)

@@ -117,6 +117,8 @@ services.AddSingleton<IJobHandler, SqlIngestDataJobHandler>();
 services.AddSingleton<IJobHandler, SqlSyncDataJobHandler>();
 services.AddHostedService<JobWorker>();
 services.AddHostedService<AutoSyncScheduler>();
+services.AddHostedService<SetYazilim.Llm.Api.Auth.EventLogRetentionService>();
+services.AddHostedService<SetYazilim.Llm.Api.Tools.GeneratedFilesCleanupService>();
 
 // ── LLM + VectorStore + AgentStack ───────────────────────────────────────────
 services.AddLiteLLMClient();
@@ -392,8 +394,10 @@ app.MapGet("/api/auth/domains", (ILdapAuthService ldap) =>
 // POST /api/auth/login
 app.MapPost("/api/auth/login", async (
     [FromBody] LoginRequest req,
+    HttpContext http,
     ILdapAuthService ldap,
     IJwtTokenService jwt,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
     IEventLog evt,
     CancellationToken ct) =>
 {
@@ -403,6 +407,22 @@ app.MapPost("/api/auth/login", async (
             EventResult.Failure, reason: "missing credentials",
             action: "login", resource: $"domain:{req.Domain}", username: req.Username, ct: ct);
         return Results.BadRequest(new { error = "Username and password are required." });
+    }
+
+    // Brute-force koruması — per (IP, username), 5 deneme/dk
+    var ip = (http.Request.Headers["X-Forwarded-For"].ToString().Split(',')[0].Trim())
+             ?.Length > 0
+             ? http.Request.Headers["X-Forwarded-For"].ToString().Split(',')[0].Trim()
+             : (http.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+    if (!LoginRateLimit.TryAcquire(cache, ip, req.Username, out var retryAfter))
+    {
+        await evt.LogAsync(EventCategory.Security, EventSeverity.Warn, "security.rate_limit",
+            EventResult.Denied, reason: $"login brute-force, retry in {retryAfter}s",
+            action: "login", resource: $"domain:{req.Domain}",
+            details: new { ip, username = req.Username, retryAfter },
+            username: req.Username, ct: ct);
+        return Results.Json(new { error = $"Çok fazla deneme. {retryAfter} saniye sonra tekrar deneyin." },
+            statusCode: 429);
     }
 
     if (!ldap.Authenticate(req.Domain, req.Username, req.Password))
@@ -3175,6 +3195,49 @@ static class SqlConnTestRateLimit
         // entry = (windowStart, count)
         (DateTimeOffset start, int count) entry;
         if (cache.TryGetValue(key, out object? raw) && raw is ValueTuple<DateTimeOffset, int> cached && (now - cached.Item1).TotalSeconds < 60)
+        {
+            entry = (cached.Item1, cached.Item2);
+        }
+        else
+        {
+            entry = (now, 0);
+        }
+
+        if (entry.count >= MaxPerMinute)
+        {
+            retryAfterSec = Math.Max(1, 60 - (int)(now - entry.start).TotalSeconds);
+            return false;
+        }
+
+        entry = (entry.start, entry.count + 1);
+        using var ce = cache.CreateEntry(key);
+        ce.Value = (entry.start, entry.count);
+        ce.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2);
+        ce.Size = 1;
+        retryAfterSec = 0;
+        return true;
+    }
+}
+
+// ── Rate limit for /api/auth/login (brute-force koruması) ─────────────────────
+// Max 5 attempts per (IP, username) tuple per minute.
+// Sayaç doğru login'de sıfırlanmaz — saldırgan aynı pencerede zorlamayı sürdüremez.
+static class LoginRateLimit
+{
+    private const int MaxPerMinute = 5;
+
+    public static bool TryAcquire(Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
+        string ip, string username, out int retryAfterSec)
+    {
+        // Per-IP+username scope — single user from single IP cannot exceed; but
+        // separate IPs targeting same user accumulate independently (acceptable —
+        // we also alert via event_log).
+        var key = $"loginRL:{ip}:{username.ToLowerInvariant()}";
+        var now = DateTimeOffset.UtcNow;
+        (DateTimeOffset start, int count) entry;
+        if (cache.TryGetValue(key, out object? raw)
+            && raw is ValueTuple<DateTimeOffset, int> cached
+            && (now - cached.Item1).TotalSeconds < 60)
         {
             entry = (cached.Item1, cached.Item2);
         }

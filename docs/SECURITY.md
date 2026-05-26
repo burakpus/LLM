@@ -59,17 +59,26 @@
 
 ## Brute-force Koruması
 
-(Faz 1.1 sonrası dolacak)
+`/api/auth/login` endpoint'i `LoginRateLimit` static class'ı tarafından korunur.
 
-- `/api/auth/login` per-IP + per-username 5 deneme / 1 dakika
-- Limit aşıldığında HTTP 429, event_log'a `security.rate_limit` kaydı
-- Doğru login sayacı sıfırlamaz (saldırgan aynı pencerede zorlamayı sürdüremez)
+| Özellik | Değer |
+|---------|-------|
+| Limit | **5 deneme** |
+| Pencere | **1 dakika** (rolling) |
+| Kapsam | **(IP, username) çifti başına** — aynı IP'den farklı kullanıcı denemeleri ayrı sayılır |
+| Aşıldığında | HTTP **429** + `Çok fazla deneme. {retryAfter} saniye sonra tekrar deneyin.` |
+| Sayaç sıfırlanır mı? | **Hayır**, doğru login bile sayacı sıfırlamaz — saldırgan başarılı deneme arasından zorlamayı sürdüremez |
+| Audit | `event_log` → `category=Security`, `event_type=security.rate_limit`, `details={ip,username,retryAfter}` |
+
+**IP tespiti**: Önce `X-Forwarded-For` header'ı (nginx arkasındayız), yoksa `RemoteIpAddress`.
+
+**Limit özelleştirme**: Şu an kodda sabit. İleride `appsettings.json → Limits:Login` ile config'e taşınacak (Faz 3.3).
 
 ## Rate Limits
 
 | Endpoint | Limit | Pencere | Kaynak |
 |----------|-------|---------|--------|
-| `/api/auth/login` | 5 deneme | 1 dk | IP + username (Faz 1.1) |
+| `/api/auth/login` | 5 deneme | 1 dk | (IP, username) çifti |
 | `/api/admin/sql-connections/{id}/test` | 10 | 1 dk | username |
 | `/api/admin/sql-connections/test-credentials` | 10 | 1 dk | username |
 
