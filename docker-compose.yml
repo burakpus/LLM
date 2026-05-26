@@ -278,6 +278,7 @@ services:
       - grafana-data:/var/lib/grafana
       - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/dgx-llm.json:ro
+      - ./monitoring/grafana-dashboard-concurrent.json:/var/lib/grafana/dashboards/dgx-llm-concurrent.json:ro
     depends_on: [prometheus, loki]
 
   loki:

@@ -1,0 +1,223 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "dgx-llm-concurrent",
+  "title": "DGX Spark — LLM Concurrent & Benchmark",
+  "tags": ["llm", "dgx", "vllm", "concurrency", "benchmark"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "model",
+        "label": "Model",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "Prometheus" },
+        "query": "label_values(vllm:num_requests_running, model_name)",
+        "includeAll": true,
+        "multi": false,
+        "current": { "value": "$__all", "text": "All" },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Anlık Eş-Zamanlı İstek (running)",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(vllm:num_requests_running{model_name=~\"$model\"})", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 20 },
+              { "color": "red",    "value": 50 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Kuyrukta Bekleyen",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(vllm:num_requests_waiting{model_name=~\"$model\"})", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 5 },
+              { "color": "red",    "value": 20 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 3,
+      "type": "gauge",
+      "title": "GPU KV Cache Doluluk",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "avg(vllm:gpu_cache_usage_perc{model_name=~\"$model\"})", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "orange", "value": 0.7  },
+              { "color": "red",    "value": 0.9  }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Aggregate Üretim Hızı (tok/s)",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(vllm:generation_tokens_total{model_name=~\"$model\"}[1m]))", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 1 }
+      },
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Aktif/Bekleyen İstekler (zaman)",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(vllm:num_requests_running{model_name=~\"$model\"})", "refId": "A", "legendFormat": "Çalışan" },
+        { "expr": "sum(vllm:num_requests_waiting{model_name=~\"$model\"})", "refId": "B", "legendFormat": "Bekleyen" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 30, "lineWidth": 2, "showPoints": "never" },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Token Üretim Hızı (1dk avg)",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum by(model_name) (rate(vllm:generation_tokens_total{model_name=~\"$model\"}[1m]))", "refId": "A", "legendFormat": "{{model_name}} gen" },
+        { "expr": "sum by(model_name) (rate(vllm:prompt_tokens_total{model_name=~\"$model\"}[1m]))",      "refId": "B", "legendFormat": "{{model_name}} prompt" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "short"
+        }
+      }
+    },
+
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "TTFT — Time To First Token (p50 / p95 / p99)",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=~\"$model\"}[5m])))", "refId": "A", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=~\"$model\"}[5m])))", "refId": "B", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name=~\"$model\"}[5m])))", "refId": "C", "legendFormat": "p99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 2 },
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Inter-Token Latency (p50 / p95)",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by(le) (rate(vllm:time_per_output_token_seconds_bucket{model_name=~\"$model\"}[5m])))", "refId": "A", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum by(le) (rate(vllm:time_per_output_token_seconds_bucket{model_name=~\"$model\"}[5m])))", "refId": "B", "legendFormat": "p95" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 2 },
+          "unit": "s"
+        }
+      }
+    },
+
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "SET LLM API — İstek Hızı (status)",
+      "gridPos": { "x": 0, "y": 19, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum by(status) (rate(setllm_llm_requests_total[1m]))", "refId": "A", "legendFormat": "{{status}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 0, "stacking": { "mode": "normal", "group": "A" } },
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "SET LLM API — Yanıt Süresi (p50 / p95)",
+      "gridPos": { "x": 12, "y": 19, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by(le, model) (rate(setllm_llm_request_duration_seconds_bucket[5m])))", "refId": "A", "legendFormat": "p50 {{model}}" },
+        { "expr": "histogram_quantile(0.95, sum by(le, model) (rate(setllm_llm_request_duration_seconds_bucket[5m])))", "refId": "B", "legendFormat": "p95 {{model}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 2 },
+          "unit": "s"
+        }
+      }
+    }
+  ]
+}

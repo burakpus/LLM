@@ -102,6 +102,8 @@ services.AddScoped<IEventLog, EventLog>();
 
 // ── Tools (file generation via Python subprocess) ─────────────────────────────
 services.AddSingleton<SetYazilim.Llm.Api.Tools.IFileGenerator, SetYazilim.Llm.Api.Tools.FileGenerator>();
+services.AddSingleton<SetYazilim.Llm.Api.Tools.IBenchmarkService, SetYazilim.Llm.Api.Tools.BenchmarkService>();
+services.AddHttpClient("bench-internal");
 
 // ── SQL external sources (Phase 1: connection mgmt + test) ────────────────────
 services.AddDataProtection().SetApplicationName("set-llm-api");
@@ -215,6 +217,26 @@ var app = builder.Build();
         CREATE INDEX IF NOT EXISTS idx_event_log_user      ON event_log (username);
         CREATE INDEX IF NOT EXISTS idx_event_log_ip        ON event_log (source_ip);
         CREATE INDEX IF NOT EXISTS idx_event_log_type      ON event_log (event_type);
+        CREATE TABLE IF NOT EXISTS benchmark_results (
+            id                 BIGSERIAL    PRIMARY KEY,
+            ts                 TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            model              VARCHAR(50)  NOT NULL,
+            concurrency        INTEGER      NOT NULL,
+            max_tokens         INTEGER      NOT NULL,
+            success_count      INTEGER      NOT NULL,
+            fail_count         INTEGER      NOT NULL,
+            wall_seconds       DOUBLE PRECISION NOT NULL,
+            ttft_p50_ms        DOUBLE PRECISION NOT NULL,
+            ttft_p95_ms        DOUBLE PRECISION NOT NULL,
+            tps_per_stream_p50 DOUBLE PRECISION NOT NULL,
+            tps_per_stream_p95 DOUBLE PRECISION NOT NULL,
+            tps_aggregate      DOUBLE PRECISION NOT NULL,
+            total_tokens       INTEGER      NOT NULL,
+            label              TEXT,
+            created_by         VARCHAR(100) NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_bench_ts    ON benchmark_results (ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_bench_model ON benchmark_results (model, ts DESC);
         CREATE TABLE IF NOT EXISTS sql_connections (
             id                  SERIAL PRIMARY KEY,
             name                VARCHAR(200) NOT NULL,
@@ -2804,6 +2826,43 @@ app.MapGet("/api/tools/generated/{token}/{filename}", [Authorize] (
     if (path == null) return Results.NotFound();
     return Results.File(path, SetYazilim.Llm.Api.Tools.ContentTypes.Lookup(filename),
         fileDownloadName: filename, enableRangeProcessing: true);
+});
+
+// =============================================================================
+// ─── Admin Benchmark (LLM concurrency test) ──────────────────────────────────
+
+// POST /api/admin/benchmark — run N concurrent /api/llm/completions calls
+// body: { model, concurrency, prompt, maxTokens, temperature, label? }
+app.MapPost("/api/admin/benchmark", [Authorize("AdminOnly")] async (
+    [FromBody] SetYazilim.Llm.Api.Tools.BenchmarkRequest req,
+    SetYazilim.Llm.Api.Tools.IBenchmarkService bench,
+    HttpContext http,
+    ClaimsPrincipal user,
+    CancellationToken ct) =>
+{
+    if (string.IsNullOrEmpty(req.Model)) return Results.BadRequest(new { error = "model required" });
+    if (req.Concurrency < 1 || req.Concurrency > 200)
+        return Results.BadRequest(new { error = "concurrency must be 1..200" });
+    if (string.IsNullOrEmpty(req.Prompt)) return Results.BadRequest(new { error = "prompt required" });
+
+    // Reuse the caller's JWT to call our own /api/llm/completions
+    var auth = http.Request.Headers.Authorization.ToString();
+    var jwt  = auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? auth[7..] : "";
+    if (string.IsNullOrEmpty(jwt)) return Results.BadRequest(new { error = "missing bearer token" });
+
+    var createdBy = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    var result    = await bench.RunAsync(req, jwt, createdBy, ct);
+    return Results.Ok(result);
+});
+
+// GET /api/admin/benchmarks?model=&limit=20
+app.MapGet("/api/admin/benchmarks", [Authorize("AdminOnly")] async (
+    string? model, int? limit,
+    SetYazilim.Llm.Api.Tools.IBenchmarkService bench,
+    CancellationToken ct) =>
+{
+    var items = await bench.ListAsync(model, limit ?? 20, ct);
+    return Results.Ok(items);
 });
 
 // =============================================================================

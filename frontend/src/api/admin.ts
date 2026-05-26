@@ -823,6 +823,57 @@ export async function getEventLogSummary(): Promise<EventLogSummary> {
   return r.json()
 }
 
+// ── Benchmark (LLM load test) ────────────────────────────────────────────────
+
+export interface BenchmarkRequest {
+  model:       string
+  concurrency: number
+  prompt:      string
+  maxTokens?:  number
+  temperature?: number
+  label?:      string
+}
+
+export interface BenchmarkResult {
+  id:               number
+  ts:               string
+  model:            string
+  concurrency:      number
+  maxTokens:        number
+  success:          number
+  failed:           number
+  wallSeconds:      number
+  ttftP50Ms:        number
+  ttftP95Ms:        number
+  tpsPerStreamP50:  number
+  tpsPerStreamP95:  number
+  tpsAggregate:     number
+  totalTokens:      number
+  label:            string | null
+  createdBy:        string
+}
+
+export async function runBenchmark(req: BenchmarkRequest): Promise<BenchmarkResult> {
+  const r = await fetch('/api/admin/benchmark', {
+    method:  'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify(req),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }))
+    throw new Error(err?.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
+export async function listBenchmarks(model?: string, limit = 20): Promise<BenchmarkResult[]> {
+  const p = new URLSearchParams({ limit: String(limit) })
+  if (model) p.set('model', model)
+  const r = await fetch(`/api/admin/benchmarks?${p}`, { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
 // ── Rating stats ─────────────────────────────────────────────────────────────
 export interface RatingStats {
   total: number; ups: number; downs: number

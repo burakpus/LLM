@@ -495,6 +495,13 @@ function ContentAdmin() {
           'Filtre: kategori × severity × tip × kullanıcı × IP × sonuç + serbest arama',
           'Son 24 saat özeti — chip\'e tıkla → o filtreyle listele',
         ]},
+        { tab: '🧪 Benchmark', icon: '🧪', items: [
+          'N paralel istek atar (1..200), TTFT p50/p95, tok/s per-stream + aggregate ölçer',
+          'Model değiştikten önce/sonra karşılaştırmak için ideal',
+          'Geçmiş tablosunda otomatik tutulur (benchmark_results) — aynı model+N son ölçümle %fark gösterilir',
+          'Aynı anda çalışırsa diğer kullanıcı isteklerini etkileyebilir — düşük trafik saatlerinde önerilir',
+          'Grafana → "DGX Spark — LLM Concurrent & Benchmark" dashboard\'unda canlı izlenir',
+        ]},
         { tab: '⚙ Ayarlar', icon: '⚙️', items: [
           'Connection (LLM endpoint) ayarları',
           'Sistem promptu — chat sırasında ilave talimat',
