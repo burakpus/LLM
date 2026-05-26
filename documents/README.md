@@ -13,6 +13,7 @@ arka plan iş kuyruğu ve admin panelinden yönetim sağlar.
 | [SECURITY.md](SECURITY.md) | Güvenlik / Sistem yöneticisi | LDAP, JWT, rate limits, OWASP event log, threat model |
 | [API.md](API.md) | Geliştirici / Entegratör | Endpoint referansı, auth, request/response şemaları |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Geliştirici | Repo yapısı, local kurulum, build, code conventions |
+| [TEST_RESULTS.md](TEST_RESULTS.md) | QA / Sistem yöneticisi | E2E smoke test koşum geçmişi (`scripts/e2e-test.sh`) |
 
 ## 🚀 Hızlı bakış (1 dakika)
 
