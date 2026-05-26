@@ -216,37 +216,32 @@ app.MapTools();
 
 **Risk**: DTO'lar `Program.cs`'in altında scoped — bunlar `dotnet/Api/Dtos/` altına taşınmalı.
 
-### AdminPage.tsx split (3,000+ satır)
-**Hedef**: 11 sekmeyi ayrı dosyalara böl.
+### ✅ AdminPage.tsx split — TAMAMLANDI
 
-**Önerilen yapı**:
+3456 satır tek dosyadan 181 satır orchestrator + 11 izole tab dosyasına ayrıldı:
+
 ```
 frontend/src/components/Admin/
-├── AdminPage.tsx                    # ~200 satır (tab orchestrator + AdminGate)
+├── AdminPage.tsx                    # 181 satır (tab orchestrator + AdminGate)
 └── tabs/
-    ├── UploadTab.tsx
-    ├── DocumentsTab.tsx
-    ├── SkillsTab.tsx                # SkillOrderInput + ExampleForm da burada
-    ├── TemplatesTab.tsx
-    ├── SqlConnectionsTab.tsx        # + TableConfigEditor (SqlDataDialog ayrı)
-    ├── JobsTab.tsx
-    ├── UsageTab.tsx
-    ├── ActivityTab.tsx
-    ├── SecurityTab.tsx              # OWASP event log UI
-    ├── BenchmarkTab.tsx             # Metric + DiffChip helper'ları
-    └── SettingsTab.tsx
+    ├── _shared.ts                   #  17 — formatBytes, formatDate
+    ├── UploadTab.tsx                # 168
+    ├── DocumentsTab.tsx             # 207
+    ├── SkillsTab.tsx                # 535 — SkillOrderInput + ExampleForm da burada
+    ├── TemplatesTab.tsx             # 234 — TemplateRow + extractVars
+    ├── SqlConnectionsTab.tsx        # 793 — ingest/sync dialog'ları dahil
+    ├── JobsTab.tsx                  # 232 — jobTypeLabel + fmtDuration
+    ├── UsageTab.tsx                 # 263
+    ├── ActivityTab.tsx              # 129
+    ├── SecurityTab.tsx              # 252 — OWASP event log UI
+    ├── BenchmarkTab.tsx             # 270 — Metric + DiffChip
+    └── SettingsTab.tsx              # 169 — pingProxy lokal
 ```
 
-**Önemli**: Tab'lar tek bir AdminPage yardımcı state'ine bağımlı değil — her biri kendi state'ini yönetiyor. Migration mekanik.
+`activeJob` state SqlConnectionsTab içinde local kaldı — JobProgressModal her tab'ın
+kendisinde import ediliyor. Cross-tab paylaşıma ihtiyaç olmadı.
 
-**Tek karmaşık nokta**: `activeJob` state'i SqlConnectionsTab ve JobsTab arasında paylaşılıyor (SQL'den başlatılan job → JobProgressModal'da gösteriliyor). Bunu paylaşmak için ya Zustand store'a `adminActiveJob` ekle ya da context kullan.
-
-**Yapılma stratejisi**:
-1. `tabs/` klasörü oluştur
-2. En basit tab ile başla: `UsageTab` veya `ActivityTab` (state izole)
-3. Sırayla diğerleri
-4. Son: SqlConnectionsTab + activeJob paylaşımı için store hookup
-5. Her adım sonrası `npx tsc --noEmit` + ilgili sekme açma testi
+Build doğrulaması: `npx tsc --noEmit` ✓ ve `npm run build` ✓ (553 modül, 9.97s).
 
 ## Deploy Pipeline
 
