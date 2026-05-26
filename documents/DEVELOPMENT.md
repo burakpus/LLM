@@ -164,57 +164,49 @@ public sealed record YeniRequest(string Field1, int Field2);
 
 **Server override**: Production'da `~/setllm-api/appsettings.json` server'a özgü değerler içerir (şifreler, internal IP'ler). Deploy `merge_appsettings.py` ile "server wins" stratejisi kullanır.
 
-## Planlı Refactor'ler (Şu Anda Beklemede)
+## ✅ Tamamlanan Refactor'ler
 
-### Program.cs split (büyük dosya)
-**Hedef**: 3,000+ satır tek dosyadan endpoint mapping extension method'larına ayır.
+### Program.cs split — Faz 1 + Faz 2 TAMAMLANDI
 
-**Önerilen yapı**:
+3183 satır tek dosyadan 2026 satıra düştü. 7 endpoint extension dosyası + 1
+paylaşılan helper Endpoints/ altında:
+
 ```
 dotnet/Api/
-├── Program.cs                       # ~150 satır (orchestrator)
+├── Program.cs                       # 2026 satır (orchestrator + DI + DTO + middleware)
 └── Endpoints/
-    ├── MapAuth.cs                   # /api/auth/* (login, debug-ldap, me, groups)
-    ├── MapAdmin.cs                  # /api/admin/skills, /api/admin/templates, /api/admin/documents
-    ├── MapSql.cs                    # /api/admin/sql-connections/*
-    ├── MapJobs.cs                   # /api/jobs/*, /api/admin/jobs/*
-    ├── MapEventLog.cs               # /api/admin/event-log*
-    ├── MapTools.cs                  # /api/tools/* (generate-file, benchmark)
-    └── MapHealth.cs                 # /health, /health/deep, /metrics
+    ├── ActivityLogger.cs            #  92 — paylaşılan: LogAsync, SerializeJob, MapActionToEvent
+    ├── MapHealth.cs                 # 120 — /health, /health/deep, /metrics
+    ├── MapAuth.cs                   # 120 — /api/auth/*
+    ├── MapTools.cs                  #  95 — /api/tools/*, /api/admin/benchmark[s]
+    ├── MapEventLog.cs               # 168 — /api/admin/activity-log + event-log[/summary]
+    ├── MapSql.cs                    # 619 — /api/admin/sql-connections/* (en büyük)
+    └── MapJobs.cs                   #  75 — /api/jobs/*, /api/admin/jobs/*
 ```
 
-Her dosyada bir static extension method:
-```csharp
-public static class AuthEndpoints {
-    public static IEndpointRouteBuilder MapAuth(this IEndpointRouteBuilder app) {
-        app.MapPost("/api/auth/login", ...);
-        app.MapPost("/api/auth/debug-ldap", ...);
-        // ...
-        return app;
-    }
-}
-```
-
-Program.cs orchestrator:
+Program.cs orchestrator çağrıları:
 ```csharp
 app.MapHealth();
 app.MapAuth();
-app.MapAdmin();
+app.MapTools();
+app.MapEventLog();
 app.MapSql();
 app.MapJobs();
-app.MapEventLog();
-app.MapTools();
 ```
 
-**Yapılma stratejisi** (tek seferde değil, kademeli):
-1. Önce `MapHealth.cs` — küçük, risk yok
-2. `MapAuth.cs` — auth endpoint'leri
-3. `MapTools.cs` — generate-file + benchmark
-4. `MapEventLog.cs` — yeni event log endpoint'leri
-5. `MapSql.cs` — büyük, en risk; sona bırak
-6. Her adım sonrası `dotnet build` + smoke test (admin panelden bir aksiyon)
+`LogActivity` (top-level local) ve `SerializeJob` (top-level static) Program.cs'te
+forward wrapper olarak kaldı (16 call site değişmedi) — implementasyon
+`ActivityLogger`'a taşındı.
 
-**Risk**: DTO'lar `Program.cs`'in altında scoped — bunlar `dotnet/Api/Dtos/` altına taşınmalı.
+Build doğrulaması: her ara adımda `dotnet build` ✓.
+E2E doğrulaması (deploy + scripts/e2e-test.sh): **14/14 PASS** x 3 koşum ✅
+(Faz 1, Faz 2 sonu, AdminPage tab split sonu).
+
+Program.cs'te kalan ~2000 satır: DI/middleware config, DTO record'ları,
+yardımcı static class'lar (RateLimit, LlmMetrics, SkillFrontmatter) ve henüz
+çıkarılmamış endpoint grupları: ratings, templates, skills, chat (sse),
+ingest/upload, usage, session, projects, files/extract, proxy, error log,
+llm/completions. Bunlar daha küçük gruplar — ileride opsiyonel ek bölme yapılabilir.
 
 ### ✅ AdminPage.tsx split — TAMAMLANDI
 

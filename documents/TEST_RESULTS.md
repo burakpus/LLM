@@ -35,6 +35,35 @@ test script'ine yeni T#'ler eklenmesi önerilir.
 
 ---
 
+## Koşum: 2026-05-26 21:05 UTC — **14/14 PASS** (Program.cs split Faz 2)
+
+Bağlam:
+- `refactor(api): Program.cs split Faz 2` commit (a50b57e) deploy edildi
+- Backend Program.cs 3183 → 2026 satır (Health/Auth/Tools/EventLog/Sql/Jobs ayrıldı)
+- SQL ingest, job cancel/retry, schema sync, event log — hepsi ayrı dosyalardan çalışıyor
+- T9 yine SKIP (deploy yeni)
+
+Kritik testler (refactor'ın etkilediği SQL/Jobs/EventLog endpoint'leri):
+- T6 (event_log): PASS — 6 security event, kategoriler dolu
+- T10 (schema ingest job #16): PASS — completed 11042/11042
+- T11 (deprecated /sync routes): PASS — 3 route 405
+- T12 (JWT auth boundary): PASS
+
+SUMMARY: PASS 14 / FAIL 0 — Program.cs split davranışsal eşdeğer ✅
+
+---
+
+## Koşum: 2026-05-26 20:57 UTC — **14/14 PASS** (Program.cs split Faz 1)
+
+Bağlam:
+- `refactor(api): Program.cs split Faz 1` commit (e1da067) deploy edildi
+- Health/Auth/Tools/EventLog endpoint'leri ayrı dosyalara taşındı (4 dosya)
+- Program.cs 3183 → 2757 satır
+
+SUMMARY: PASS 14 / FAIL 0 ✅
+
+---
+
 ## Koşum: 2026-05-26 20:42 UTC — **14/14 PASS** (admin tab split sonrası)
 
 Bağlam:
