@@ -151,6 +151,7 @@ public static class SqlDataSampler
         await conn.OpenAsync(ct);
         var tables = new Dictionary<string, TableInfo>();
 
+        // Base tables (with row count from sys.partitions)
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = @"
@@ -172,16 +173,37 @@ public static class SqlDataSampler
             }
         }
 
+        // Views (row count unknown without scanning — report 0)
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"
+                SELECT s.name AS schema_name, v.name AS view_name
+                FROM sys.views v
+                JOIN sys.schemas s ON v.schema_id = s.schema_id
+                ORDER BY s.name, v.name";
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var schema = r.GetString(0);
+                var name   = r.GetString(1);
+                var key    = $"{schema}.{name}";
+                if (!tables.ContainsKey(key))
+                    tables[key] = new TableInfo(schema, name, 0, new List<TableColumn>());
+            }
+        }
+
+        // Columns — sys.columns + sys.objects covers both tables and views
         await using (var colCmd = conn.CreateCommand())
         {
             colCmd.CommandText = @"
-                SELECT s.name AS schema_name, t.name AS table_name,
+                SELECT s.name AS schema_name, o.name AS object_name,
                        c.name AS col_name, ty.name AS data_type
                 FROM sys.columns c
-                JOIN sys.tables t  ON c.object_id = t.object_id
-                JOIN sys.schemas s ON t.schema_id = s.schema_id
+                JOIN sys.objects o ON c.object_id = o.object_id
+                JOIN sys.schemas s ON o.schema_id = s.schema_id
                 JOIN sys.types ty  ON c.user_type_id = ty.user_type_id
-                ORDER BY s.name, t.name, c.column_id";
+                WHERE o.type IN ('U','V')      -- U=user table, V=view
+                ORDER BY s.name, o.name, c.column_id";
             await using var r = await colCmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
             {
@@ -202,9 +224,11 @@ public static class SqlDataSampler
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = @"
-                SELECT n.nspname, c.relname, c.reltuples::bigint AS row_count
+                SELECT n.nspname, c.relname,
+                       CASE WHEN c.relkind = 'r' THEN c.reltuples::bigint ELSE 0::bigint END AS row_count
                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+                WHERE c.relkind IN ('r','v','m')    -- r=table, v=view, m=materialized view
+                  AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
                 ORDER BY n.nspname, c.relname";
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
@@ -240,7 +264,7 @@ public static class SqlDataSampler
 
         await using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = "SELECT table_name, COALESCE(table_rows,0) FROM information_schema.tables WHERE table_schema=@db AND table_type='BASE TABLE'";
+            cmd.CommandText = "SELECT table_name, COALESCE(table_rows,0) FROM information_schema.tables WHERE table_schema=@db AND table_type IN ('BASE TABLE','VIEW')";
             cmd.Parameters.AddWithValue("@db", dbName);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
@@ -273,10 +297,14 @@ public static class SqlDataSampler
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = @"
-                SELECT owner, table_name, NVL(num_rows,0)
+                SELECT owner, table_name, NVL(num_rows,0) AS row_count
                 FROM all_tables
                 WHERE owner NOT IN ('SYS','SYSTEM','XDB','MDSYS','ORDSYS','CTXSYS','OUTLN','DBSNMP','DIP','APPQOSSYS','GSMADMIN_INTERNAL','AUDSYS')
-                ORDER BY owner, table_name";
+                UNION ALL
+                SELECT owner, view_name AS table_name, 0 AS row_count
+                FROM all_views
+                WHERE owner NOT IN ('SYS','SYSTEM','XDB','MDSYS','ORDSYS','CTXSYS','OUTLN','DBSNMP','DIP','APPQOSSYS','GSMADMIN_INTERNAL','AUDSYS')
+                ORDER BY 1, 2";
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
             {
