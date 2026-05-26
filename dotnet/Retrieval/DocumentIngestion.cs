@@ -36,6 +36,7 @@ public interface IDocumentIngestion
 {
     Task<IngestResult> IngestAsync(IngestRequest request, CancellationToken ct = default);
     Task<int> DeleteSourceAsync(string collection, string source, CancellationToken ct = default);
+    Task<int> DeleteCollectionAsync(string collection, CancellationToken ct = default);
 }
 
 // ── Implementation ────────────────────────────────────────────────────────────
@@ -112,6 +113,16 @@ public sealed class DocumentIngestion : IDocumentIngestion
         cmd.CommandText = "DELETE FROM kb_documents WHERE collection = $1 AND source = $2;";
         cmd.Parameters.AddWithValue(collection);
         cmd.Parameters.AddWithValue(source);
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Delete ALL chunks in a collection. Returns number of rows deleted.</summary>
+    public async Task<int> DeleteCollectionAsync(string collection, CancellationToken ct = default)
+    {
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var cmd  = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM kb_documents WHERE collection = $1;";
+        cmd.Parameters.AddWithValue(collection);
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 

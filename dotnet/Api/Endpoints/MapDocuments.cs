@@ -186,6 +186,21 @@ public static class DocumentsEndpoints
             return Results.Ok(new { deleted = n });
         });
 
+        // DELETE /api/admin/collections/{collection} — bulk delete ALL sources in a collection
+        // Used to re-ingest after schema changes (e.g. data dictionary view restructure).
+        app.MapDelete("/api/admin/collections/{collection}", [Authorize("AdminOnly")] async (
+            string collection,
+            IDocumentIngestion ingestion,
+            ClaimsPrincipal user,
+            NpgsqlDataSource ds,
+            CancellationToken ct) =>
+        {
+            var n        = await ingestion.DeleteCollectionAsync(collection, ct);
+            var username = user.FindFirstValue(ClaimTypes.Name) ?? "unknown";
+            _ = ActivityLogger.LogAsync(ds, username, "collection.delete", collection, $"chunks={n}");
+            return Results.Ok(new { collection, deleted = n });
+        });
+
         return app;
     }
 }
