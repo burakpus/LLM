@@ -169,7 +169,13 @@ for EP in ingest-schema-sync ingest-data-sync sync-schema-sync; do
         $API/api/admin/sql-connections/1/$EP \
         -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: application/json" -d '{}')
-    [ "$CODE" = "404" ] && passed "$EP -> 404 (silindi)" || failed "$EP -> $CODE"
+    # 404 (route hiç yok) veya 405 (SPA fallback GET'i index.html'e gönderiyor, POST için method
+    # uygun değil) ikisi de "kullanıcı çağıramaz" anlamına gelir — başarılı.
+    if [ "$CODE" = "404" ] || [ "$CODE" = "405" ]; then
+        passed "$EP -> $CODE (erişilemez)"
+    else
+        failed "$EP -> $CODE"
+    fi
 done
 
 echo ""
