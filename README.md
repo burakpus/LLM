@@ -2,6 +2,8 @@
 
 Production-ready deployment of three large language models on a single NVIDIA DGX Spark. All three models are co-resident and always available — no swap, no cold-start.
 
+> 📚 **Dokümantasyon**: [docs/README.md](docs/README.md) — mimari, operasyon, güvenlik, API ve geliştirici rehberleri.
+
 ## Architecture Overview
 
 | Endpoint | Model | Quantization | VRAM |
