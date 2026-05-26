@@ -19,8 +19,10 @@ arka plan iş kuyruğu ve admin panelinden yönetim sağlar.
 
 - **Adres**: `http://172.16.1.123:5080`
 - **Modeller**: Gemma 4 26B (chat), Qwen3 27B (code/agentic), GPT-OSS 120B (reason)
-- **Backend**: .NET 8 Minimal API
-- **Frontend**: React 18 + Vite + Zustand + Tailwind
+- **Backend**: .NET 8 Minimal API — `Program.cs` (671 satır orchestrator) +
+  `Endpoints/` (18 `Map*.cs` extension dosyası)
+- **Frontend**: React 18 + Vite + Zustand + Tailwind — `AdminPage.tsx`
+  (181 satır orchestrator) + `Admin/tabs/` (11 izole tab)
 - **Veri**: PostgreSQL 16 + pgvector, Skills/ klasörü (folder + flat .md)
 - **Auth**: LDAP (Novell.Directory.Ldap) + JWT bearer
 - **Servis**: vLLM (3 model) + LiteLLM gateway + nginx

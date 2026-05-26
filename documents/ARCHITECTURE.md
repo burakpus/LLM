@@ -103,11 +103,16 @@ flowchart LR
 - **Tool calling**: BUILTIN_TOOLS (`get_datetime`, `calculate`, `http_get`, `http_post`, `generate_file`)
 
 ### Backend (.NET 8 Minimal API)
+- **Layout**: `Program.cs` (671 satır — orchestrator + DI + middleware + DTO + static helpers)
+  + `Endpoints/` klasörü (18 `Map*.cs` extension method dosyası + `ActivityLogger.cs`).
+  Her endpoint grubu kendi dosyasında — `app.MapHealth() / MapAuth() / MapSql() / MapJobs() /
+  MapSkills() / MapChat() / MapDocuments() / MapLlm() / ...` (toplam 18 mapper).
 - **Auth**: JWT bearer; LDAP doğrulama Novell.Directory.Ldap.NETStandard (ARM64 uyumlu)
 - **Database**: Npgsql + raw SQL (Dapper / EF Core kullanılmıyor — hız + kontrol için)
 - **DI**: Hosted services job worker + zamanlanmış görevler için
 - **Tool dispatch**: HTTP proxy + Python subprocess (generate_file)
-- **Event log**: Scoped IEventLog, otomatik context yakalama (IP, UA, request_id)
+- **Event log**: Scoped IEventLog, otomatik context yakalama (IP, UA, request_id).
+  Activity log + event_log dual-write için paylaşılan `ActivityLogger.LogAsync`.
 
 ### LLM Layer
 - **vLLM** — 3 model co-resident (Gemma 4 26B FP4, Qwen3 27B, GPT-OSS 120B MXFP4)
@@ -234,7 +239,13 @@ frontend/src/
 ├── hooks/
 │   └── useGeneration.ts      # chat stream + tool dispatch (autoCompleteLoop, MAX 5 iter)
 └── components/
-    ├── Admin/AdminPage.tsx   # 11 sekme (Faz 3.2'de split planlı)
+    ├── Admin/
+    │   ├── AdminPage.tsx     # 181 satır orchestrator + AdminGate (yetki + tab switching)
+    │   └── tabs/             # 11 izole tab + _shared.ts (formatBytes, formatDate)
+    │       ├── UploadTab.tsx  DocumentsTab.tsx  SkillsTab.tsx
+    │       ├── TemplatesTab.tsx  SqlConnectionsTab.tsx  JobsTab.tsx
+    │       ├── UsageTab.tsx  ActivityTab.tsx  SecurityTab.tsx
+    │       └── BenchmarkTab.tsx  SettingsTab.tsx
     ├── Chat/
     │   ├── InputBar.tsx      # mod/skill/format dropdown'lar
     │   ├── MessageList.tsx   # streaming + markdown render + tool call blok'ları

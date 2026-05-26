@@ -20,7 +20,14 @@ dgx-spark-llm-stack/
 ├── docker-compose.yml                # vLLM + LiteLLM + Prometheus + Grafana + Loki
 ├── dotnet/
 │   ├── Api/
-│   │   ├── Program.cs                # Tek dosya minimal API (Faz 3'te split)
+│   │   ├── Program.cs                # 671 satır orchestrator (DI + middleware + DTO + helpers)
+│   │   ├── Endpoints/                # 18 endpoint extension method dosyası + ActivityLogger
+│   │   │   ├── ActivityLogger.cs     # Paylaşılan: LogAsync, SerializeJob, MapActionToEvent
+│   │   │   ├── MapHealth.cs   MapAuth.cs   MapFiles.cs    MapRatings.cs
+│   │   │   ├── MapTemplates.cs  MapSkills.cs  MapChat.cs  MapDocuments.cs
+│   │   │   ├── MapEventLog.cs   MapSession.cs MapTools.cs MapProxy.cs
+│   │   │   ├── MapUsage.cs      MapLlm.cs     MapErrorLog.cs  MapProjects.cs
+│   │   │   └── MapSql.cs   MapJobs.cs
 │   │   ├── appsettings.json
 │   │   ├── Auth/                     # LDAP + JWT + EventLog
 │   │   ├── Jobs/                     # Background job queue
@@ -35,15 +42,23 @@ dgx-spark-llm-stack/
 │       ├── api/                      # admin.ts, llm.ts, proxy
 │       ├── hooks/useGeneration.ts    # Chat stream + tool dispatch
 │       └── components/
-│           ├── Admin/AdminPage.tsx   # 11 sekme (Faz 3'te split)
+│           ├── Admin/
+│           │   ├── AdminPage.tsx     # 181 satır orchestrator + AdminGate
+│           │   └── tabs/             # 11 tab dosyası + _shared.ts (formatBytes, formatDate)
+│           │       ├── UploadTab.tsx  DocumentsTab.tsx  SkillsTab.tsx
+│           │       ├── TemplatesTab.tsx  SqlConnectionsTab.tsx  JobsTab.tsx
+│           │       ├── UsageTab.tsx  ActivityTab.tsx  SecurityTab.tsx
+│           │       └── BenchmarkTab.tsx  SettingsTab.tsx
 │           └── Chat/                 # InputBar, MessageList, SettingsPanel, HelpModal, ...
 ├── monitoring/                       # Prometheus, Grafana, Loki configs
 ├── scripts/
 │   ├── file-gen.py                   # Python: docx/xlsx/pdf/pptx üretici
 │   ├── merge_appsettings.py          # Deploy: server config preserve
 │   ├── load-test-llm.py              # Standalone benchmark
+│   ├── e2e-test.sh                   # End-to-end smoke test (12 senaryo)
+│   ├── run_e2e_remote.py             # paramiko ile SSH üzerinden e2e tetikleyici
 │   └── clean_excel_skill.py          # One-off (legacy skill temizleme)
-└── docs/                             # Bu klasör
+└── documents/                        # Bu klasör
 ```
 
 ## Local Geliştirme
@@ -92,33 +107,48 @@ cd frontend && npx tsc --noEmit
 
 ## Yeni Endpoint Ekleme
 
-Şu an Program.cs tek dosya — Faz 3 sonrası modüler.
+Backend artık modüler — her endpoint grubu `dotnet/Api/Endpoints/Map*.cs` altında
+extension method olarak. Yeni endpoint eklerken:
 
-**Mevcut yöntem** (Program.cs içinde):
-```csharp
-app.MapPost("/api/admin/yeni-endpoint", [Authorize("AdminOnly")] async (
-    [FromBody] YeniRequest req,
-    NpgsqlDataSource ds,
-    IEventLog evt,
-    CancellationToken ct) =>
-{
-    // validate
-    // do work
-    // log: await evt.LogAsync(EventCategory.Data, EventSeverity.Info, "data.yeni", ...);
-    return Results.Ok(...);
-});
+1. **Uygun Map dosyasını bul** (yoksa yeni `MapXxx.cs` oluştur):
+   ```csharp
+   namespace SetYazilim.Llm.Api.Endpoints;
 
-// DTO en altta:
-public sealed record YeniRequest(string Field1, int Field2);
-```
+   public static class XxxEndpoints
+   {
+       public static IEndpointRouteBuilder MapXxx(this IEndpointRouteBuilder app)
+       {
+           app.MapPost("/api/admin/yeni-endpoint", [Authorize("AdminOnly")] async (
+               [FromBody] YeniRequest req,
+               NpgsqlDataSource ds,
+               IEventLog evt,
+               CancellationToken ct) =>
+           {
+               // validate
+               // do work
+               // OWASP audit (zenginleştirilmiş):
+               //   await evt.LogAsync(EventCategory.Data, EventSeverity.Info, "data.yeni", ...);
+               // Veya activity_log + event_log dual-write için:
+               //   _ = ActivityLogger.LogAsync(ds, username, "yeni.action", target, details);
+               return Results.Ok(...);
+           });
 
-**Frontend tarafında**:
-- `frontend/src/api/admin.ts`: `export async function yeniEndpoint(...)`
-- AdminPage tab'inde çağır
+           return app;
+       }
+   }
+   ```
+
+2. **Program.cs orchestrator'a ekle**: `app.MapXxx();`
+
+3. **DTO** — küçükse Program.cs en altına public record olarak, büyükse
+   ayrı bir dosyaya (örn. `Dtos/YeniRequest.cs`).
+
+4. **Frontend tarafında**:
+   - `frontend/src/api/admin.ts` (admin endpoint'i ise) veya `llm.ts`:
+     `export async function yeniEndpoint(...)`
+   - İlgili tab dosyasında çağır: `frontend/src/components/Admin/tabs/XxxTab.tsx`
 
 ## Frontend Yapısı
-
-(Faz 3.2 sonrası tab dosyaları ayrı, şimdilik tek dosya)
 
 **State**: Zustand (`store/index.ts`) — persist middleware ile localStorage'a yazar.
 **Önemli store alanları**:
