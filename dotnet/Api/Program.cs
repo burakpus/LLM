@@ -388,12 +388,16 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok", ts = DateTime.UtcNow
 
 // GET /health/deep — derin sağlık kontrolü (DB + LDAP + vLLM modelleri)
 // Auth gerekli değil ama dış erişime karşı sadece internal kullanılmalı.
+// Tüm probe'ların kombine timeout'u 12 saniye.
 app.MapGet("/health/deep", async (
     NpgsqlDataSource ds, IConfiguration cfg,
     IOptions<LdapOptions> ldapOpts,
     IHttpClientFactory httpFactory,
-    CancellationToken ct) =>
+    CancellationToken httpCt) =>
 {
+    using var overallCts = CancellationTokenSource.CreateLinkedTokenSource(httpCt);
+    overallCts.CancelAfter(TimeSpan.FromSeconds(12));
+    var ct = overallCts.Token;
     var probes = new Dictionary<string, object>();
     var allOk  = true;
 
@@ -413,7 +417,7 @@ app.MapGet("/health/deep", async (
         allOk = false;
     }
 
-    // 2) LDAP (her domain için TCP probe — bind yapmadan)
+    // 2) LDAP (her domain için TCP probe — bind yapmadan, 3sn hard timeout)
     foreach (var (name, dcfg) in ldapOpts.Value.Domains)
     {
         if (string.IsNullOrEmpty(dcfg.Host)) continue;
@@ -421,9 +425,16 @@ app.MapGet("/health/deep", async (
         try
         {
             using var tcp = new System.Net.Sockets.TcpClient();
+            using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            probeCts.CancelAfter(TimeSpan.FromSeconds(3));
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            await tcp.ConnectAsync(dcfg.Host, dcfg.EffectivePort, ct);
+            await tcp.ConnectAsync(dcfg.Host, dcfg.EffectivePort, probeCts.Token);
             probes[key] = new { ok = true, ms = sw.ElapsedMilliseconds, host = dcfg.Host, port = dcfg.EffectivePort };
+        }
+        catch (OperationCanceledException)
+        {
+            probes[key] = new { ok = false, error = "timeout (>3s)", host = dcfg.Host, port = dcfg.EffectivePort };
+            allOk = false;
         }
         catch (Exception ex)
         {
