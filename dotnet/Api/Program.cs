@@ -24,10 +24,12 @@ using SetYazilim.Llm.Retrieval;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Increase limits for vision requests (base64 images can be large)
-builder.WebHost.ConfigureKestrel(o =>
+// Increase limits for vision requests (base64 images can be large).
+// Override: appsettings.json → Limits:MaxRequestBodyMB (default 100 MB).
+builder.WebHost.ConfigureKestrel((ctx, o) =>
 {
-    o.Limits.MaxRequestBodySize = 100 * 1024 * 1024; // 100 MB
+    var mb = ctx.Configuration.GetValue<int?>("Limits:MaxRequestBodyMB") ?? 100;
+    o.Limits.MaxRequestBodySize = (long)mb * 1024 * 1024;
 });
 
 builder.Configuration
@@ -485,6 +487,7 @@ app.MapPost("/api/auth/login", async (
     ILdapAuthService ldap,
     IJwtTokenService jwt,
     Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
+    IConfiguration appCfg,
     IEventLog evt,
     CancellationToken ct) =>
 {
@@ -496,12 +499,13 @@ app.MapPost("/api/auth/login", async (
         return Results.BadRequest(new { error = "Username and password are required." });
     }
 
-    // Brute-force koruması — per (IP, username), 5 deneme/dk
+    // Brute-force koruması — per (IP, username), Limits:LoginRateLimitPerMinute
     var ip = (http.Request.Headers["X-Forwarded-For"].ToString().Split(',')[0].Trim())
              ?.Length > 0
              ? http.Request.Headers["X-Forwarded-For"].ToString().Split(',')[0].Trim()
              : (http.Connection.RemoteIpAddress?.ToString() ?? "unknown");
-    if (!LoginRateLimit.TryAcquire(cache, ip, req.Username, out var retryAfter))
+    var loginMax = appCfg.GetValue<int?>("Limits:LoginRateLimitPerMinute") ?? 5;
+    if (!LoginRateLimit.TryAcquire(cache, ip, req.Username, loginMax, out var retryAfter))
     {
         await evt.LogAsync(EventCategory.Security, EventSeverity.Warn, "security.rate_limit",
             EventResult.Denied, reason: $"login brute-force, retry in {retryAfter}s",
@@ -812,11 +816,12 @@ app.MapDelete("/api/admin/sql-connections/{id:int}", [Authorize("AdminOnly")] as
 // POST /api/admin/sql-connections/{id}/test — test connection using stored password
 app.MapPost("/api/admin/sql-connections/{id:int}/test", [Authorize("AdminOnly")] async (
     int id, ISqlConnectionService svc, NpgsqlDataSource ds,
-    Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache cache, IConfiguration appCfg,
     System.Security.Claims.ClaimsPrincipal user, IEventLog evt, CancellationToken ct) =>
 {
     var who = user.FindFirstValue(ClaimTypes.Name) ?? "anon";
-    if (!SqlConnTestRateLimit.TryAcquire(cache, who, out var retryAfter))
+    var sqlMax = appCfg.GetValue<int?>("Limits:SqlTestRateLimitPerMinute") ?? 10;
+    if (!SqlConnTestRateLimit.TryAcquire(cache, who, sqlMax, out var retryAfter))
     {
         await evt.SecurityAsync("security.rate_limit", "sql-conn-test", new { retryAfter, connectionId = id }, ct);
         return Results.Json(new { ok = false, error = $"Çok fazla istek. {retryAfter}sn sonra tekrar deneyin." }, statusCode: 429);
@@ -990,11 +995,12 @@ static async Task<(DbType dbType, string? connStr)> LoadConnectionAsync(
 // POST /api/admin/sql-connections/test-credentials — test ad-hoc (e.g. before saving)
 app.MapPost("/api/admin/sql-connections/test-credentials", [Authorize("AdminOnly")] async (
     [FromBody] SqlConnectionUpsertRequest req, ISqlConnectionService svc,
-    Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache cache, IConfiguration appCfg,
     System.Security.Claims.ClaimsPrincipal user, IEventLog evt, CancellationToken ct) =>
 {
     var who = user.FindFirstValue(ClaimTypes.Name) ?? "anon";
-    if (!SqlConnTestRateLimit.TryAcquire(cache, who, out var retryAfter))
+    var sqlMax = appCfg.GetValue<int?>("Limits:SqlTestRateLimitPerMinute") ?? 10;
+    if (!SqlConnTestRateLimit.TryAcquire(cache, who, sqlMax, out var retryAfter))
     {
         await evt.SecurityAsync("security.rate_limit", "sql-conn-test-cred", new { retryAfter, host = req.Host }, ct);
         return Results.Json(new { ok = false, error = $"Çok fazla istek. {retryAfter}sn sonra tekrar deneyin." }, statusCode: 429);
@@ -2966,56 +2972,33 @@ public sealed record LoginRequest(string Username, string Password, string Domai
 public sealed record TemplateUpsertRequest(string Name, string Content, string? Collection);
 
 // ── Rate limit for SQL connection test endpoints ──────────────────────────────
-// Max 10 tests per user per minute. Cheap in-memory sliding bucket.
+// Sliding 1-minute window per (user) — limit configurable via Limits:SqlTestRateLimitPerMinute.
 static class SqlConnTestRateLimit
 {
-    private const int MaxPerMinute = 10;
-
-    public static bool TryAcquire(Microsoft.Extensions.Caching.Memory.IMemoryCache cache, string user, out int retryAfterSec)
-    {
-        var key = $"sqlConnTest:{user}";
-        var now = DateTimeOffset.UtcNow;
-        // entry = (windowStart, count)
-        (DateTimeOffset start, int count) entry;
-        if (cache.TryGetValue(key, out object? raw) && raw is ValueTuple<DateTimeOffset, int> cached && (now - cached.Item1).TotalSeconds < 60)
-        {
-            entry = (cached.Item1, cached.Item2);
-        }
-        else
-        {
-            entry = (now, 0);
-        }
-
-        if (entry.count >= MaxPerMinute)
-        {
-            retryAfterSec = Math.Max(1, 60 - (int)(now - entry.start).TotalSeconds);
-            return false;
-        }
-
-        entry = (entry.start, entry.count + 1);
-        using var ce = cache.CreateEntry(key);
-        ce.Value = (entry.start, entry.count);
-        ce.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2);
-        ce.Size = 1;
-        retryAfterSec = 0;
-        return true;
-    }
+    public static bool TryAcquire(Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
+        string user, int maxPerMinute, out int retryAfterSec)
+        => SlidingRateLimit.TryAcquire(cache, $"sqlConnTest:{user}", maxPerMinute, out retryAfterSec);
 }
 
 // ── Rate limit for /api/auth/login (brute-force koruması) ─────────────────────
-// Max 5 attempts per (IP, username) tuple per minute.
-// Sayaç doğru login'de sıfırlanmaz — saldırgan aynı pencerede zorlamayı sürdüremez.
+// Per (IP, username) tuple — limit configurable via Limits:LoginRateLimitPerMinute.
+// Doğru login sayacı sıfırlamaz — saldırgan aynı pencerede zorlamayı sürdüremez.
 static class LoginRateLimit
 {
-    private const int MaxPerMinute = 5;
-
     public static bool TryAcquire(Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
-        string ip, string username, out int retryAfterSec)
+        string ip, string username, int maxPerMinute, out int retryAfterSec)
+        => SlidingRateLimit.TryAcquire(cache, $"loginRL:{ip}:{username.ToLowerInvariant()}",
+                                       maxPerMinute, out retryAfterSec);
+}
+
+// ── Reusable sliding-window rate limiter (IMemoryCache backed) ───────────────
+// 1-minute window. Same logic both endpoints share.
+static class SlidingRateLimit
+{
+    public static bool TryAcquire(Microsoft.Extensions.Caching.Memory.IMemoryCache cache,
+        string key, int maxPerMinute, out int retryAfterSec)
     {
-        // Per-IP+username scope — single user from single IP cannot exceed; but
-        // separate IPs targeting same user accumulate independently (acceptable —
-        // we also alert via event_log).
-        var key = $"loginRL:{ip}:{username.ToLowerInvariant()}";
+        if (maxPerMinute <= 0) maxPerMinute = 5;  // defensive: refuse misconfig
         var now = DateTimeOffset.UtcNow;
         (DateTimeOffset start, int count) entry;
         if (cache.TryGetValue(key, out object? raw)
@@ -3029,7 +3012,7 @@ static class LoginRateLimit
             entry = (now, 0);
         }
 
-        if (entry.count >= MaxPerMinute)
+        if (entry.count >= maxPerMinute)
         {
             retryAfterSec = Math.Max(1, 60 - (int)(now - entry.start).TotalSeconds);
             return false;

@@ -339,3 +339,25 @@ body {
   flex-shrink: 0;
   color: white;
 }
+
+/* ─── Mobile responsive admin tables ───────────────────────────────────────────
+ * Admin panel tables (events, jobs, benchmark, activity, usage, sql) have many
+ * columns. On narrow viewports, allow horizontal scroll inside the table's
+ * rounded container instead of overflowing the layout.
+ */
+@media (max-width: 900px) {
+  /* Override rounded-xl + overflow-hidden parents that contain a w-full table */
+  .rounded-xl.overflow-hidden:has(> table.w-full),
+  .rounded-xl.overflow-hidden:has(> div > table.w-full) {
+    overflow-x: auto;
+  }
+  /* Tables themselves: enforce a minimum width so columns stay readable */
+  table.w-full {
+    min-width: 720px;
+  }
+  /* Skill list (admin Skills tab) has the inline SIRA input — keep its row
+   * compact instead of forcing min-width */
+  .admin-skill-list table.w-full {
+    min-width: 0;
+  }
+}

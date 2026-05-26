@@ -130,17 +130,123 @@ public sealed record YeniRequest(string Field1, int Field2);
 
 ## Yapılandırma Referansı
 
-(Faz 3.3 sonrası magic numbers config'e taşınınca tablo dolacak)
+`appsettings.json` tüm bölümler:
 
-`appsettings.json` ana bölümler:
-- `ConnectionString` — PostgreSQL
-- `Jwt` — secret, issuer, audience
-- `Ldap` — Domains, AdminUsers, AdminGroups
-- `Agent` — SkillsDirectory, SessionTtlHours
-- `Tools` — PythonExe, FileGenScript, GeneratedRoot
-- `Jobs` — Workers (concurrency)
-- `Limits` (Faz 3.3) — MaxRequestBodySize, MaxChars, MaxPerMinute, RetentionDays
-- `Cors` (Faz 2.4) — AllowedOrigins
+| Bölüm | Anahtar | Varsayılan | Açıklama |
+|-------|---------|-----------|----------|
+| `Cors` | `Origins[]` | localhost + 172.16.1.123 | İzinli CORS origin listesi |
+| `Jwt` | `Secret` | placeholder | HS256 imzalama anahtarı (≥32 char) |
+| | `Issuer` | `set-llm-api` | JWT iss claim |
+| | `Audience` | `set-llm-ui` | JWT aud claim |
+| | `ExpiryHours` | 8 | Token ömrü |
+| `Ldap` | `DomainNames` | `SETYAZILIM` | UI dropdown için domain listesi |
+| | `AdminGroups` | `setaiadmin,Set Management` | Admin yetkisi veren AD grup CN'leri |
+| | `AdminUsers` | `burakpus` | LDAP'tan bağımsız admin override |
+| | `Domains.{NAME}.Host` | — | LDAP host FQDN/IP |
+| | `Domains.{NAME}.Port` | 0 (auto 389/636) | LDAP/LDAPS port |
+| | `Domains.{NAME}.ServiceAccountDn` | (boş) | İsteğe bağlı service account |
+| `LiteLLM` | `BaseUrl` | `http://172.16.1.123:4000` | Gateway endpoint |
+| | `ApiKey` | placeholder | LiteLLM master key |
+| `VectorStore` | `ConnectionString` | PG | Embed + RAG için PostgreSQL |
+| | `EmbedModel` | `nomic-embed-text` | vLLM embed model adı |
+| `SessionMemory` | `SessionTtlHours` | 24 | Sohbet hafıza TTL |
+| `Agent` | `SkillsDirectory` | `Skills` | Skill dosyaları kök klasörü |
+| `Tools` | `PythonExe` | venv python | file-gen subprocess |
+| | `FileGenScript` | `scripts/file-gen.py` | Üretici script yolu |
+| | `GeneratedRoot` | `generated` | Üretilmiş dosya klasörü |
+| | `GeneratedTtlHours` | 24 | Otomatik temizlik TTL |
+| `EventLog` | `RetentionDays` | 90 | event_log silinme yaşı |
+| `Jobs` | `Workers` | 2 | Paralel job worker sayısı (1-8) |
+| `Limits` | `MaxRequestBodyMB` | 100 | Kestrel max body |
+| | `MaxLlmContentChars` | 16000 | Tek mesaj max karakter |
+| | `SqlTestRateLimitPerMinute` | 10 | SQL conn test rate limit |
+| | `LoginRateLimitPerMinute` | 5 | Login brute-force limit |
+
+**Server override**: Production'da `~/setllm-api/appsettings.json` server'a özgü değerler içerir (şifreler, internal IP'ler). Deploy `merge_appsettings.py` ile "server wins" stratejisi kullanır.
+
+## Planlı Refactor'ler (Şu Anda Beklemede)
+
+### Program.cs split (büyük dosya)
+**Hedef**: 3,000+ satır tek dosyadan endpoint mapping extension method'larına ayır.
+
+**Önerilen yapı**:
+```
+dotnet/Api/
+├── Program.cs                       # ~150 satır (orchestrator)
+└── Endpoints/
+    ├── MapAuth.cs                   # /api/auth/* (login, debug-ldap, me, groups)
+    ├── MapAdmin.cs                  # /api/admin/skills, /api/admin/templates, /api/admin/documents
+    ├── MapSql.cs                    # /api/admin/sql-connections/*
+    ├── MapJobs.cs                   # /api/jobs/*, /api/admin/jobs/*
+    ├── MapEventLog.cs               # /api/admin/event-log*
+    ├── MapTools.cs                  # /api/tools/* (generate-file, benchmark)
+    └── MapHealth.cs                 # /health, /health/deep, /metrics
+```
+
+Her dosyada bir static extension method:
+```csharp
+public static class AuthEndpoints {
+    public static IEndpointRouteBuilder MapAuth(this IEndpointRouteBuilder app) {
+        app.MapPost("/api/auth/login", ...);
+        app.MapPost("/api/auth/debug-ldap", ...);
+        // ...
+        return app;
+    }
+}
+```
+
+Program.cs orchestrator:
+```csharp
+app.MapHealth();
+app.MapAuth();
+app.MapAdmin();
+app.MapSql();
+app.MapJobs();
+app.MapEventLog();
+app.MapTools();
+```
+
+**Yapılma stratejisi** (tek seferde değil, kademeli):
+1. Önce `MapHealth.cs` — küçük, risk yok
+2. `MapAuth.cs` — auth endpoint'leri
+3. `MapTools.cs` — generate-file + benchmark
+4. `MapEventLog.cs` — yeni event log endpoint'leri
+5. `MapSql.cs` — büyük, en risk; sona bırak
+6. Her adım sonrası `dotnet build` + smoke test (admin panelden bir aksiyon)
+
+**Risk**: DTO'lar `Program.cs`'in altında scoped — bunlar `dotnet/Api/Dtos/` altına taşınmalı.
+
+### AdminPage.tsx split (3,000+ satır)
+**Hedef**: 11 sekmeyi ayrı dosyalara böl.
+
+**Önerilen yapı**:
+```
+frontend/src/components/Admin/
+├── AdminPage.tsx                    # ~200 satır (tab orchestrator + AdminGate)
+└── tabs/
+    ├── UploadTab.tsx
+    ├── DocumentsTab.tsx
+    ├── SkillsTab.tsx                # SkillOrderInput + ExampleForm da burada
+    ├── TemplatesTab.tsx
+    ├── SqlConnectionsTab.tsx        # + TableConfigEditor (SqlDataDialog ayrı)
+    ├── JobsTab.tsx
+    ├── UsageTab.tsx
+    ├── ActivityTab.tsx
+    ├── SecurityTab.tsx              # OWASP event log UI
+    ├── BenchmarkTab.tsx             # Metric + DiffChip helper'ları
+    └── SettingsTab.tsx
+```
+
+**Önemli**: Tab'lar tek bir AdminPage yardımcı state'ine bağımlı değil — her biri kendi state'ini yönetiyor. Migration mekanik.
+
+**Tek karmaşık nokta**: `activeJob` state'i SqlConnectionsTab ve JobsTab arasında paylaşılıyor (SQL'den başlatılan job → JobProgressModal'da gösteriliyor). Bunu paylaşmak için ya Zustand store'a `adminActiveJob` ekle ya da context kullan.
+
+**Yapılma stratejisi**:
+1. `tabs/` klasörü oluştur
+2. En basit tab ile başla: `UsageTab` veya `ActivityTab` (state izole)
+3. Sırayla diğerleri
+4. Son: SqlConnectionsTab + activeJob paylaşımı için store hookup
+5. Her adım sonrası `npx tsc --noEmit` + ilgili sekme açma testi
 
 ## Deploy Pipeline
 
