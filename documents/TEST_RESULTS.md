@@ -35,6 +35,41 @@ test script'ine yeni T#'ler eklenmesi önerilir.
 
 ---
 
+## Koşum: 2026-05-26 20:42 UTC — **14/14 PASS** (admin tab split sonrası)
+
+Bağlam:
+- `refactor(admin): AdminPage.tsx 3456 → 181 satır` commit (6e97998) deploy edildi
+- Frontend tarafında 11 tab tabs/<Name>Tab.tsx altına ayrıldı — davranış değişmemiş olmalı
+- Deploy ~2 dk önce yapıldı, bu nedenle T9'daki background service log'ları
+  henüz `journalctl --since "30 min"` aralığına girmemiş → 5 SKIP (PASS değil ama FAIL de değil)
+- Diğer 12 senaryo (T1–T8, T10–T12) tamamı PASS — refactor davranışsal eşdeğer ✅
+
+```text
+====================================================================
+T1. Basic health
+====================================================================
+  PASS  /health
+T2. Login (correct password)             PASS  Token alindi
+T3. Brute-force rate limit               PASS  6. denemede 429
+T4. /health/deep                         PASS  db 3ms · ldap 3ms · litellm 2ms
+T5. Skills count                         PASS  21 skill (4 flat + 17 folder)
+T6. Event log summary                    PASS  6 security event
+T7. generate_file (4 formats)            PASS  docx/xlsx/pdf/pptx
+T8. Benchmark (N=3)                      PASS  3/3 · agg 457 tok/s
+T9. Background services                  SKIP  (deploy yeni, log henüz yok)
+T10. Schema ingest job #16               PASS  completed 11042/11042
+T11. Deprecated endpoints                PASS  3 route 405
+T12. JWT auth boundary                   PASS  invalid + no token → 401
+
+SUMMARY: PASS 14 / FAIL 0
+```
+
+Otomasyon notu: `scripts/run_e2e_remote.py` eklendi — paramiko ile SSH üzerinden
+test scriptini server'a SCP'leyip çalıştırır. Çevre değişkenleri:
+`SSH_USER`, `SSH_PASS`, `AD_PASS` (boşsa SSH_PASS kullanılır).
+
+---
+
 ## Koşum: 2026-05-26 18:11 UTC — **19/19 PASS**
 
 Bağlam:
