@@ -106,8 +106,32 @@ rm -rf /home/admin/setllm-api/generated/*
 
 ## Health Probes
 
-- `GET /health` → basit `{ status: ok }` (load balancer için)
-- `GET /health/deep` → DB + LDAP + vLLM + embedding subsystem'lar (Faz 2.3 sonrası)
+### `GET /health` (basit)
+Auth gerekli değil. Hızlı liveness probe — yalnızca süreç ayakta mı.
+```json
+{ "status": "ok", "ts": "2026-05-26T..." }
+```
+
+### `GET /health/deep` (derin)
+Auth gerekli değil ama dış erişime karşı internal kullanılmalı.
+Tüm subsystem'lar OK → **200**; biri patladı → **503** + detay.
+```json
+{
+  "status": "ok | degraded",
+  "ts": "...",
+  "probes": {
+    "db":            { "ok": true,  "ms": 8 },
+    "ldap.SETYAZILIM": { "ok": true, "ms": 32, "host": "setyazilim.com", "port": 389 },
+    "litellm":       { "ok": true,  "ms": 47, "modelCount": 4 }
+  }
+}
+```
+
+**Kullanım**:
+- Bakım kontrolü: `curl -s http://localhost:5080/health/deep | jq`
+- Alerting: 503 dönüyorsa hangi probe'un patladığına bak
+- LDAP probe: TCP connect denemesi (bind yapmıyor — şifre gerek yok)
+- LiteLLM probe: `/v1/models` 200 + JSON içinde `data` array
 
 ## Backup & Restore
 

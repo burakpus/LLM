@@ -42,6 +42,7 @@ var services = builder.Services;
 services.AddMemoryCache(o => o.SizeLimit = 2000);
 
 // ── HTTP client for outbound requests (GitHub API for skill imports, etc.) ────
+services.AddHttpClient("health");
 services.AddHttpClient("github", c =>
 {
     c.DefaultRequestHeaders.Add("User-Agent", "SetYazilim-LLM/1.0");
@@ -382,6 +383,92 @@ app.UseStaticFiles();
 // =============================================================================
 // ─── Health ──────────────────────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "ok", ts = DateTime.UtcNow }));
+
+// GET /health/deep — derin sağlık kontrolü (DB + LDAP + vLLM modelleri)
+// Auth gerekli değil ama dış erişime karşı sadece internal kullanılmalı.
+app.MapGet("/health/deep", async (
+    NpgsqlDataSource ds, IConfiguration cfg,
+    IOptions<LdapOptions> ldapOpts,
+    IHttpClientFactory httpFactory,
+    CancellationToken ct) =>
+{
+    var probes = new Dictionary<string, object>();
+    var allOk  = true;
+
+    // 1) Database
+    try
+    {
+        await using var conn = await ds.OpenConnectionAsync(ct);
+        await using var cmd  = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1";
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        await cmd.ExecuteScalarAsync(ct);
+        probes["db"] = new { ok = true, ms = sw.ElapsedMilliseconds };
+    }
+    catch (Exception ex)
+    {
+        probes["db"] = new { ok = false, error = ex.Message };
+        allOk = false;
+    }
+
+    // 2) LDAP (her domain için TCP probe — bind yapmadan)
+    foreach (var (name, dcfg) in ldapOpts.Value.Domains)
+    {
+        if (string.IsNullOrEmpty(dcfg.Host)) continue;
+        var key = $"ldap.{name}";
+        try
+        {
+            using var tcp = new System.Net.Sockets.TcpClient();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await tcp.ConnectAsync(dcfg.Host, dcfg.EffectivePort, ct);
+            probes[key] = new { ok = true, ms = sw.ElapsedMilliseconds, host = dcfg.Host, port = dcfg.EffectivePort };
+        }
+        catch (Exception ex)
+        {
+            probes[key] = new { ok = false, error = ex.Message, host = dcfg.Host, port = dcfg.EffectivePort };
+            allOk = false;
+        }
+    }
+
+    // 3) vLLM modelleri — /v1/models (LiteLLM proxy üzerinden)
+    var litellmBase = cfg["LiteLLM:BaseUrl"] ?? "http://localhost:4000";
+    var litellmKey  = cfg["LiteLLM:ApiKey"];
+    var http        = httpFactory.CreateClient("health");
+    http.Timeout    = TimeSpan.FromSeconds(5);
+    try
+    {
+        using var msg = new HttpRequestMessage(HttpMethod.Get, $"{litellmBase}/v1/models");
+        if (!string.IsNullOrEmpty(litellmKey))
+            msg.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", litellmKey);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var resp = await http.SendAsync(msg, ct);
+        if (resp.IsSuccessStatusCode)
+        {
+            var body  = await resp.Content.ReadAsStringAsync(ct);
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var count = doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? data.GetArrayLength() : 0;
+            probes["litellm"] = new { ok = true, ms = sw.ElapsedMilliseconds, modelCount = count };
+        }
+        else
+        {
+            probes["litellm"] = new { ok = false, status = (int)resp.StatusCode };
+            allOk = false;
+        }
+    }
+    catch (Exception ex)
+    {
+        probes["litellm"] = new { ok = false, error = ex.Message };
+        allOk = false;
+    }
+
+    var payload = new {
+        status = allOk ? "ok" : "degraded",
+        ts     = DateTime.UtcNow,
+        probes,
+    };
+    return allOk ? Results.Ok(payload) : Results.Json(payload, statusCode: 503);
+});
 app.MapMetrics("/metrics");    // Prometheus scrape endpoint (no auth — internal only)
 
 // =============================================================================
@@ -810,14 +897,6 @@ app.MapPost("/api/admin/sql-connections/{id:int}/list-objects", [Authorize("Admi
     }
 });
 
-// Helper — SHA256 hex of a string
-static string Sha256(string s)
-{
-    using var sha = System.Security.Cryptography.SHA256.Create();
-    var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(s));
-    return Convert.ToHexString(bytes).ToLowerInvariant();
-}
-
 // POST /api/admin/sql-connections/{id}/ingest-schema — enqueue background job
 app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema", [Authorize("AdminOnly")] async (
     int id, [FromBody] SchemaIngestRequest req, IJobService jobs, ClaimsPrincipal user, CancellationToken ct) =>
@@ -828,114 +907,6 @@ app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema", [Authorize("Adm
         Collection:   string.IsNullOrWhiteSpace(req.Collection) ? "sql-schema" : req.Collection.Trim(),
         IncludeTypes: req.IncludeTypes), username, ct);
     return Results.Ok(new { jobId });
-});
-
-// Legacy synchronous version moved to /sync (kept for any remaining direct calls)
-app.MapPost("/api/admin/sql-connections/{id:int}/ingest-schema-sync", [Authorize("AdminOnly")] async (
-    int id,
-    [FromBody] SchemaIngestRequest req,
-    ISqlConnectionService svc,
-    IDocumentIngestion ingestion,
-    ClaimsPrincipal user,
-    NpgsqlDataSource ds,
-    CancellationToken ct) =>
-{
-    var (dbType, connStr) = await LoadConnectionAsync(id, svc, ds, ct);
-    if (connStr is null) return Results.NotFound();
-
-    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
-    var collection = string.IsNullOrWhiteSpace(req.Collection) ? "sql-schema" : req.Collection.Trim();
-
-    HashSet<DbObjectType>? includeTypes = null;
-    if (req.IncludeTypes is { Length: > 0 })
-    {
-        includeTypes = new HashSet<DbObjectType>();
-        foreach (var s in req.IncludeTypes)
-            if (Enum.TryParse<DbObjectType>(s, true, out var t)) includeTypes.Add(t);
-    }
-
-    try
-    {
-        var provider = SqlSchemaProviderFactory.Get(dbType);
-        var objects  = await provider.ListObjectsAsync(connStr, includeTypes, ct);
-
-        var failures = new List<object>();
-        var successCount = 0;
-        var totalChunks  = 0;
-
-        foreach (var obj in objects)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
-                if (string.IsNullOrWhiteSpace(ddl))
-                {
-                    failures.Add(new { name = obj.QualifiedName, error = "empty DDL" });
-                    continue;
-                }
-
-                var source = $"sql://{dbType.ToString().ToLower()}/conn-{id}/{obj.TypeStr}/{obj.QualifiedName}";
-                var title  = $"{obj.TypeStr.ToUpperInvariant()} {obj.QualifiedName}";
-                var meta   = $"{{\"db_type\":\"{dbType.ToString().ToLower()}\",\"object_type\":\"{obj.TypeStr}\",\"schema\":\"{obj.Schema}\",\"name\":\"{obj.Name}\",\"connection_id\":{id}}}";
-
-                // Delete any existing chunks for this source (idempotent re-ingest)
-                await ingestion.DeleteSourceAsync(collection, source, ct);
-
-                var result = await ingestion.IngestAsync(new IngestRequest
-                {
-                    Collection   = collection,
-                    Source       = source,
-                    Title        = title,
-                    Content      = ddl,
-                    Metadata     = meta,
-                    ChunkSize    = 1600,
-                    ChunkOverlap = 200,
-                }, ct);
-
-                // Upsert tracking record
-                var hash = Sha256(ddl);
-                await using var trackConn = await ds.OpenConnectionAsync(ct);
-                await using var trackCmd  = trackConn.CreateCommand();
-                trackCmd.CommandText = @"
-                    INSERT INTO sql_ingested_objects (connection_id, collection, object_type, schema_name, object_name, source, ddl_hash, chunks_count, last_ingested_at)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
-                    ON CONFLICT (connection_id, object_type, schema_name, object_name) DO UPDATE
-                    SET collection=$2, source=$6, ddl_hash=$7, chunks_count=$8, last_ingested_at=NOW()";
-                trackCmd.Parameters.AddWithValue(id);
-                trackCmd.Parameters.AddWithValue(collection);
-                trackCmd.Parameters.AddWithValue(obj.TypeStr);
-                trackCmd.Parameters.AddWithValue(obj.Schema);
-                trackCmd.Parameters.AddWithValue(obj.Name);
-                trackCmd.Parameters.AddWithValue(source);
-                trackCmd.Parameters.AddWithValue(hash);
-                trackCmd.Parameters.AddWithValue(result.ChunksCreated);
-                await trackCmd.ExecuteNonQueryAsync(ct);
-
-                successCount++;
-                totalChunks += result.ChunksCreated;
-            }
-            catch (Exception ex)
-            {
-                failures.Add(new { name = obj.QualifiedName, error = ex.Message });
-            }
-        }
-
-        _ = LogActivity(ds, username, "sql.ingest.schema", $"conn-{id}",
-            $"collection={collection} total={objects.Count} success={successCount} chunks={totalChunks}");
-
-        return Results.Ok(new {
-            total       = objects.Count,
-            success     = successCount,
-            chunks      = totalChunks,
-            failures,
-            collection,
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.BadRequest(new { error = ex.Message });
-    }
 });
 
 // GET /api/admin/sql-connections/{id}/tables — list tables with columns + row count
@@ -978,86 +949,6 @@ app.MapPost("/api/admin/sql-connections/{id:int}/ingest-data", [Authorize("Admin
     return Results.Ok(new { jobId });
 });
 
-// Legacy synchronous version
-app.MapPost("/api/admin/sql-connections/{id:int}/ingest-data-sync", [Authorize("AdminOnly")] async (
-    int id,
-    [FromBody] DataIngestRequest req,
-    ISqlConnectionService svc,
-    IDocumentIngestion ingestion,
-    ClaimsPrincipal user,
-    NpgsqlDataSource ds,
-    CancellationToken ct) =>
-{
-    var (dbType, connStr) = await LoadConnectionAsync(id, svc, ds, ct);
-    if (connStr is null) return Results.NotFound();
-
-    var username   = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
-    var collection = string.IsNullOrWhiteSpace(req.Collection) ? "sql-data" : req.Collection.Trim();
-    var defaultLimit = req.DefaultLimit > 0 ? req.DefaultLimit : 1000;
-
-    if (req.Tables is null || req.Tables.Length == 0)
-        return Results.BadRequest(new { error = "At least one table required" });
-
-    var success = 0;
-    var totalRows = 0;
-    var totalChunks = 0;
-    var failures = new List<object>();
-
-    foreach (var t in req.Tables)
-    {
-        ct.ThrowIfCancellationRequested();
-        var sampleReq = new TableSampleRequest(
-            t.Schema, t.Name,
-            t.Limit > 0 ? t.Limit : defaultLimit,
-            t.Where);
-
-        try
-        {
-            var (cols, rows) = await SqlDataSampler.SampleAsync(dbType, connStr, sampleReq, ct);
-            if (rows.Count == 0)
-            {
-                failures.Add(new { name = $"{t.Schema}.{t.Name}", error = "no rows returned" });
-                continue;
-            }
-
-            var md     = SqlDataSampler.FormatAsMarkdown(t.Schema, t.Name, cols, rows);
-            var source = $"sql://{dbType.ToString().ToLower()}/conn-{id}/data/{t.Schema}.{t.Name}";
-            var title  = $"DATA {t.Schema}.{t.Name} ({rows.Count} rows)";
-            var meta   = $"{{\"db_type\":\"{dbType.ToString().ToLower()}\",\"object_type\":\"data\",\"schema\":\"{t.Schema}\",\"name\":\"{t.Name}\",\"rows\":{rows.Count},\"connection_id\":{id}}}";
-
-            // Idempotent: remove old chunks first
-            await ingestion.DeleteSourceAsync(collection, source, ct);
-
-            var result = await ingestion.IngestAsync(new IngestRequest
-            {
-                Collection = collection, Source = source, Title = title,
-                Content    = md, Metadata = meta,
-                ChunkSize  = 2000, ChunkOverlap = 100,
-            }, ct);
-
-            success++;
-            totalRows   += rows.Count;
-            totalChunks += result.ChunksCreated;
-        }
-        catch (Exception ex)
-        {
-            failures.Add(new { name = $"{t.Schema}.{t.Name}", error = ex.Message });
-        }
-    }
-
-    _ = LogActivity(ds, username, "sql.ingest.data", $"conn-{id}",
-        $"collection={collection} tables={req.Tables.Length} success={success} rows={totalRows}");
-
-    return Results.Ok(new {
-        success,
-        total = req.Tables.Length,
-        rows  = totalRows,
-        chunks = totalChunks,
-        failures,
-        collection,
-    });
-});
-
 // POST /api/admin/sql-connections/{id}/sync-schema — enqueue background sync job
 app.MapPost("/api/admin/sql-connections/{id:int}/sync-schema", [Authorize("AdminOnly")] async (
     int id, IJobService jobs, ClaimsPrincipal user, CancellationToken ct) =>
@@ -1065,160 +956,6 @@ app.MapPost("/api/admin/sql-connections/{id:int}/sync-schema", [Authorize("Admin
     var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
     var jobId = await jobs.EnqueueAsync("sql.sync-schema", new SqlSyncSchemaParams(id), username, ct);
     return Results.Ok(new { jobId });
-});
-
-// Legacy synchronous (kept under /sync-schema-sync for back-compat)
-app.MapPost("/api/admin/sql-connections/{id:int}/sync-schema-sync", [Authorize("AdminOnly")] async (
-    int id,
-    ISqlConnectionService svc,
-    IDocumentIngestion ingestion,
-    ClaimsPrincipal user,
-    NpgsqlDataSource ds,
-    CancellationToken ct) =>
-{
-    var (dbType, connStr) = await LoadConnectionAsync(id, svc, ds, ct);
-    if (connStr is null) return Results.NotFound();
-
-    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
-
-    // Load existing tracking records (collection comes from first row — assumed single per connection)
-    var existing = new Dictionary<string, (string Source, string Hash, string Collection)>();
-    string defaultCollection = "sql-schema";
-    await using (var loadConn = await ds.OpenConnectionAsync(ct))
-    await using (var loadCmd = loadConn.CreateCommand())
-    {
-        loadCmd.CommandText = "SELECT object_type, schema_name, object_name, source, ddl_hash, collection FROM sql_ingested_objects WHERE connection_id=$1";
-        loadCmd.Parameters.AddWithValue(id);
-        await using var r = await loadCmd.ExecuteReaderAsync(ct);
-        while (await r.ReadAsync(ct))
-        {
-            var key = $"{r.GetString(0)}|{r.GetString(1)}|{r.GetString(2)}";
-            existing[key] = (r.GetString(3), r.GetString(4), r.GetString(5));
-            defaultCollection = r.GetString(5);
-        }
-    }
-
-    if (existing.Count == 0)
-        return Results.BadRequest(new { error = "Bu bağlantı için henüz şema çıkarımı yapılmamış. Önce 'Şema Çıkar' kullanın." });
-
-    try
-    {
-        var provider = SqlSchemaProviderFactory.Get(dbType);
-        var currentObjects = await provider.ListObjectsAsync(connStr, null, ct);
-
-        var added    = new List<string>();
-        var updated  = new List<string>();
-        var unchanged = 0;
-        var failures = new List<object>();
-        var currentKeys = new HashSet<string>();
-        var totalChunks  = 0;
-
-        foreach (var obj in currentObjects)
-        {
-            ct.ThrowIfCancellationRequested();
-            var key = $"{obj.TypeStr}|{obj.Schema}|{obj.Name}";
-            currentKeys.Add(key);
-
-            try
-            {
-                var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
-                if (string.IsNullOrWhiteSpace(ddl))
-                {
-                    failures.Add(new { name = obj.QualifiedName, error = "empty DDL" });
-                    continue;
-                }
-
-                var hash   = Sha256(ddl);
-                var source = $"sql://{dbType.ToString().ToLower()}/conn-{id}/{obj.TypeStr}/{obj.QualifiedName}";
-                var title  = $"{obj.TypeStr.ToUpperInvariant()} {obj.QualifiedName}";
-                var meta   = $"{{\"db_type\":\"{dbType.ToString().ToLower()}\",\"object_type\":\"{obj.TypeStr}\",\"schema\":\"{obj.Schema}\",\"name\":\"{obj.Name}\",\"connection_id\":{id}}}";
-
-                if (existing.TryGetValue(key, out var prev))
-                {
-                    if (prev.Hash == hash)
-                    {
-                        unchanged++;
-                        continue;  // no change
-                    }
-                    // Changed → delete old chunks first
-                    await ingestion.DeleteSourceAsync(prev.Collection, prev.Source, ct);
-                    updated.Add(obj.QualifiedName);
-                }
-                else
-                {
-                    added.Add(obj.QualifiedName);
-                }
-
-                var collection = existing.TryGetValue(key, out var p2) ? p2.Collection : defaultCollection;
-                var result = await ingestion.IngestAsync(new IngestRequest
-                {
-                    Collection = collection, Source = source, Title = title,
-                    Content    = ddl, Metadata = meta, ChunkSize = 1600, ChunkOverlap = 200,
-                }, ct);
-                totalChunks += result.ChunksCreated;
-
-                // Upsert
-                await using var trackConn = await ds.OpenConnectionAsync(ct);
-                await using var trackCmd  = trackConn.CreateCommand();
-                trackCmd.CommandText = @"
-                    INSERT INTO sql_ingested_objects (connection_id, collection, object_type, schema_name, object_name, source, ddl_hash, chunks_count, last_ingested_at)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
-                    ON CONFLICT (connection_id, object_type, schema_name, object_name) DO UPDATE
-                    SET ddl_hash=$7, chunks_count=$8, last_ingested_at=NOW()";
-                trackCmd.Parameters.AddWithValue(id);
-                trackCmd.Parameters.AddWithValue(collection);
-                trackCmd.Parameters.AddWithValue(obj.TypeStr);
-                trackCmd.Parameters.AddWithValue(obj.Schema);
-                trackCmd.Parameters.AddWithValue(obj.Name);
-                trackCmd.Parameters.AddWithValue(source);
-                trackCmd.Parameters.AddWithValue(hash);
-                trackCmd.Parameters.AddWithValue(result.ChunksCreated);
-                await trackCmd.ExecuteNonQueryAsync(ct);
-            }
-            catch (Exception ex)
-            {
-                failures.Add(new { name = obj.QualifiedName, error = ex.Message });
-            }
-        }
-
-        // Detect removed: objects in tracking but not in current source
-        var removed = new List<string>();
-        foreach (var (key, val) in existing)
-        {
-            if (currentKeys.Contains(key)) continue;
-            // No longer exists in source DB — delete from RAG + tracking
-            try
-            {
-                await ingestion.DeleteSourceAsync(val.Collection, val.Source, ct);
-                var parts = key.Split('|');
-                await using var delConn = await ds.OpenConnectionAsync(ct);
-                await using var delCmd  = delConn.CreateCommand();
-                delCmd.CommandText = "DELETE FROM sql_ingested_objects WHERE connection_id=$1 AND object_type=$2 AND schema_name=$3 AND object_name=$4";
-                delCmd.Parameters.AddWithValue(id);
-                delCmd.Parameters.AddWithValue(parts[0]);
-                delCmd.Parameters.AddWithValue(parts[1]);
-                delCmd.Parameters.AddWithValue(parts[2]);
-                await delCmd.ExecuteNonQueryAsync(ct);
-                removed.Add($"{parts[1]}.{parts[2]}");
-            }
-            catch { /* swallow per-item */ }
-        }
-
-        _ = LogActivity(ds, username, "sql.sync.schema", $"conn-{id}",
-            $"added={added.Count} updated={updated.Count} unchanged={unchanged} removed={removed.Count}");
-
-        return Results.Ok(new {
-            added, updated, removed,
-            unchanged,
-            chunks   = totalChunks,
-            failures,
-            collection = defaultCollection,
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.BadRequest(new { error = ex.Message });
-    }
 });
 
 // Helper — loads connection by ID and returns (dbType, connectionString) or null
@@ -1555,9 +1292,19 @@ static object SerializeJob(JobInfo j) => new {
 // =============================================================================
 // ─── Activity Log ─────────────────────────────────────────────────────────────
 
-// Helper — fire-and-forget activity insert (non-blocking, swallows errors)
+// Helper — fire-and-forget activity insert (non-blocking, swallows errors).
+//
+// Dual-writes to:
+//   1. activity_log (eski — Admin → Aktivite sekmesi okur)
+//   2. event_log    (yeni — OWASP-aligned, Admin → 🛡 Güvenlik sekmesi okur)
+//
+// Bu fonksiyon LogActivity_Inner çağrılarını korur (16 yer) — call site
+// değişikliği yok. event_log için HTTP context yoktur (IP/UA/request_id
+// NULL); zenginleştirilmiş kayıt isteniyorsa direkt IEventLog.LogAsync
+// kullanılmalı. Şu an için yalnızca audit trail çoğaltıması.
 async Task LogActivity(NpgsqlDataSource ds, string username, string action, string target, string details = "")
 {
+    // (1) activity_log — geriye uyum
     try
     {
         await using var conn = await ds.OpenConnectionAsync();
@@ -1569,7 +1316,43 @@ async Task LogActivity(NpgsqlDataSource ds, string username, string action, stri
         cmd.Parameters.AddWithValue(details);
         await cmd.ExecuteNonQueryAsync();
     }
-    catch { /* non-critical, never fail the request */ }
+    catch { /* non-critical */ }
+
+    // (2) event_log — yeni OWASP sistemi
+    try
+    {
+        var (category, severity) = MapActionToEvent(action);
+        await using var conn = await ds.OpenConnectionAsync();
+        await using var cmd  = conn.CreateCommand();
+        cmd.CommandText = @"INSERT INTO event_log
+            (category, severity, event_type, username, result, action, resource, reason, ts)
+            VALUES ($1,$2,$3,$4,'Success',$5,$6,$7,NOW())";
+        cmd.Parameters.AddWithValue(category);
+        cmd.Parameters.AddWithValue(severity);
+        cmd.Parameters.AddWithValue(action);
+        cmd.Parameters.AddWithValue(username);
+        cmd.Parameters.AddWithValue((object?)action ?? DBNull.Value);
+        cmd.Parameters.AddWithValue((object?)target ?? DBNull.Value);
+        cmd.Parameters.AddWithValue(string.IsNullOrEmpty(details) ? DBNull.Value : details);
+        await cmd.ExecuteNonQueryAsync();
+    }
+    catch { /* non-critical */ }
+}
+
+// Map LogActivity action string → (EventCategory, EventSeverity).
+static (string Category, string Severity) MapActionToEvent(string action)
+{
+    var a = (action ?? "").ToLowerInvariant();
+    if (a.StartsWith("auth."))      return ("Auth",    "Info");
+    if (a.StartsWith("session."))   return ("Session", "Info");
+    if (a.StartsWith("job."))       return ("System",  "Info");
+    if (a.StartsWith("config.") ||
+        a.Contains(".connection.create") ||
+        a.Contains(".connection.update") ||
+        a.Contains(".connection.delete"))
+                                    return ("Config",  "Info");
+    // sql/skill/document/template/etc. — veri operasyonu
+    return ("Data", "Info");
 }
 
 // GET /api/admin/activity-log?page=1&pageSize=50&action=

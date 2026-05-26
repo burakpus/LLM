@@ -88,13 +88,22 @@ Detaylı adımlar: `.github/workflows/deploy.yml` ve `scripts/merge_appsettings.
 
 ## Audit Logging
 
-İki sistem paralel:
-- `activity_log` (eski) — kısıtlı şema
-- `event_log` (yeni) — OWASP uyumlu (kategori, severity, IP, UA, request_id, JSONB details)
+İki sistem paralel — `LogActivity()` her iki tabloya yazıyor:
+- `activity_log` (eski) — kısıtlı şema (Admin → Aktivite sekmesi okur)
+- `event_log` (yeni) — OWASP uyumlu (Admin → 🛡 Güvenlik sekmesi okur)
 
-**Migrasyon yolu** (Faz 2):
-- Yeni kayıtlar her ikisine — eski UI'lar bozulmaz
-- Sonraki sürümde `activity_log` salt-okunur, en sonunda silinir
+**Dual-write** (`b29e6a4` commit'inden itibaren):
+- `LogActivity()` çağrısı (16 yer) hem `activity_log`'a hem `event_log`'a INSERT yapar
+- Caller'lar değişmedi — geriye uyumlu
+- `event_log` HTTP context yok (IP/UA/request_id NULL) — sadece tarih + kim/ne/hedef
+- Zenginleştirilmiş kayıt için doğrudan `IEventLog.LogAsync()` kullanılmalı (login, 401/403, rate limit zaten böyle yapıyor)
+- `MapActionToEvent()` action string'inden EventCategory türetir:
+  - `auth.*` → Auth, `session.*` → Session, `job.*` → System
+  - `*.connection.{create|update|delete}` → Config
+  - varsayılan → Data
+
+**Sonraki sürüm planı**: Aktivite sekmesi `event_log`'a geçirilince
+`activity_log` salt-okunur olur, son sürümde tablo silinir.
 
 ## Frontend Auth Flow
 

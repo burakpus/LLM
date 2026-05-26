@@ -151,13 +151,14 @@
 
 ## Deprecated
 
-(Faz 2.1 sonrası dolacak — silinecek olan senkron endpoint'ler bu sürümle gitti)
+Aşağıdaki senkron endpoint'ler `b29e6a4` öncesi vardı, sonra **silindi**.
+Tüm bu işlemler artık asenkron job kuyruğu üzerinden yürütülür.
 
-| Endpoint | Sürüm | Yerine |
-|----------|-------|--------|
-| `/ingest-schema-sync` | <vNext | `/ingest-schema` (async) |
-| `/ingest-data-sync` | <vNext | `/sync-data` (async, table_configs ile) |
-| `/sync-schema-sync` | <vNext | `/sync-schema` (async) |
+| Eski endpoint | Yerine geçen | Açıklama |
+|---------------|--------------|----------|
+| `POST /api/admin/sql-connections/{id}/ingest-schema-sync` | `POST /…/ingest-schema` | İlk şema çıkarımı — JobService kuyruğa atar, progress `/api/jobs/{id}` ile |
+| `POST /api/admin/sql-connections/{id}/ingest-data-sync` | `POST /…/sync-data` | Tablo verisi — artık `sql_table_configs`'a göre delta sync |
+| `POST /api/admin/sql-connections/{id}/sync-schema-sync` | `POST /…/sync-schema` | Artımlı şema sync — async |
 
 ---
 
