@@ -166,47 +166,66 @@ public sealed record YeniRequest(string Field1, int Field2);
 
 ## ✅ Tamamlanan Refactor'ler
 
-### Program.cs split — Faz 1 + Faz 2 TAMAMLANDI
+### Program.cs split — Faz 1-4 TAMAMLANDI
 
-3183 satır tek dosyadan 2026 satıra düştü. 7 endpoint extension dosyası + 1
-paylaşılan helper Endpoints/ altında:
+3183 satır tek dosyadan **671 satır**a düştü (-2512, -%79). 18 endpoint extension
+dosyası + 1 paylaşılan helper `Endpoints/` altında:
 
 ```
 dotnet/Api/
-├── Program.cs                       # 2026 satır (orchestrator + DI + DTO + middleware)
+├── Program.cs                       # 671 satır (orchestrator + DI + DTO + middleware + static helpers)
 └── Endpoints/
     ├── ActivityLogger.cs            #  92 — paylaşılan: LogAsync, SerializeJob, MapActionToEvent
     ├── MapHealth.cs                 # 120 — /health, /health/deep, /metrics
     ├── MapAuth.cs                   # 120 — /api/auth/*
-    ├── MapTools.cs                  #  95 — /api/tools/*, /api/admin/benchmark[s]
+    ├── MapFiles.cs                  #  47 — /api/files/extract
+    ├── MapRatings.cs                #  88 — /api/ratings + /api/admin/ratings/stats
+    ├── MapTemplates.cs              # 118 — /api/templates + /api/admin/templates/*
+    ├── MapSkills.cs                 # 500 — /api/skills + admin variants + import-anthropic + /api/models/capabilities
+    ├── MapChat.cs                   #  83 — /api/chat + /api/chat/stream (SSE)
+    ├── MapDocuments.cs              # 191 — /api/ingest + /api/admin/upload + documents + collections
     ├── MapEventLog.cs               # 168 — /api/admin/activity-log + event-log[/summary]
+    ├── MapSession.cs                #  36 — /api/session/*
+    ├── MapTools.cs                  #  95 — /api/tools/*, /api/admin/benchmark[s]
+    ├── MapProxy.cs                  #  48 — /api/proxy
+    ├── MapUsage.cs                  # 164 — /api/admin/usage/* (LiteLLM spend proxy)
+    ├── MapLlm.cs                    # 168 — /api/llm/completions (warming detection + metrics)
+    ├── MapErrorLog.cs               #  29 — /api/log/error
+    ├── MapProjects.cs               # 102 — /api/projects/*
     ├── MapSql.cs                    # 619 — /api/admin/sql-connections/* (en büyük)
     └── MapJobs.cs                   #  75 — /api/jobs/*, /api/admin/jobs/*
 ```
 
-Program.cs orchestrator çağrıları:
+Program.cs orchestrator çağrıları (DI + middleware setup sonrası):
 ```csharp
-app.MapHealth();
-app.MapAuth();
-app.MapTools();
-app.MapEventLog();
-app.MapSql();
-app.MapJobs();
+app.MapHealth();      app.MapAuth();      app.MapFiles();
+app.MapSql();         app.MapJobs();      app.MapEventLog();
+app.MapRatings();     app.MapTemplates(); app.MapSkills();
+app.MapChat();        app.MapDocuments(); app.MapUsage();
+app.MapSession();     app.MapTools();     app.MapProxy();
+app.MapLlm();         app.MapErrorLog();  app.MapProjects();
 ```
 
-`LogActivity` (top-level local) ve `SerializeJob` (top-level static) Program.cs'te
-forward wrapper olarak kaldı (16 call site değişmedi) — implementasyon
-`ActivityLogger`'a taşındı.
+`LogActivity` / `SerializeJob` / `MapActionToEvent` paylaşılan `ActivityLogger`
+sınıfına taşındı. Eski Program.cs'teki local wrapper fonksiyonlar da kaldırıldı —
+tüm endpoint dosyaları doğrudan `ActivityLogger.LogAsync` çağırıyor.
 
-Build doğrulaması: her ara adımda `dotnet build` ✓.
-E2E doğrulaması (deploy + scripts/e2e-test.sh): **14/14 PASS** x 3 koşum ✅
-(Faz 1, Faz 2 sonu, AdminPage tab split sonu).
+Program.cs'te kalan (intentionally — bunlar "orchestrator" rolü):
+- `builder` setup, DI service registration, EF/Npgsql/HttpClient yapılandırması
+- Authentication/JWT/Authorization policy
+- CORS, Kestrel limits, OpenAPI/Swagger
+- Middleware pipeline (UseAuthentication, UseAuthorization, EventLog middleware)
+- Top-level static helper sınıfları: `LlmMetrics`, `SlidingRateLimit`,
+  `LoginRateLimit`, `SqlConnTestRateLimit`, `SkillFrontmatter`,
+  `GithubTreeResponse`/`GithubTreeItem`
+- Public DTO record'ları (`RatingRequest`, `LoginRequest`, `TemplateUpsertRequest`,
+  `SkillExampleRequest`, `BulkAssignGroupRequest`, `AnthropicSkillImportRequest`,
+  `SkillOrderRequest`, `ApiChatRequest`/`ApiChatResponse`, `ApiIngestRequest`,
+  `ProxyRequest`, `ErrorLogRequest`, vb.)
 
-Program.cs'te kalan ~2000 satır: DI/middleware config, DTO record'ları,
-yardımcı static class'lar (RateLimit, LlmMetrics, SkillFrontmatter) ve henüz
-çıkarılmamış endpoint grupları: ratings, templates, skills, chat (sse),
-ingest/upload, usage, session, projects, files/extract, proxy, error log,
-llm/completions. Bunlar daha küçük gruplar — ileride opsiyonel ek bölme yapılabilir.
+Build doğrulaması: her ara adımda `dotnet build` ✓ (toplam 4 ara build).
+E2E doğrulaması (deploy + `scripts/e2e-test.sh`): **14/14 PASS** x 5 koşum ✅
+(AdminPage tab split, Faz 1, Faz 2, Faz 3, Faz 4 sonları).
 
 ### ✅ AdminPage.tsx split — TAMAMLANDI
 

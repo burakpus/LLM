@@ -35,6 +35,36 @@ test script'ine yeni T#'ler eklenmesi önerilir.
 
 ---
 
+## Koşum: 2026-05-26 21:55 UTC — **14/14 PASS** (Program.cs split Faz 4)
+
+Bağlam:
+- `refactor(api): Program.cs split Faz 4` commit (f4513e7) deploy edildi
+- MapSkills.cs (500 satır) — son büyük endpoint bloğu ayrıldı: /api/skills,
+  /api/admin/skills CRUD, /api/admin/skills/import-anthropic (GitHub repo),
+  /api/skills/{id}/examples, /api/models/capabilities
+- Program.cs **671 satır** — refactor sonu (-79% toplam başlangıçtan)
+
+Kritik testler (Skills refactor'ı doğrudan etkileyen):
+- T5 (skill count): PASS — 21 skill (4 flat + 17 folder) doğru yüklendi
+- T7 (generate_file): PASS — skill-driven tool dispatch çalışıyor
+- T8 (benchmark): PASS — /api/llm/completions endpoint sağlam
+
+SUMMARY: PASS 14 / FAIL 0 — refactor davranışsal eşdeğer ✅
+
+---
+
+## Koşum: 2026-05-26 21:21 UTC — **14/14 PASS** (Program.cs split Faz 3)
+
+Bağlam:
+- `refactor(api): Program.cs split Faz 3` commit (031624c) — 10 endpoint dosyası
+- Files, Ratings, Templates, Chat, Documents, Session, Proxy, Usage, Llm,
+  ErrorLog, Projects ayrıldı
+- Program.cs 2026 → 1158 satır
+
+SUMMARY: PASS 14 / FAIL 0 ✅
+
+---
+
 ## Koşum: 2026-05-26 21:05 UTC — **14/14 PASS** (Program.cs split Faz 2)
 
 Bağlam:
