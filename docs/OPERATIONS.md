@@ -135,48 +135,162 @@ Tüm subsystem'lar OK → **200**; biri patladı → **503** + detay.
 
 ## Backup & Restore
 
-(Faz 4'te detay)
+### Neyi yedeklemek lazım?
 
-**Kısa öneri**:
+| Veri | Konum | Backup gerekli mi? |
+|------|-------|---------------------|
+| RAG dökümanları + embeddings | PostgreSQL `documents` | ✅ kritik |
+| Audit / event log | PostgreSQL `event_log`, `activity_log` | ✅ kritik (uyum/forensik) |
+| SQL bağlantı tanımları | PostgreSQL `sql_connections` (encrypted_password) | ✅ kritik (şifre encrypt'li) |
+| Kullanıcı ayarları | localStorage (sohbet geçmişi) | ⚠️ kullanıcı tarafı, sunucu değil |
+| Skill dosyaları | Repo (`dotnet/Api/Skills/`) | git remote (zaten korunuyor) |
+| `appsettings.json` (server values) | `~/setllm-api/appsettings.json` | ✅ önemli (LDAP/JWT secret'leri) |
+| Üretilmiş dosyalar | `~/setllm-api/generated/` | ❌ 24h TTL, geçici |
+| Logs (journald) | systemd journal | ⚠️ rotation otomatik |
+
+### Günlük dump
+
 ```bash
-# PostgreSQL günlük dump
-pg_dump -h 172.16.0.8 -U setadmin -d mydb -Fc > backup/$(date +%F).dump
+# Eklemek istediğin servere bir cron (örnek 03:00):
+0 3 * * * /home/admin/scripts/backup-pg.sh
 
-# Skills/ snapshot (zaten git'te)
-git -C ~/Documents/MultiModel/dgx-spark-llm-stack log -1 --format="%H %s"
+# scripts/backup-pg.sh
+#!/bin/bash
+set -e
+DEST=/srv/backup/setllm
+mkdir -p $DEST
+DATE=$(date +%F)
+
+# PostgreSQL dump (custom format — pg_restore --jobs ile paralel)
+PGPASSWORD=Atlas_71 pg_dump -h 172.16.0.8 -U setadmin -d mydb -Fc \
+    > $DEST/db-$DATE.dump
+
+# appsettings.json snapshot
+cp /home/admin/setllm-api/appsettings.json $DEST/appsettings-$DATE.json
+
+# 30 günden eski yedekleri sil
+find $DEST -name "db-*.dump" -mtime +30 -delete
+find $DEST -name "appsettings-*.json" -mtime +30 -delete
 ```
+
+### Restore
+
+```bash
+# PostgreSQL dump'tan geri yükleme
+PGPASSWORD=Atlas_71 pg_restore -h 172.16.0.8 -U setadmin -d mydb \
+    --clean --if-exists --jobs=4 db-2026-05-26.dump
+
+# appsettings restore
+sudo systemctl stop setllm-api
+cp appsettings-2026-05-26.json /home/admin/setllm-api/appsettings.json
+sudo systemctl start setllm-api
+```
+
+### Disaster recovery (DGX kaybı)
+1. Yeni sunucuya `docker-compose up -d` (vLLM/LiteLLM/Prometheus/Grafana/Loki)
+2. PostgreSQL'i restore (172.16.0.8 zaten ayrı sunucu, kayıp değilse paslıdır)
+3. Repo clone + ilk deploy (`main` branch'i push → GitHub Actions)
+4. `appsettings.json`'ı yedekten kopyala
+5. LDAP bind testi (`/api/auth/debug-ldap`)
+6. Health check (`/health/deep`)
 
 ## Troubleshooting Playbook
 
 ### "Invalid username or password" — LDAP problemi
 1. `journalctl -u setllm-api | grep -i ldap | tail -20`
-2. Sunucudan AD reachable mi: `nc -vz setyazilim.com 389`
-3. Admin token al + diagnostic: `POST /api/auth/debug-ldap` (admin only) → adım adım rapor
+2. AD reachable mi: `nc -vz setyazilim.com 389`
+3. Admin token al + diagnostic: `POST /api/auth/debug-ldap` (admin only) → adım adım rapor (config → connect → bind → search → group fetch)
 4. Geçici çözüm: AdminUsers config'inde `burakpus` zaten var (LDAP arızasında bile admin erişimi)
 
+### "Çok fazla deneme" (429) — login engellendi
+- Sebep: brute-force koruması tetiklendi (5 deneme/dk per (IP, username))
+- 1 dakika bekle → otomatik düşer
+- Aynı kullanıcının çoklu sekmeden eş zamanlı denemesi de sayılır
+- Admin → 🛡 Güvenlik sekmesinde `security.rate_limit` event'i görünür
+
 ### Schema ingest sıkıştı
-1. **🛡 Güvenlik / İşler** sekmesinde job durumu kontrol
-2. `running` ama hiç ilerlemiyor → service restart (zombi recovery devreye girer, queued'a düşer)
-3. `failed` → result.failures kontrol et — yaygın: `STRING_AGG WITHIN GROUP` (SQL <2017 uyumsuzluğu — fix: commit `f28079c`)
+1. **Admin → İşler** sekmesinde job durumu kontrol
+2. `running` ama ilerlemiyor → service restart (zombi recovery: running → queued)
+3. `failed` → JobProgressModal'da hata mesajı veya `jobs.result` JSON içinde `failures[]` dizisi
+4. Yaygın hatalar:
+   - `STRING_AGG WITHIN GROUP` — eski SQL Server (<2017); fix: commit `f28079c`
+   - `Login failed for user` — SQL Auth şifresi yanlış; conn'ı sil yeniden kur
+   - `pre-login handshake` — eski TLS; OpenSSL config zaten ayarlanmış
+   - `timeout` — query_timeout_sec artır (UI'da 5..3600 sn)
 
 ### vLLM modeli yanıt vermiyor
-1. `curl -s http://localhost:8000/v1/models | jq` (Gemma) / 8002 (Qwen)
+1. `curl -s http://localhost:8000/v1/models | jq` (Gemma) / 8002 (Qwen) / 8003 (GPT-OSS)
 2. `docker ps | grep vllm`
-3. GPU bellek: `nvidia-smi`
+3. GPU bellek: `nvidia-smi` — fragmentation veya başka süreç GPU kullanıyor olabilir
 4. Restart: `docker compose restart vllm-gemma`
+5. Model warm-up genelde 5-10 dakika — `journalctl -u setllm-api | grep "warming"`
 
 ### Job worker çalışmıyor
 - `journalctl -u setllm-api | grep -i jobworker | tail -10`
 - Worker concurrency: `appsettings.json → Jobs:Workers` (1-8)
 - Stranded "running" jobs startup'ta otomatik `queued`'a alınır
+- `SKIP LOCKED` ile aynı job iki worker tarafından alınmaz
 
-(Faz 4'te detaylar)
+### Disk dolu
+- `df -h /home/admin` — kontrol
+- En yaygın suçlular:
+  - `~/setllm-api/generated/` — 24h TTL ama çok dosya üretildiyse büyür → `find ... -mtime +0 -delete`
+  - `journalctl` — `sudo journalctl --vacuum-time=7d`
+  - PostgreSQL — `event_log` çok büyüdüyse retention ayarını düşür (90 → 30)
+  - `~/Documents/MultiModel/dgx-spark-llm-stack/.git` — büyük binary commit'ler
+
+### Auto-sync tetiklenmiyor
+- Bağlantıda `auto_sync_interval_min > 0` mu?
+- AutoSyncScheduler her dakika tarama yapar (logda `AutoSync enqueued` görmeli)
+- Aktif `sql.sync-data` job zaten varsa atlanır
+- `journalctl -u setllm-api | grep -i autosync | tail -20`
+
+### 401 her isteğe dönüyor
+- JWT süresi dolmuş (8h) — yeniden login
+- Frontend auth interceptor otomatik `/login?expired=1`'e yönlendirmeli (Faz 1.4 sonrası)
+- Token claim'leri değişmişse (admin/groups) → yeniden login zorunlu
 
 ## Günlük Bakım Listesi
 
-(Faz 4'te)
+### Sabah kontrolleri (~5 dakika)
+- [ ] **Health**: `curl http://172.16.1.123:5080/health/deep` — tüm probe OK?
+- [ ] **Güvenlik son 24h**: 🛡 Güvenlik sekmesi özet — anormal `Warn`/`Error` var mı?
+- [ ] **İşler son 24h**: Admin → İşler — başarısız job sayısı?
+- [ ] **Disk**: `df -h /home/admin` — %80 altında mı?
+- [ ] **GPU**: `nvidia-smi` — modellerin VRAM kullanımı normal mi?
 
-- [ ] Disk doluluk kontrol: `df -h`
-- [ ] event_log satır sayısı: rete riasyon işe yarıyor mu?
-- [ ] generated/ klasör boyutu cleanup ile makul
-- [ ] Job queue stale değil
+### Haftalık (~15 dk)
+- [ ] **Backup**: cron çalışıyor mu, dump dosyaları taze mi?
+- [ ] **Audit retention**: `SELECT MIN(ts), COUNT(*) FROM event_log` — 90 günden eski yok mu?
+- [ ] **Skill'ler**: UI'dan eklenen yeni skill repoya commit edilmiş mi? (`git -C ~/.../Skills status`)
+- [ ] **Job queue health**: `SELECT status, COUNT(*) FROM jobs GROUP BY 1` — stuck 'running' yok mu?
+- [ ] **LDAP**: 1-2 test login (`debug-ldap`) — yanıt süreleri normal mi?
+
+### Aylık
+- [ ] **Deploy log gözden geçir**: `gh run list --limit 30` — başarısız var mı, neden?
+- [ ] **vLLM model güncellemesi**: yeni sürümler/quantization?
+- [ ] **Şifre rotasyonu**: `appsettings.json → Jwt:Secret` (zorunlu değil ama best practice)
+- [ ] **Benchmark karşılaştırma**: Admin → 🧪 Benchmark — performans regresyonu var mı?
+
+### Hızlı sorgular
+
+```sql
+-- Son 24h job sayıları
+SELECT job_type, status, COUNT(*) FROM jobs
+WHERE created_at > NOW() - INTERVAL '1 day' GROUP BY 1, 2;
+
+-- En sık başarısız job tipi
+SELECT job_type, error, COUNT(*) FROM jobs
+WHERE status = 'failed' AND created_at > NOW() - INTERVAL '7 days'
+GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10;
+
+-- Disk şişirici sorgu — generated klasör boyutu
+du -sh /home/admin/setllm-api/generated/*/ | sort -h | tail -10
+
+-- Active kullanıcı (son 24h kim login oldu)
+SELECT username, COUNT(*) AS logins, MAX(ts) AS last_seen
+FROM event_log
+WHERE event_type = 'auth.login.success'
+  AND ts > NOW() - INTERVAL '1 day'
+GROUP BY 1 ORDER BY 2 DESC;
+```

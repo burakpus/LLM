@@ -16,8 +16,6 @@
 
 ## Threat Model
 
-(Faz 4'te detay)
-
 **Aktörler**:
 - Düzenli kullanıcı (LDAP doğrulamalı çalışan) — sohbet + RAG + dosya üretimi
 - Admin (`AdminUsers` config veya `setaiadmin`/`Set Management` AD grup üyesi) — yönetim panelinin tamamı
@@ -111,10 +109,22 @@ OWASP Logging Cheat Sheet ve ASVS L2 uyumlu.
 
 ## CORS Politikası
 
-(Faz 2.4 sonrası dolacak)
+`appsettings.json → Cors:Origins` listesindeki origin'ler kabul edilir,
+geri kalanı browser tarafından bloklanır.
 
-- Şu an: `AllowAnyOrigin/AllowAnyHeader/AllowAnyMethod` (geliştirme rahatlığı)
-- Plan: `Cors:AllowedOrigins` config listesi → sadece izinli origin'ler
+```json
+"Cors": {
+  "Origins": [
+    "http://172.16.1.123:5080",
+    "http://localhost:5173",
+    "http://localhost:5080"
+  ]
+}
+```
+
+- `AllowAnyHeader()` + `AllowAnyMethod()` + `AllowCredentials()` — sadece origin filtresi
+- Yeni client domain ekleneceğinde listeye yaz + service restart
+- Production'da `localhost*` girdileri kaldırılabilir (sadece UI host + LAN IP)
 
 ## Şifreleme
 
@@ -125,14 +135,82 @@ OWASP Logging Cheat Sheet ve ASVS L2 uyumlu.
 
 ## Loglanan Olaylar Matrisi
 
-(Faz 2.5 sonrası dolacak — tablo: hangi işlem hangi event_type'a yazıyor)
+| event_type | category | severity | Kaynak | Detay |
+|------------|----------|----------|--------|-------|
+| `auth.login.success` | Auth | Info | Login endpoint | username, isAdmin, groupCount |
+| `auth.login.fail` | Auth | Warn | Login endpoint | reason=ldap_reject |
+| `auth.login.bad_request` | Auth | Warn | Login endpoint | reason=missing credentials |
+| `authz.unauthenticated` | Authz | Warn | 401 middleware | endpoint, action |
+| `authz.forbidden` | Authz | Warn | 403 middleware | endpoint, action |
+| `security.rate_limit` | Security | Warn | Login/SQL test | retry-after, IP, scope |
+| `data.file.generate.{kind}` | Data | Info/Warn | generate-file tool | filename, sizeBytes |
+| `job.cancel` | System | Info | LogActivity | jobId |
+| `job.retry` | System | Info | LogActivity | oldId, newId |
+| `sql.connection.create` | Config | Info | LogActivity (dual-write) | db_type, host |
+| `sql.connection.update` | Config | Info | LogActivity (dual-write) | name |
+| `sql.connection.delete` | Config | Info | LogActivity (dual-write) | id |
+| `sql.ingest.schema` | Data | Info | LogActivity (dual-write) | collection, conn-{id} |
+| `sql.sync.schema` | Data | Info | LogActivity (dual-write) | counts |
+| `sql.ingest.data` | Data | Info | LogActivity (dual-write) | conn-{id} |
+| `skill.upload` | Data | Info | LogActivity (dual-write) | skillId, size |
+| `skill.delete` | Data | Info | LogActivity (dual-write) | skillId |
+| `skill.order.update` | Data | Info | LogActivity (dual-write) | order |
+| `skill.import` | Data | Info | LogActivity (dual-write) | Anthropic import |
+| `template.create/update/delete` | Data | Info | LogActivity (dual-write) | templateId |
+| `document.upload/delete` | Data | Info | LogActivity (dual-write) | collection |
+
+**Doğrudan IEventLog kullanan kayıtlar** (HTTP context dahil: IP, UA, request_id):
+- `auth.login.*` (login endpoint'i içinde — birden fazla event yazımı yok, tek)
+- `authz.*` (401/403 middleware'inde)
+- `security.rate_limit` (rate-limited endpoint'ler)
+- `data.file.generate.*` (generate-file)
+
+**Dual-write kayıtlar** (LogActivity helper'ı ile — HTTP context yok, sadece basic 4 alan):
+- `sql.*`, `skill.*`, `template.*`, `document.*`, `job.*` — yukarıdaki tablo
 
 ## Incident Response
 
-(Faz 4'te detay — playbook'lar)
+### Şüpheli aktivite tespiti
+1. **Admin → 🛡 Güvenlik** son 24 saat → kategori/severity dağılımı
+2. **Yüksek `Warn`/`Error`** sayısı normal değil → kategoriye göre filtrele
+3. **IP filtresi** → bir kaynaktan çok sayıda 401/429
+4. **Username filtresi** → bir hesaba yoğun saldırı
 
-**Şüpheli durumda**:
-1. 🛡 Güvenlik sekmesinde son 24 saat filtrele
-2. Hedef IP veya username için detay aç → request_id ile correlate
-3. Şüpheli pattern: aynı IP'den çok sayıda `auth.login.fail` + sonrası `success`
-4. Token revoke: bilinen aktif session yok (JWT stateless) → kullanıcı şifresini değiştir, AD admin'inden kilit
+### Brute-force saldırısı
+**Belirtiler**: aynı IP veya farklı IP'lerden bir username'e dakikada çok sayıda `auth.login.fail` + `security.rate_limit`
+
+**Aksiyon**:
+1. Saldırı süresince kullanıcının hesabı zaten korunuyor (rate limit + LDAP reject — gerçek saldırgan içeri giremez)
+2. Hesap sahibini bilgilendir, şifre değişikliği öner
+3. Firewall'da saldırgan IP'yi blokla (gerekirse — Traefik veya host-level)
+4. Saldırı pattern'i sürerse `LoginRateLimitPerMinute` düşür (3 vb.)
+
+### Yetkisiz erişim girişimi
+**Belirti**: `authz.forbidden` çok sayıda — normal kullanıcı admin endpoint'lerine erişmeye çalışıyor
+
+**Aksiyon**:
+1. Username + endpoint detayına bak — UI bug mu yoksa malicious mi?
+2. UI bug'sa düzelt (yanlış sekmede admin endpoint çağrısı vs.)
+3. Malicious ise hesabı LDAP'tan kilitle (AD admin)
+
+### Token sızıntısı şüphesi
+JWT stateless — revoke imkanı yok. Çözüm:
+1. **Şifre değiştir** (LDAP) — yeni login yapana kadar eski token kullanılabilir
+2. `Jwt:Secret` rotasyonu → tüm token'lar invalid olur (acil durumda)
+3. JWT'leri saldırgan kullanmaya devam ediyorsa: 8 saat dolması bekle veya secret rotate
+
+### Audit log tampering şüphesi
+- `event_log` append-only (DELETE sadece retention service'ten)
+- Hash chain veya digital signature yok (gelecek — şu an yeterli)
+- Postgres user (`setadmin`) read+write — DBA seviye erişim varsa manipule edilebilir
+- Önlem: PostgreSQL audit log (pgAudit extension) açılabilir
+
+### Veri kaybı
+1. PostgreSQL günlük dump var mı? (OPERATIONS.md Backup bölümü)
+2. PITR (point-in-time recovery) yapılandırılmış mı? — şu an basic dump, PITR yok
+3. Skills/ git'te — `git log` ile bulunabilir
+4. Generated files — geçici, 24h TTL — kaybı normal
+
+### İletişim
+- Kritik incident → IT yöneticisi + iş sahibi (admin'i yetkilendiren grup)
+- Tüm aksiyonları event_log'a yansıt (Configuration changes manuel `LogActivity` çağrısı ile)
