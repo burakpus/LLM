@@ -33,22 +33,15 @@ export default function UsageTab() {
 
   return (
     <section className="space-y-6">
-      <div className="flex items-end justify-between gap-3 flex-wrap">
+      <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-medium">Token Kullanımı</h2>
           <p className="text-xs mt-1" style={{ color: 'var(--mute)' }}>LiteLLM spend log verisi</p>
         </div>
-        <div className="flex items-end gap-2">
-          <PageSizeSelector
-            value={logsLimit}
-            onChange={n => { setLogsLimit(n); load(n) }}
-            label="Son istekler"
-          />
-          <button onClick={() => load()} className="px-3 py-2 rounded-lg text-xs cursor-pointer"
-                  style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text)' }}>
-            ↺ Yenile
-          </button>
-        </div>
+        <button onClick={() => load()} className="px-3 py-1.5 rounded-lg text-xs cursor-pointer"
+                style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+          ↺ Yenile
+        </button>
       </div>
 
       {error && (
@@ -228,9 +221,16 @@ export default function UsageTab() {
           {/* Son istekler */}
           <div className="rounded-xl overflow-hidden md:col-span-2"
                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-            <div className="px-4 py-3 text-xs font-semibold uppercase tracking-wider"
-                 style={{ color: 'var(--mute)', borderBottom: '1px solid var(--border)' }}>
-              Son {logsLimit} İstek
+            <div className="px-4 py-3 flex items-center justify-between gap-3"
+                 style={{ borderBottom: '1px solid var(--border)' }}>
+              <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--mute)' }}>
+                Son {logsLimit} İstek
+              </span>
+              <PageSizeSelector
+                value={logsLimit}
+                onChange={n => { setLogsLimit(n); load(n) }}
+                compact
+              />
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
