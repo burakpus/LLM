@@ -118,20 +118,33 @@ public sealed class DocumentIngestion : IDocumentIngestion
 
     /// <summary>
     /// Delete ALL chunks in a collection. Also wipes SQL-ingest tracking tables
-    /// (sql_ingested_rows, sql_ingested_objects) for the same collection so that
-    /// a subsequent delta sync re-ingests everything (instead of seeing "no changes").
+    /// for the same collection so that a subsequent delta sync re-ingests
+    /// everything (instead of seeing "no changes").
+    ///
+    /// Tracking schemas:
+    ///   sql_ingested_objects (collection column)          — schema ingest tracking
+    ///   sql_ingested_rows    (no collection, FK via table_config_id → sql_table_configs.collection)
+    ///                                                      — data sync (row-level) tracking
+    ///
     /// Returns number of kb_documents rows deleted.
     /// </summary>
     public async Task<int> DeleteCollectionAsync(string collection, CancellationToken ct = default)
     {
         await using var conn = await _ds.OpenConnectionAsync(ct);
 
+        // sql_ingested_rows: indirect via table_config_id → sql_table_configs.collection
         await using (var cmd1 = conn.CreateCommand())
         {
-            cmd1.CommandText = "DELETE FROM sql_ingested_rows WHERE collection = $1;";
+            cmd1.CommandText = @"
+                DELETE FROM sql_ingested_rows
+                WHERE table_config_id IN (
+                    SELECT id FROM sql_table_configs WHERE collection = $1
+                );";
             cmd1.Parameters.AddWithValue(collection);
             try { await cmd1.ExecuteNonQueryAsync(ct); } catch { /* table may not exist */ }
         }
+
+        // sql_ingested_objects: direct column
         await using (var cmd2 = conn.CreateCommand())
         {
             cmd2.CommandText = "DELETE FROM sql_ingested_objects WHERE collection = $1;";
