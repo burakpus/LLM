@@ -371,7 +371,12 @@ public sealed class SqlSyncDataJobHandler : IJobHandler
                     {
                         Collection = collection, Source = source, Title = title,
                         Content = md, Metadata = meta,
-                        ChunkSize = 2000, ChunkOverlap = 0,
+                        // Large chunk size: each SQL row is logically one document.
+                        // Data dictionary / table-summary rows can be 5-10K chars
+                        // (aggregated column lists). Splitting fragments the answer
+                        // and forces multiple chunks into top-K. 12000 ≈ 3K tokens —
+                        // fits even very wide tables without splitting.
+                        ChunkSize = 12000, ChunkOverlap = 0,
                     }, ct);
                     chunks += ingestResult.ChunksCreated;
 
@@ -488,7 +493,10 @@ public sealed class SqlIngestDataJobHandler : IJobHandler
                 await ingestion.DeleteSourceAsync(collection, source, ct);
                 var r = await ingestion.IngestAsync(new IngestRequest {
                     Collection = collection, Source = source, Title = title, Content = md,
-                    Metadata = meta, ChunkSize = 2000, ChunkOverlap = 100,
+                    // See above for rationale. Per-table sample DATA chunks can be
+                    // larger than CREATE TABLE statements (especially with markdown
+                    // tables of rows). 12000 chars ≈ 3K tokens.
+                    Metadata = meta, ChunkSize = 12000, ChunkOverlap = 100,
                 }, ct);
                 success++; totalRows += rows.Count; totalChunks += r.ChunksCreated;
             }

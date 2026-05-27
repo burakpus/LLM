@@ -148,6 +148,30 @@ extension method olarak. Yeni endpoint eklerken:
      `export async function yeniEndpoint(...)`
    - İlgili tab dosyasında çağır: `frontend/src/components/Admin/tabs/XxxTab.tsx`
 
+## RAG — Collection Settings (Öncelik + Etiket)
+
+Her ingest edilmiş RAG collection için DB'de **`collection_settings`** tablosu:
+
+| Kolon | Açıklama |
+|-------|----------|
+| `collection` (PK) | Collection adı |
+| `priority` | `high` (×2.0) · `normal` (×1.0, default) · `low` (×0.5) · `hidden` (retrieval'dan dış) |
+| `data_type` | Serbest etiket (örn. `schema`, `data-dictionary`, `document`) |
+| `description` | Kısa açıklama |
+
+`HybridSearch` SQL'i `LEFT JOIN collection_settings`:
+- `priority='hidden'` candidate set'inden filtrelenir
+- Final `hybrid_score` priority multiplier ile çarpılır
+
+**Admin UI**: Documents tab → "Collection Ayarları" açılır panel — her satır inline edit (onBlur auto-save).
+
+**Use case**: Aynı tablo hem ham CREATE TABLE chunks (`sql-schema`), hem düzenli data dictionary chunks (`sql-data-dictionary`) olarak ingest edildiğinde, ikinciye `high` öncelik vererek RAG'ı doğru bilgiye yönlendir.
+
+**Endpoint'ler**:
+- `GET /api/admin/collections` — listele (`priority`/`dataType`/`description` left-join)
+- `PUT /api/admin/collections/{name}/settings` — upsert `{ priority?, dataType?, description? }`
+- `DELETE /api/admin/collections/{name}` — bulk delete (collection'daki tüm kb_documents satırları)
+
 ## Frontend Yapısı
 
 **State**: Zustand (`store/index.ts`) — persist middleware ile localStorage'a yazar.

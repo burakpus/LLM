@@ -83,7 +83,8 @@ flowchart LR
 
 ### RAG sorgu
 1. Browser → POST `/api/llm/completions` (mode=rag)
-2. .NET → embed → pgvector hibrit arama → top-N chunk
+2. .NET → embed → `HybridSearch` (pgvector + Postgres FTS) → top-N chunk
+   - `collection_settings` LEFT JOIN: `hidden` filtre, `priority` skor çarpanı (×0.5/1.0/2.0)
 3. .NET → context'i system prompt'a ekle → LLM call
 4. SSE → browser
 
@@ -151,6 +152,7 @@ Ana tablolar:
 - `prompt_templates` — slash-command şablonları
 - `skill_examples` — few-shot örnekler (skill başına)
 - `skill_settings` — skill order overrides (UI ile yönetilir, deploy-survived)
+- `collection_settings` — RAG collection başına `priority` (high/normal/low/hidden) + `data_type` etiketi + `description`. HybridSearch skor çarpanı için kullanılır
 - `message_ratings` — 👍/👎 geri bildirim
 - `benchmark_results` — benchmark history
 - `usage_logs` — token kullanım/maliyet
