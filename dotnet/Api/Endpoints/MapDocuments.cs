@@ -111,22 +111,36 @@ public static class DocumentsEndpoints
             var hasQ   = !string.IsNullOrWhiteSpace(q);
             var qLike  = hasQ ? "%" + q!.Trim() + "%" : null;
 
-            // Build WHERE dynamically — positional $N parameters in order:
-            //   $1 = limit, $2 = offset, then optional [$3 = collection], [$N = qLike]
-            var whereParts = new List<string>();
-            int next = 3;
-            int colP = 0, qP = 0;
-            if (collection is not null) { colP = next++; whereParts.Add($"collection = ${colP}"); }
-            if (hasQ)                   { qP   = next++; whereParts.Add($"(source ILIKE ${qP} OR title ILIKE ${qP})"); }
-            var whereSql = whereParts.Count > 0 ? "WHERE " + string.Join(" AND ", whereParts) : "";
+            // Build two WHERE clauses with separate positional numbering:
+            //   countWhere:  $1=collection, $2=qLike   (only the filter params)
+            //   mainWhere:   $1=limit, $2=offset, $3=collection, $4=qLike
+            //                                          (limit/offset always present)
+            var countParts = new List<string>();
+            var mainParts  = new List<string>();
+            int countNext = 1;
+            int mainNext  = 3;            // $1 + $2 reserved for limit/offset
+            if (collection is not null)
+            {
+                countParts.Add($"collection = ${countNext++}");
+                mainParts.Add($"collection = ${mainNext++}");
+            }
+            if (hasQ)
+            {
+                var c = countNext++;
+                var m = mainNext++;
+                countParts.Add($"(source ILIKE ${c} OR title ILIKE ${c})");
+                mainParts.Add ($"(source ILIKE ${m} OR title ILIKE ${m})");
+            }
+            var countWhere = countParts.Count > 0 ? "WHERE " + string.Join(" AND ", countParts) : "";
+            var mainWhere  = mainParts.Count  > 0 ? "WHERE " + string.Join(" AND ", mainParts)  : "";
 
             await using var conn = await ds.OpenConnectionAsync(ct);
 
             // Total count
             await using var countCmd = conn.CreateCommand();
-            countCmd.CommandText = $"SELECT COUNT(DISTINCT source) FROM kb_documents {whereSql}";
-            if (colP > 0) countCmd.Parameters.AddWithValue(collection!);
-            if (qP   > 0) countCmd.Parameters.AddWithValue(qLike!);
+            countCmd.CommandText = $"SELECT COUNT(DISTINCT source) FROM kb_documents {countWhere}";
+            if (collection is not null) countCmd.Parameters.AddWithValue(collection);
+            if (hasQ)                   countCmd.Parameters.AddWithValue(qLike!);
             var total = Convert.ToInt64(await countCmd.ExecuteScalarAsync(ct));
 
             // Paginated sources
@@ -135,14 +149,14 @@ public static class DocumentsEndpoints
                 SELECT collection, source, MAX(title) as title,
                        COUNT(*) as chunks, MAX(updated_at) as updated_at
                 FROM   kb_documents
-                {whereSql}
+                {mainWhere}
                 GROUP  BY collection, source
                 ORDER  BY MAX(updated_at) DESC
                 LIMIT  $1 OFFSET $2";
             cmd.Parameters.AddWithValue(pageSize);
             cmd.Parameters.AddWithValue(offset);
-            if (colP > 0) cmd.Parameters.AddWithValue(collection!);
-            if (qP   > 0) cmd.Parameters.AddWithValue(qLike!);
+            if (collection is not null) cmd.Parameters.AddWithValue(collection);
+            if (hasQ)                   cmd.Parameters.AddWithValue(qLike!);
 
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             var docs = new List<object>();
