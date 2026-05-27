@@ -38,11 +38,38 @@ export interface DocumentsPage {
   items:    DocumentRow[]
 }
 
+export type CollectionPriority = 'high' | 'normal' | 'low' | 'hidden'
+
 export interface CollectionRow {
   collection:  string
   sources:     number
   chunks:      number
   lastUpdated: string
+  priority?:   CollectionPriority   // 'normal' if unset
+  dataType?:   string                // free-text label, e.g. 'schema', 'data-dictionary'
+  description?: string
+}
+
+export interface CollectionSettingsUpdate {
+  priority?:    CollectionPriority
+  dataType?:    string
+  description?: string
+}
+
+export async function updateCollectionSettings(
+  collection: string,
+  settings:   CollectionSettingsUpdate,
+): Promise<CollectionRow> {
+  const r = await fetch(
+    `/api/admin/collections/${encodeURIComponent(collection)}/settings`,
+    {
+      method:  'PUT',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body:    JSON.stringify(settings),
+    },
+  )
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
 }
 
 export interface SkillRow {

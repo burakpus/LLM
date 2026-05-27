@@ -200,6 +200,14 @@ var app = builder.Build();
             order_value INTEGER      NOT NULL DEFAULT 999,
             updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS collection_settings (
+            collection   TEXT         PRIMARY KEY,
+            priority     TEXT         NOT NULL DEFAULT 'normal'
+                         CHECK (priority IN ('high','normal','low','hidden')),
+            data_type    TEXT         NOT NULL DEFAULT '',
+            description  TEXT         NOT NULL DEFAULT '',
+            updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        );
         CREATE TABLE IF NOT EXISTS event_log (
             id          BIGSERIAL    PRIMARY KEY,
             ts          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -669,3 +677,8 @@ public sealed record ProxyRequest(
     string?  ContentType);
 
 public sealed record ErrorLogRequest(string Message);
+
+public sealed record CollectionSettingsRequest(
+    string? Priority,
+    string? DataType,
+    string? Description);

@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useState } from 'react'
-import { deleteDocument, listCollections, listDocuments } from '../../../api/admin'
-import type { CollectionRow, DocumentsPage } from '../../../api/admin'
+import { deleteDocument, listCollections, listDocuments, updateCollectionSettings } from '../../../api/admin'
+import type { CollectionRow, CollectionPriority, DocumentsPage } from '../../../api/admin'
 import { formatDate } from './_shared'
+
+const PRIORITY_COLOR: Record<CollectionPriority, string> = {
+  high:   '#34a853',
+  normal: 'var(--text-2)',
+  low:    '#f9ab00',
+  hidden: '#9aa0a6',
+}
+const PRIORITY_LABEL: Record<CollectionPriority, string> = {
+  high:   '↑ High',
+  normal: '— Normal',
+  low:    '↓ Low',
+  hidden: '✕ Hidden',
+}
 
 export default function DocumentsTab() {
   const [collections, setCollections] = useState<CollectionRow[]>([])
@@ -96,6 +109,14 @@ export default function DocumentsTab() {
              style={{ background: 'rgba(234,67,53,0.1)', color: '#ea4335', border: '1px solid rgba(234,67,53,0.3)' }}>
           {error}
         </div>
+      )}
+
+      {/* Collection settings — priority / data type / description per collection */}
+      {collections.length > 0 && (
+        <CollectionSettingsPanel
+          collections={collections}
+          onUpdated={updated => setCollections(cs => cs.map(c => c.collection === updated.collection ? { ...c, ...updated } : c))}
+        />
       )}
 
       <div className="rounded-xl overflow-hidden"
@@ -203,5 +224,146 @@ export default function DocumentsTab() {
         </div>
       )}
     </section>
+  )
+}
+
+// ─── Collection Settings Panel ────────────────────────────────────────────────
+// Per-collection priority + data-type label. Priority affects RAG retrieval
+// ranking: high=2x, normal=1x, low=0.5x, hidden=excluded.
+
+function CollectionSettingsPanel({
+  collections, onUpdated,
+}: {
+  collections: CollectionRow[]
+  onUpdated:   (c: CollectionRow) => void
+}) {
+  const [open, setOpen]       = useState(false)
+  const [saving, setSaving]   = useState<string | null>(null)
+  const [error, setError]     = useState<string | null>(null)
+
+  const save = async (
+    collection: string,
+    patch: { priority?: CollectionPriority; dataType?: string; description?: string },
+  ) => {
+    setSaving(collection); setError(null)
+    try {
+      const updated = await updateCollectionSettings(collection, patch)
+      onUpdated(updated)
+    } catch (e: any) {
+      setError(`${collection}: ${e.message ?? String(e)}`)
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  return (
+    <div className="rounded-xl"
+         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-4 py-2.5 flex items-center justify-between text-sm cursor-pointer"
+        style={{ color: 'var(--text)' }}
+      >
+        <span className="font-medium">
+          Collection Ayarları
+          <span className="ml-2 text-xs" style={{ color: 'var(--mute)' }}>
+            ({collections.length} collection · RAG retrieval önceliği)
+          </span>
+        </span>
+        <span style={{ color: 'var(--mute)' }}>{open ? '▾' : '▸'}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-2">
+          {error && (
+            <div className="rounded-md px-3 py-2 text-xs"
+                 style={{ background: 'rgba(234,67,53,0.1)', color: '#ea4335' }}>
+              {error}
+            </div>
+          )}
+          <table className="w-full text-xs">
+            <thead style={{ color: 'var(--mute)' }}>
+              <tr>
+                <th className="text-left px-2 py-1.5 font-medium">Collection</th>
+                <th className="text-right px-2 py-1.5 font-medium">Sources</th>
+                <th className="text-left px-2 py-1.5 font-medium" style={{ width: 130 }}>Öncelik</th>
+                <th className="text-left px-2 py-1.5 font-medium" style={{ width: 180 }}>Veri Tipi</th>
+                <th className="text-left px-2 py-1.5 font-medium">Açıklama</th>
+              </tr>
+            </thead>
+            <tbody>
+              {collections.map(c => {
+                const pri = c.priority ?? 'normal'
+                return (
+                  <tr key={c.collection} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td className="px-2 py-2 font-medium" style={{ color: 'var(--text)' }}>
+                      {c.collection}
+                    </td>
+                    <td className="px-2 py-2 text-right" style={{ color: 'var(--mute)' }}>
+                      {c.sources.toLocaleString()}
+                    </td>
+                    <td className="px-2 py-2">
+                      <select
+                        value={pri}
+                        disabled={saving === c.collection}
+                        onChange={e => save(c.collection, { priority: e.target.value as CollectionPriority, dataType: c.dataType, description: c.description })}
+                        className="px-2 py-1 rounded text-xs outline-none w-full"
+                        style={{
+                          background: 'var(--input-bg)',
+                          border:     '1px solid var(--border)',
+                          color:      PRIORITY_COLOR[pri],
+                        }}
+                      >
+                        <option value="high">{PRIORITY_LABEL.high}</option>
+                        <option value="normal">{PRIORITY_LABEL.normal}</option>
+                        <option value="low">{PRIORITY_LABEL.low}</option>
+                        <option value="hidden">{PRIORITY_LABEL.hidden}</option>
+                      </select>
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        defaultValue={c.dataType ?? ''}
+                        placeholder="schema, data-dictionary…"
+                        disabled={saving === c.collection}
+                        onBlur={e => {
+                          if (e.target.value !== (c.dataType ?? ''))
+                            save(c.collection, { priority: pri, dataType: e.target.value, description: c.description })
+                        }}
+                        className="px-2 py-1 rounded text-xs outline-none w-full"
+                        style={{
+                          background: 'var(--input-bg)',
+                          border:     '1px solid var(--border)',
+                          color:      'var(--text)',
+                        }}
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        defaultValue={c.description ?? ''}
+                        placeholder="kısa açıklama (opsiyonel)"
+                        disabled={saving === c.collection}
+                        onBlur={e => {
+                          if (e.target.value !== (c.description ?? ''))
+                            save(c.collection, { priority: pri, dataType: c.dataType, description: e.target.value })
+                        }}
+                        className="px-2 py-1 rounded text-xs outline-none w-full"
+                        style={{
+                          background: 'var(--input-bg)',
+                          border:     '1px solid var(--border)',
+                          color:      'var(--text)',
+                        }}
+                      />
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          <p className="text-[10px] mt-2" style={{ color: 'var(--mute)' }}>
+            <b>High</b> = score × 2.0 (öne çıkar) · <b>Normal</b> = × 1.0 · <b>Low</b> = × 0.5 (geri plana at) · <b>Hidden</b> = retrieval'da hiç dönmez. Değişiklik otomatik kaydedilir.
+          </p>
+        </div>
+      )}
+    </div>
   )
 }

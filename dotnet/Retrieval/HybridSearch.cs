@@ -122,26 +122,33 @@ public sealed class PgHybridSearch : IHybridSearch
 
         await using var cmd = conn.CreateCommand();
 
+        // Priority filter — 'hidden' collections are dropped from candidate sets.
+        // Priority multiplier (CASE) — applied to final score, then ORDER BY adjusted_score.
+        // Collections with no settings row → priority='normal' (1.0x).
         cmd.CommandText = $"""
             WITH vec_cand AS (
-                SELECT id,
-                       embedding <=> $1  AS vec_distance,
-                       0.0               AS fts_rank
-                FROM   kb_documents
-                WHERE  (embedding <=> $1) <= $3
-                {collectionClause}
-                {metadataClause}
-                ORDER  BY embedding <=> $1
+                SELECT d.id,
+                       d.embedding <=> $1  AS vec_distance,
+                       0.0                 AS fts_rank
+                FROM   kb_documents d
+                LEFT JOIN collection_settings cs ON cs.collection = d.collection
+                WHERE  (d.embedding <=> $1) <= $3
+                  AND  COALESCE(cs.priority, 'normal') <> 'hidden'
+                {collectionClause.Replace("collection", "d.collection")}
+                {metadataClause.Replace("metadata", "d.metadata")}
+                ORDER  BY d.embedding <=> $1
                 LIMIT  $4 * 3
             ),
             fts_cand AS (
-                SELECT id,
+                SELECT d.id,
                        2.0                                        AS vec_distance,
-                       ts_rank_cd(ts_content, websearch_to_tsquery('turkish_unaccent', $2)) AS fts_rank
-                FROM   kb_documents
-                WHERE  ts_content @@ websearch_to_tsquery('turkish_unaccent', $2)
-                {collectionClause}
-                {metadataClause}
+                       ts_rank_cd(d.ts_content, websearch_to_tsquery('turkish_unaccent', $2)) AS fts_rank
+                FROM   kb_documents d
+                LEFT JOIN collection_settings cs ON cs.collection = d.collection
+                WHERE  d.ts_content @@ websearch_to_tsquery('turkish_unaccent', $2)
+                  AND  COALESCE(cs.priority, 'normal') <> 'hidden'
+                {collectionClause.Replace("collection", "d.collection")}
+                {metadataClause.Replace("metadata", "d.metadata")}
                 ORDER  BY fts_rank DESC
                 LIMIT  $4 * 3
             ),
@@ -155,9 +162,16 @@ public sealed class PgHybridSearch : IHybridSearch
             SELECT d.id, d.collection, d.source, d.title, d.content,
                    d.chunk_index, d.metadata::text,
                    m.vec_distance, m.fts_rank,
-                   hybrid_score(m.vec_distance, m.fts_rank, ${weightParam}) AS hybrid_score
+                   hybrid_score(m.vec_distance, m.fts_rank, ${weightParam})
+                     * CASE COALESCE(cs.priority, 'normal')
+                              WHEN 'high'   THEN 2.0
+                              WHEN 'normal' THEN 1.0
+                              WHEN 'low'    THEN 0.5
+                              ELSE 1.0
+                       END AS hybrid_score
             FROM   merged m
             JOIN   kb_documents d USING (id)
+            LEFT   JOIN collection_settings cs ON cs.collection = d.collection
             ORDER  BY hybrid_score DESC
             LIMIT  $4;
             """;

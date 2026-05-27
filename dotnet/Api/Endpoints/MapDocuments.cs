@@ -151,15 +151,24 @@ public static class DocumentsEndpoints
             return Results.Ok(new { total, page, pageSize, items = docs });
         });
 
-        // GET /api/admin/collections
+        // GET /api/admin/collections — includes priority/dataType/description settings (left-joined)
         app.MapGet("/api/admin/collections", [Authorize("AdminOnly")] async (
             NpgsqlDataSource ds, CancellationToken ct) =>
         {
             await using var conn = await ds.OpenConnectionAsync(ct);
             await using var cmd  = conn.CreateCommand();
-            cmd.CommandText = @"SELECT collection, COUNT(DISTINCT source) as sources,
-                                       COUNT(*) as chunks, MAX(updated_at) as last_updated
-                                FROM kb_documents GROUP BY collection ORDER BY collection";
+            cmd.CommandText = @"
+                SELECT k.collection,
+                       COUNT(DISTINCT k.source) AS sources,
+                       COUNT(*)                 AS chunks,
+                       MAX(k.updated_at)        AS last_updated,
+                       COALESCE(cs.priority, 'normal') AS priority,
+                       COALESCE(cs.data_type, '')      AS data_type,
+                       COALESCE(cs.description, '')    AS description
+                FROM   kb_documents k
+                LEFT   JOIN collection_settings cs ON cs.collection = k.collection
+                GROUP  BY k.collection, cs.priority, cs.data_type, cs.description
+                ORDER  BY k.collection";
             await using var r = await cmd.ExecuteReaderAsync(ct);
             var cols = new List<object>();
             while (await r.ReadAsync(ct))
@@ -167,9 +176,47 @@ public static class DocumentsEndpoints
                     collection  = r.GetString(0),
                     sources     = r.GetInt64(1),
                     chunks      = r.GetInt64(2),
-                    lastUpdated = r.GetDateTime(3)
+                    lastUpdated = r.GetDateTime(3),
+                    priority    = r.GetString(4),
+                    dataType    = r.GetString(5),
+                    description = r.GetString(6),
                 });
             return Results.Ok(cols);
+        });
+
+        // PUT /api/admin/collections/{collection}/settings — update priority/dataType/description
+        // body: { priority?: 'high'|'normal'|'low'|'hidden', dataType?: string, description?: string }
+        app.MapPut("/api/admin/collections/{collection}/settings", [Authorize("AdminOnly")] async (
+            string collection,
+            [FromBody] CollectionSettingsRequest req,
+            ClaimsPrincipal user,
+            NpgsqlDataSource ds,
+            CancellationToken ct) =>
+        {
+            var allowed = new[] { "high", "normal", "low", "hidden" };
+            var pri = (req.Priority ?? "normal").ToLowerInvariant();
+            if (!allowed.Contains(pri))
+                return Results.BadRequest(new { error = $"priority must be one of {string.Join(",", allowed)}" });
+
+            await using var conn = await ds.OpenConnectionAsync(ct);
+            await using var cmd  = conn.CreateCommand();
+            cmd.CommandText = @"INSERT INTO collection_settings (collection, priority, data_type, description, updated_at)
+                                VALUES ($1, $2, $3, $4, NOW())
+                                ON CONFLICT (collection) DO UPDATE
+                                SET priority   = $2,
+                                    data_type  = $3,
+                                    description = $4,
+                                    updated_at = NOW()";
+            cmd.Parameters.AddWithValue(collection);
+            cmd.Parameters.AddWithValue(pri);
+            cmd.Parameters.AddWithValue(req.DataType ?? "");
+            cmd.Parameters.AddWithValue(req.Description ?? "");
+            await cmd.ExecuteNonQueryAsync(ct);
+
+            var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+            _ = ActivityLogger.LogAsync(ds, username, "collection.settings.update", collection,
+                $"priority={pri} dataType={req.DataType ?? ""}");
+            return Results.Ok(new { collection, priority = pri, dataType = req.DataType ?? "", description = req.Description ?? "" });
         });
 
         // DELETE /api/admin/documents/{collection}/{*source}
