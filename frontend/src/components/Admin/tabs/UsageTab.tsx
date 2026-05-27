@@ -248,7 +248,7 @@ export default function UsageTab() {
                   {logs.length === 0 && (
                     <tr><td colSpan={6} className="px-3 py-6 text-center" style={{ color: 'var(--mute)' }}>Veri yok</td></tr>
                   )}
-                  {logs.map((l, i) => (
+                  {logs.slice(0, logsLimit).map((l, i) => (
                     <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
                       <td className="px-3 py-2" style={{ color: 'var(--mute)' }}>
                         {l.startTime ? new Date(l.startTime).toLocaleString() : '-'}

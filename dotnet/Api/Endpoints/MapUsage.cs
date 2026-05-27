@@ -101,10 +101,40 @@ app.MapGet("/api/admin/usage/models", [Authorize("AdminOnly")] async (
 });
 
 // GET /api/admin/usage/logs?limit=50
+// LiteLLM 'limit' parametresini bazı sürümlerde dikkate almıyor — biz de
+// üst sınırı sunucu tarafında JSON'u parse edip dilimliyoruz, kullanıcıya
+// tam istediği kadar satır dönsün.
 app.MapGet("/api/admin/usage/logs", [Authorize("AdminOnly")] async (
     int limit,
-    IOptions<LiteLLMOptions> opts, IHttpClientFactory http, CancellationToken ct) =>
-    await LiteLLMProxy($"/spend/logs?limit={Math.Clamp(limit, 1, 200)}", opts, http, ct));
+    IOptions<LiteLLMOptions> litellmOpts, IHttpClientFactory httpFactory, CancellationToken ct) =>
+{
+    var n = Math.Clamp(limit, 1, 1000);
+    using var client = httpFactory.CreateClient("proxy");
+    client.Timeout = TimeSpan.FromSeconds(30);
+    using var req = new HttpRequestMessage(HttpMethod.Get,
+        litellmOpts.Value.BaseUrl.TrimEnd('/') + $"/spend/logs?limit={n}");
+    req.Headers.Authorization =
+        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", litellmOpts.Value.ApiKey);
+    using var resp = await client.SendAsync(req, ct);
+    var body = await resp.Content.ReadAsStringAsync(ct);
+
+    // Parse JSON (array OR {data: array}) and take first N
+    try
+    {
+        var doc = JsonSerializer.Deserialize<JsonElement>(body);
+        var arr = doc.ValueKind == JsonValueKind.Array ? doc
+                : doc.TryGetProperty("data", out var d) && d.ValueKind == JsonValueKind.Array ? d
+                : default;
+        if (arr.ValueKind == JsonValueKind.Array)
+        {
+            var sliced = arr.EnumerateArray().Take(n).ToArray();
+            return Results.Json(sliced);
+        }
+    }
+    catch { /* fall through to raw body */ }
+
+    return Results.Text(body, "application/json", statusCode: (int)resp.StatusCode);
+});
 
 // GET /api/admin/usage/end-users — aggregate end_user spend from LiteLLM logs
 app.MapGet("/api/admin/usage/end-users", [Authorize("AdminOnly")] async (
