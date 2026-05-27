@@ -116,11 +116,30 @@ public sealed class DocumentIngestion : IDocumentIngestion
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    /// <summary>Delete ALL chunks in a collection. Returns number of rows deleted.</summary>
+    /// <summary>
+    /// Delete ALL chunks in a collection. Also wipes SQL-ingest tracking tables
+    /// (sql_ingested_rows, sql_ingested_objects) for the same collection so that
+    /// a subsequent delta sync re-ingests everything (instead of seeing "no changes").
+    /// Returns number of kb_documents rows deleted.
+    /// </summary>
     public async Task<int> DeleteCollectionAsync(string collection, CancellationToken ct = default)
     {
         await using var conn = await _ds.OpenConnectionAsync(ct);
-        await using var cmd  = conn.CreateCommand();
+
+        await using (var cmd1 = conn.CreateCommand())
+        {
+            cmd1.CommandText = "DELETE FROM sql_ingested_rows WHERE collection = $1;";
+            cmd1.Parameters.AddWithValue(collection);
+            try { await cmd1.ExecuteNonQueryAsync(ct); } catch { /* table may not exist */ }
+        }
+        await using (var cmd2 = conn.CreateCommand())
+        {
+            cmd2.CommandText = "DELETE FROM sql_ingested_objects WHERE collection = $1;";
+            cmd2.Parameters.AddWithValue(collection);
+            try { await cmd2.ExecuteNonQueryAsync(ct); } catch { /* table may not exist */ }
+        }
+
+        await using var cmd = conn.CreateCommand();
         cmd.CommandText = "DELETE FROM kb_documents WHERE collection = $1;";
         cmd.Parameters.AddWithValue(collection);
         return await cmd.ExecuteNonQueryAsync(ct);
