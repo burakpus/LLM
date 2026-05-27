@@ -95,47 +95,54 @@ public static class DocumentsEndpoints
             return Results.Ok(results);
         });
 
-        // GET /api/admin/documents?collection=xxx&page=1&pageSize=20
+        // GET /api/admin/documents?collection=xxx&page=1&pageSize=50&q=keyword
+        // q: optional ILIKE substring match on source OR title (case-insensitive)
         app.MapGet("/api/admin/documents", [Authorize("AdminOnly")] async (
             string? collection,
             int page,
             int pageSize,
+            string? q,
             NpgsqlDataSource ds,
             CancellationToken ct) =>
         {
             page     = Math.Max(1, page);
-            pageSize = Math.Clamp(pageSize, 5, 100);
+            pageSize = Math.Clamp(pageSize, 5, 1000);   // allow up to 1000 per page (was 100)
             var offset = (page - 1) * pageSize;
+            var hasQ   = !string.IsNullOrWhiteSpace(q);
+            var qLike  = hasQ ? "%" + q!.Trim() + "%" : null;
+
+            // Build WHERE dynamically — positional $N parameters in order:
+            //   $1 = limit, $2 = offset, then optional [$3 = collection], [$N = qLike]
+            var whereParts = new List<string>();
+            int next = 3;
+            int colP = 0, qP = 0;
+            if (collection is not null) { colP = next++; whereParts.Add($"collection = ${colP}"); }
+            if (hasQ)                   { qP   = next++; whereParts.Add($"(source ILIKE ${qP} OR title ILIKE ${qP})"); }
+            var whereSql = whereParts.Count > 0 ? "WHERE " + string.Join(" AND ", whereParts) : "";
 
             await using var conn = await ds.OpenConnectionAsync(ct);
 
             // Total count
             await using var countCmd = conn.CreateCommand();
-            countCmd.CommandText = collection is null
-                ? "SELECT COUNT(DISTINCT source) FROM kb_documents"
-                : "SELECT COUNT(DISTINCT source) FROM kb_documents WHERE collection = $1";
-            if (collection is not null) countCmd.Parameters.AddWithValue(collection);
+            countCmd.CommandText = $"SELECT COUNT(DISTINCT source) FROM kb_documents {whereSql}";
+            if (colP > 0) countCmd.Parameters.AddWithValue(collection!);
+            if (qP   > 0) countCmd.Parameters.AddWithValue(qLike!);
             var total = Convert.ToInt64(await countCmd.ExecuteScalarAsync(ct));
 
             // Paginated sources
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = collection is null
-                ? @"SELECT collection, source, MAX(title) as title,
-                           COUNT(*) as chunks, MAX(updated_at) as updated_at
-                    FROM kb_documents
-                    GROUP BY collection, source
-                    ORDER BY MAX(updated_at) DESC
-                    LIMIT $1 OFFSET $2"
-                : @"SELECT collection, source, MAX(title) as title,
-                           COUNT(*) as chunks, MAX(updated_at) as updated_at
-                    FROM kb_documents
-                    WHERE collection = $3
-                    GROUP BY collection, source
-                    ORDER BY MAX(updated_at) DESC
-                    LIMIT $1 OFFSET $2";
+            cmd.CommandText = $@"
+                SELECT collection, source, MAX(title) as title,
+                       COUNT(*) as chunks, MAX(updated_at) as updated_at
+                FROM   kb_documents
+                {whereSql}
+                GROUP  BY collection, source
+                ORDER  BY MAX(updated_at) DESC
+                LIMIT  $1 OFFSET $2";
             cmd.Parameters.AddWithValue(pageSize);
             cmd.Parameters.AddWithValue(offset);
-            if (collection is not null) cmd.Parameters.AddWithValue(collection);
+            if (colP > 0) cmd.Parameters.AddWithValue(collection!);
+            if (qP   > 0) cmd.Parameters.AddWithValue(qLike!);
 
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             var docs = new List<object>();

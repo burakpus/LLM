@@ -136,12 +136,14 @@ export async function uploadFiles(files: File[], collection: string): Promise<Up
 export async function listDocuments(
   collection: string | null,
   page = 1,
-  pageSize = 20,
+  pageSize = 50,
+  q?: string,
 ): Promise<DocumentsPage> {
   const params = new URLSearchParams()
   if (collection) params.set('collection', collection)
   params.set('page', String(page))
   params.set('pageSize', String(pageSize))
+  if (q && q.trim()) params.set('q', q.trim())
 
   const r = await fetch(`/api/admin/documents?${params}`, { headers: authHeaders() })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)

@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { getEventLog, getEventLogSummary } from '../../../api/admin'
 import type { EventLogPage, EventLogFilters, EventLogSummary } from '../../../api/admin'
+import { DEFAULT_PAGE_SIZE, PageSizeSelector } from './_shared'
 
 const SEVERITY_COLORS: Record<string, string> = {
   Debug:    '#9aa0a6',
@@ -24,7 +25,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 export default function SecurityTab() {
   const [page, setPage] = useState<EventLogPage | null>(null)
   const [summary, setSummary] = useState<EventLogSummary | null>(null)
-  const [filters, setFilters] = useState<EventLogFilters>({ page: 1, pageSize: 50 })
+  const [filters, setFilters] = useState<EventLogFilters>({ page: 1, pageSize: DEFAULT_PAGE_SIZE })
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<number | null>(null)
@@ -65,11 +66,18 @@ export default function SecurityTab() {
             OWASP Logging Cheat Sheet uyumlu denetim kayıtları — kim · ne · ne zaman · nereden · neden
           </p>
         </div>
-        <button onClick={load} disabled={loading}
-                className="px-3 py-1.5 rounded-md text-xs cursor-pointer disabled:opacity-50"
-                style={{ background: 'var(--surface-hi)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>
-          {loading ? '…' : '🔄 Yenile'}
-        </button>
+        <div className="flex items-center gap-2">
+          <PageSizeSelector
+            value={filters.pageSize ?? DEFAULT_PAGE_SIZE}
+            onChange={n => setFilters(prev => ({ ...prev, pageSize: n, page: 1 }))}
+            compact
+          />
+          <button onClick={load} disabled={loading}
+                  className="px-3 py-1.5 rounded-md text-xs cursor-pointer disabled:opacity-50"
+                  style={{ background: 'var(--surface-hi)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>
+            {loading ? '…' : '🔄 Yenile'}
+          </button>
+        </div>
       </div>
 
       {/* 24h summary */}

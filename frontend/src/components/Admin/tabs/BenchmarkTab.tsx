@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { runBenchmark, listBenchmarks } from '../../../api/admin'
 import type { BenchmarkResult } from '../../../api/admin'
+import { DEFAULT_PAGE_SIZE, PageSizeSelector } from './_shared'
 
 const BENCH_MODELS = ['chat', 'code', 'reason'] as const
 const BENCH_PRESETS = [1, 5, 10, 25, 50, 100] as const
@@ -16,12 +17,13 @@ export default function BenchmarkTab() {
   const [running,     setRunning]     = useState<boolean>(false)
   const [latest,      setLatest]      = useState<BenchmarkResult | null>(null)
   const [history,     setHistory]     = useState<BenchmarkResult[]>([])
+  const [historyLimit, setHistoryLimit] = useState<number>(DEFAULT_PAGE_SIZE)
   const [error,       setError]       = useState<string | null>(null)
 
   const reloadHistory = useCallback(async () => {
-    try { setHistory(await listBenchmarks(undefined, 30)) }
+    try { setHistory(await listBenchmarks(undefined, historyLimit)) }
     catch (e: any) { setError(e.message) }
-  }, [])
+  }, [historyLimit])
 
   useEffect(() => { reloadHistory() }, [reloadHistory])
 
@@ -189,9 +191,10 @@ export default function BenchmarkTab() {
       {/* History */}
       <div className="rounded-xl overflow-hidden"
            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-        <div className="px-3 py-2 text-xs font-semibold"
+        <div className="px-3 py-2 text-xs font-semibold flex items-center justify-between gap-2"
              style={{ background: 'var(--surface-hi)', color: 'var(--mute)', borderBottom: '1px solid var(--border)' }}>
-          Geçmiş ({history.length})
+          <span>Geçmiş ({history.length})</span>
+          <PageSizeSelector value={historyLimit} onChange={setHistoryLimit} compact />
         </div>
         <table className="w-full text-xs">
           <thead style={{ color: 'var(--mute)' }}>

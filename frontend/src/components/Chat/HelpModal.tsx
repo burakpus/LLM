@@ -160,7 +160,13 @@ function ContentModes() {
         <p className="text-sm" style={{ color: 'var(--text-2)' }}>
           Admin panelinden yüklenen şirket içi dökümanlardan bilgi çekme modu.
         </p>
-        <UL items={['PDF, DOCX, TXT, MD dosyalarında arama', 'Skill seçilince ilgili koleksiyonda arama', 'Yanıtta kaç döküman referans alındığı gösterilir']} />
+        <UL items={[
+          'PDF, DOCX, TXT, MD dosyalarında arama (+ SQL şema/veri ingest)',
+          'Hibrit arama: pgvector + Postgres full-text — Türkçe destekli',
+          'Skill seçilince ilgili koleksiyonda arama',
+          'Yanıtta kaç döküman referans alındığı (kbHits) gösterilir',
+          'Collection öncelikleri (admin Documents tab): High = 2× / Low = 0.5× / Hidden = filtre out → en doğru kaynağı öne çıkar',
+        ]} />
       </div>
 
       <Tip>Alt bardaki pill'lere tıklayarak modlar arasında geçiş yapabilirsiniz. Her sohbet kendi modunu hatırlar.</Tip>
@@ -449,8 +455,14 @@ function ContentAdmin() {
         ]},
         { tab: 'Documents', icon: '📄', items: [
           'Yüklü dökümanlar kaynak ve koleksiyona göre listelenir',
-          'Collection dropdown ile filtreleme',
+          'Collection dropdown + serbest "satır filtresi" (source/title araması, debounce)',
+          'Top XXX seçici: 25/50/100/200/500/1000 — büyük listelerde sayfalama yerine tek sayfa',
           'Delete → Confirm ile döküman silinir (RAG\'dan da çıkar)',
+          'Collection Ayarları paneli (açılır):',
+          '  • Öncelik: High (×2.0) / Normal (×1.0) / Low (×0.5) / Hidden (RAG\'da hiç dönmez)',
+          '  • Veri Tipi: serbest etiket (örn. schema, data-dictionary)',
+          '  • Açıklama: koleksiyonun içeriği ne için (opsiyonel)',
+          '  Aynı tabloyu hem ham CREATE TABLE chunks hem data dictionary olarak ingest edersen, ikincisine High verip RAG\'ı doğru kaynağa yönlendir',
         ]},
         { tab: 'Skills', icon: '🎯', items: [
           'Mevcut skill .md dosyaları VEYA klasör tabanlı skill\'ler listelenir',
@@ -473,17 +485,18 @@ function ContentAdmin() {
         ]},
         { tab: 'İşler', icon: '⚡', items: [
           'Arka plan job kuyruğu — tip/durum filtresi, iptal, tekrar dene',
+          'Top XXX seçici (default 50) — büyük job geçmişi için',
           'Detay: sol menüde "Arka Plan İşleri" yardım bölümü',
         ]},
         { tab: 'Kullanım', icon: '📊', items: [
           'Kullanıcı bazlı token tablosu (prompt + completion + maliyet)',
           'Model bazlı kullanım (chat / code)',
-          'Son 50 istek detayı + 👍/👎 oy geri bildirimleri',
+          'Son N istek detayı + 👍/👎 oy geri bildirimleri (N: Top XXX selector ile ayarlanır)',
         ]},
         { tab: 'Aktivite', icon: '📋', items: [
           'Tüm yönetici işlemlerinin kronolojik kaydı (legacy)',
           'Döküman/skill/şablon/SQL bağlantı eylemleri',
-          'Filtre: action tipi (örn: sql.connection.create)',
+          'Filtre: action tipi (örn: sql.connection.create) · Top XXX (default 50)',
           'Her satır: kullanıcı + tarih + hedef + detay',
         ]},
         { tab: '🛡 Güvenlik', icon: '🛡', items: [

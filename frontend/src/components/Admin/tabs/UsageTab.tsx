@@ -1,21 +1,22 @@
 import { useEffect, useState } from 'react'
 import { getUsageUsers, getUsageModels, getUsageLogs, getRatingStats } from '../../../api/admin'
 import type { UserSpend, ModelSpend, SpendLog, RatingStats } from '../../../api/admin'
-import { formatDate } from './_shared'
+import { DEFAULT_PAGE_SIZE, PageSizeSelector, formatDate } from './_shared'
 
 export default function UsageTab() {
   const [users,  setUsers]  = useState<UserSpend[]>([])
   const [models, setModels] = useState<ModelSpend[]>([])
   const [logs,    setLogs]    = useState<SpendLog[]>([])
   const [ratings, setRatings] = useState<RatingStats | null>(null)
+  const [logsLimit, setLogsLimit] = useState<number>(DEFAULT_PAGE_SIZE)
   const [loading,  setLoading]  = useState(true)
   const [error,    setError]    = useState<string | null>(null)
 
-  const load = async () => {
+  const load = async (limit = logsLimit) => {
     setLoading(true); setError(null)
     try {
       const [u, m, l, r] = await Promise.all([
-        getUsageUsers(), getUsageModels(), getUsageLogs(50), getRatingStats().catch(() => null)
+        getUsageUsers(), getUsageModels(), getUsageLogs(limit), getRatingStats().catch(() => null)
       ])
       setUsers(u); setModels(m); setLogs(l); setRatings(r)
     } catch (e: any) {
@@ -32,15 +33,22 @@ export default function UsageTab() {
 
   return (
     <section className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-end justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-lg font-medium">Token Kullanımı</h2>
           <p className="text-xs mt-1" style={{ color: 'var(--mute)' }}>LiteLLM spend log verisi</p>
         </div>
-        <button onClick={load} className="px-3 py-1.5 rounded-lg text-xs cursor-pointer"
-                style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text)' }}>
-          ↺ Yenile
-        </button>
+        <div className="flex items-end gap-2">
+          <PageSizeSelector
+            value={logsLimit}
+            onChange={n => { setLogsLimit(n); load(n) }}
+            label="Son istekler"
+          />
+          <button onClick={() => load()} className="px-3 py-2 rounded-lg text-xs cursor-pointer"
+                  style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+            ↺ Yenile
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -222,7 +230,7 @@ export default function UsageTab() {
                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
             <div className="px-4 py-3 text-xs font-semibold uppercase tracking-wider"
                  style={{ color: 'var(--mute)', borderBottom: '1px solid var(--border)' }}>
-              Son 50 İstek
+              Son {logsLimit} İstek
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">

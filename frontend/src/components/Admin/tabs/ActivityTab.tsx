@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { getActivityLog } from '../../../api/admin'
 import type { ActivityPage } from '../../../api/admin'
-import { formatDate } from './_shared'
+import { DEFAULT_PAGE_SIZE, PageSizeSelector, formatDate } from './_shared'
 
 const ACTION_LABELS: Record<string, { label: string; color: string }> = {
   'document.upload': { label: '📤 Doküman Yüklendi',  color: '#34a853' },
@@ -16,14 +16,14 @@ const ACTION_LABELS: Record<string, { label: string; color: string }> = {
 export default function ActivityTab() {
   const [data,    setData]    = useState<ActivityPage | null>(null)
   const [page,    setPage]    = useState(1)
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE)
   const [filter,  setFilter]  = useState('')
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState<string | null>(null)
-  const pageSize = 50
 
-  const load = async (p = page, f = filter) => {
+  const load = async (p = page, f = filter, ps = pageSize) => {
     setLoading(true); setError(null)
-    try { setData(await getActivityLog(p, pageSize, f || undefined)) }
+    try { setData(await getActivityLog(p, ps, f || undefined)) }
     catch (e: any) { setError(e.message) }
     finally { setLoading(false) }
   }
@@ -31,7 +31,10 @@ export default function ActivityTab() {
   useEffect(() => { load() }, [])
 
   const onFilter = (f: string) => {
-    setFilter(f); setPage(1); load(1, f)
+    setFilter(f); setPage(1); load(1, f, pageSize)
+  }
+  const onPageSize = (n: number) => {
+    setPageSize(n); setPage(1); load(1, filter, n)
   }
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / pageSize)) : 1
@@ -59,6 +62,7 @@ export default function ActivityTab() {
           <option value="template.update">Şablon Güncelleme</option>
           <option value="template.delete">Şablon Silme</option>
         </select>
+        <PageSizeSelector value={pageSize} onChange={onPageSize} compact />
         <button onClick={() => load()} className="px-3 py-2 rounded-md text-sm cursor-pointer"
                 style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text)' }}>
           ↺ Yenile

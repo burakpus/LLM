@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { deleteDocument, listCollections, listDocuments, updateCollectionSettings } from '../../../api/admin'
 import type { CollectionRow, CollectionPriority, DocumentsPage } from '../../../api/admin'
-import { formatDate } from './_shared'
+import { DEFAULT_PAGE_SIZE, DebouncedSearchInput, PageSizeSelector, formatDate } from './_shared'
 
 const PRIORITY_COLOR: Record<CollectionPriority, string> = {
   high:   '#34a853',
@@ -19,13 +19,13 @@ const PRIORITY_LABEL: Record<CollectionPriority, string> = {
 export default function DocumentsTab() {
   const [collections, setCollections] = useState<CollectionRow[]>([])
   const [filter, setFilter]           = useState<string>('')
+  const [search, setSearch]           = useState<string>('')
   const [page, setPage]               = useState(1)
+  const [pageSize, setPageSize]       = useState<number>(DEFAULT_PAGE_SIZE)
   const [data, setData]               = useState<DocumentsPage | null>(null)
   const [loading, setLoading]         = useState(false)
   const [error, setError]             = useState<string | null>(null)
   const [confirm, setConfirm]         = useState<{ collection: string; source: string } | null>(null)
-
-  const pageSize = 20
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -33,7 +33,7 @@ export default function DocumentsTab() {
     try {
       const [cols, page1] = await Promise.all([
         listCollections(),
-        listDocuments(filter || null, page, pageSize),
+        listDocuments(filter || null, page, pageSize, search || undefined),
       ])
       setCollections(cols)
       setData(page1)
@@ -42,7 +42,7 @@ export default function DocumentsTab() {
     } finally {
       setLoading(false)
     }
-  }, [filter, page])
+  }, [filter, page, pageSize, search])
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -71,6 +71,15 @@ export default function DocumentsTab() {
         <div className="flex-1" />
 
         <label className="block">
+          <div className="text-xs mb-1.5" style={{ color: 'var(--mute)' }}>Satır filtresi</div>
+          <DebouncedSearchInput
+            initial={search}
+            onCommit={v => { setSearch(v); setPage(1) }}
+            placeholder="source / title içinde ara…"
+          />
+        </label>
+
+        <label className="block">
           <div className="text-xs mb-1.5" style={{ color: 'var(--mute)' }}>Collection</div>
           <select
             value={filter}
@@ -90,6 +99,8 @@ export default function DocumentsTab() {
             ))}
           </select>
         </label>
+
+        <PageSizeSelector value={pageSize} onChange={n => { setPageSize(n); setPage(1) }} />
 
         <button
           onClick={refresh}

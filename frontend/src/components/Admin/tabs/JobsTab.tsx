@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { listAdminJobs, cancelJob, retryJob } from '../../../api/admin'
 import type { JobsPage } from '../../../api/admin'
 import JobProgressModal from '../JobProgressModal'
+import { DEFAULT_PAGE_SIZE, PageSizeSelector } from './_shared'
 
 const JOB_TYPE_LABELS: Record<string, string> = {
   'sql.ingest-schema':  'SQL Şema Çıkarımı',
@@ -33,6 +34,7 @@ function fmtDuration(ms: number) {
 export default function JobsTab() {
   const [page,     setPage]     = useState<JobsPage | null>(null)
   const [pageNum,  setPageNum]  = useState(1)
+  const [pageSizeSel, setPageSizeSel] = useState<number>(DEFAULT_PAGE_SIZE)
   const [typeFlt,  setTypeFlt]  = useState<string>('')
   const [statFlt,  setStatFlt]  = useState<string>('')
   const [loading,  setLoading]  = useState(true)
@@ -45,7 +47,7 @@ export default function JobsTab() {
     setLoading(true); setError(null)
     try {
       const p = await listAdminJobs({
-        page: pageNum, pageSize: 50,
+        page: pageNum, pageSize: pageSizeSel,
         type:   typeFlt || undefined,
         status: statFlt || undefined,
       })
@@ -55,7 +57,7 @@ export default function JobsTab() {
     } finally {
       setLoading(false)
     }
-  }, [pageNum, typeFlt, statFlt])
+  }, [pageNum, pageSizeSel, typeFlt, statFlt])
 
   useEffect(() => { load() }, [load])
 
@@ -87,7 +89,7 @@ export default function JobsTab() {
   }
 
   const total      = page?.total ?? 0
-  const pageSize   = page?.pageSize ?? 50
+  const pageSize   = page?.pageSize ?? pageSizeSel
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   return (
@@ -113,6 +115,7 @@ export default function JobsTab() {
               <option key={k} value={k}>{v.label}</option>
             ))}
           </select>
+          <PageSizeSelector value={pageSizeSel} onChange={n => { setPageSizeSel(n); setPageNum(1) }} compact />
           <button onClick={load} disabled={loading}
                   className="px-3 py-1.5 rounded-md text-xs cursor-pointer disabled:opacity-50"
                   style={{ background: 'var(--surface-hi)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>
