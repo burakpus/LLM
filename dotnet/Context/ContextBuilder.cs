@@ -60,19 +60,22 @@ public sealed class ContextBuilder : IContextBuilder
     private readonly ISessionMemory  _sessionMem;
     private readonly VectorStore.EmbeddingService _embed;
     private readonly SkillRegistry   _skills;
+    private readonly IRagSynonymService _synonyms;
 
     public ContextBuilder(
         IHybridSearch   kb,
         IAgentMemory    agentMem,
         ISessionMemory  sessionMem,
         VectorStore.EmbeddingService embed,
-        SkillRegistry   skills)
+        SkillRegistry   skills,
+        IRagSynonymService synonyms)
     {
         _kb         = kb;
         _agentMem   = agentMem;
         _sessionMem = sessionMem;
         _embed      = embed;
         _skills     = skills;
+        _synonyms   = synonyms;
     }
 
     public async Task<BuiltContext> BuildAsync(AgentContext ctx, CancellationToken ct = default)
@@ -94,8 +97,9 @@ public sealed class ContextBuilder : IContextBuilder
         //    Apply Turkish synonym expansion before embedding/FTS so that
         //    "vergi" matches columns named "VAT*", "müşteri" matches "Customer*", etc.
         //    The user's original query is unchanged in the LLM messages — only
-        //    the retrieval channel sees the expanded form.
-        var expandedQuery = TurkishSynonymExpander.Expand(ctx.UserQuery);
+        //    the retrieval channel sees the expanded form. Dictionary lives in
+        //    `rag_synonyms` DB table; admin panel UI manages it (60s cache).
+        var expandedQuery = _synonyms.Expand(ctx.UserQuery);
         var queryVec      = await _embed.EmbedAsync(expandedQuery, ct);
 
         // 3. KB retrieval — expanded query goes to both vector + FTS channels

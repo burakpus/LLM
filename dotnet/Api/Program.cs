@@ -208,6 +208,13 @@ var app = builder.Build();
             description  TEXT         NOT NULL DEFAULT '',
             updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS rag_synonyms (
+            term         TEXT         PRIMARY KEY,
+            synonyms     TEXT[]       NOT NULL DEFAULT '{}',
+            notes        TEXT         NOT NULL DEFAULT '',
+            created_by   VARCHAR(200) NOT NULL DEFAULT 'system',
+            updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        );
         CREATE TABLE IF NOT EXISTS event_log (
             id          BIGSERIAL    PRIMARY KEY,
             ts          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -436,6 +443,7 @@ app.MapChat();        // /api/chat[/stream] — see Endpoints/MapChat.cs
 // =============================================================================
 // ─── Ingest + Admin RAG Management ───────────────────────────────────────────
 app.MapDocuments();   // /api/ingest, /api/admin/upload, documents, collections — see Endpoints/MapDocuments.cs
+app.MapRag();         // /api/admin/rag/synonyms — see Endpoints/MapRag.cs
 
 // =============================================================================
 // ─── Admin — Usage (LiteLLM spend proxy) ─────────────────────────────────────

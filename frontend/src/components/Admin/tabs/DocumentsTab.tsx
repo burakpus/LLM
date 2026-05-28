@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { deleteDocument, listCollections, listDocuments, updateCollectionSettings } from '../../../api/admin'
-import type { CollectionRow, CollectionPriority, DocumentsPage } from '../../../api/admin'
+import {
+  deleteDocument, listCollections, listDocuments, updateCollectionSettings,
+  listRagSynonyms, upsertRagSynonym, deleteRagSynonym, testRagSynonyms,
+} from '../../../api/admin'
+import type { CollectionRow, CollectionPriority, DocumentsPage, RagSynonym } from '../../../api/admin'
 import { DEFAULT_PAGE_SIZE, DebouncedSearchInput, PageSizeSelector, formatDate } from './_shared'
 
 const PRIORITY_COLOR: Record<CollectionPriority, string> = {
@@ -129,6 +132,9 @@ export default function DocumentsTab() {
           onUpdated={updated => setCollections(cs => cs.map(c => c.collection === updated.collection ? { ...c, ...updated } : c))}
         />
       )}
+
+      {/* RAG synonyms — Türkçe ↔ İngilizce eşanlamlı yönetimi */}
+      <RagSynonymsPanel />
 
       <div className="rounded-xl overflow-hidden"
            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
@@ -375,6 +381,228 @@ function CollectionSettingsPanel({
           </p>
         </div>
       )}
+    </div>
+  )
+}
+
+// =============================================================================
+// RAG Synonyms — Türkçe ↔ İngilizce eşanlamlı yönetimi
+// =============================================================================
+
+function RagSynonymsPanel() {
+  const [rows,    setRows]    = useState<RagSynonym[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error,   setError]   = useState<string | null>(null)
+  const [open,    setOpen]    = useState(false)
+  const [newTerm, setNewTerm] = useState('')
+  const [newSyns, setNewSyns] = useState('')
+  const [confirm, setConfirm] = useState<string | null>(null)
+  const [testQ,   setTestQ]   = useState('')
+  const [testOut, setTestOut] = useState<{ expanded: string; added: string[] } | null>(null)
+  const [editingTerm, setEditingTerm] = useState<string | null>(null)
+  const [editingSyns, setEditingSyns] = useState<string>('')
+
+  const refresh = useCallback(async () => {
+    setLoading(true); setError(null)
+    try { setRows(await listRagSynonyms()) }
+    catch (e: any) { setError(e.message) }
+    finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { if (open) refresh() }, [open, refresh])
+
+  const onAdd = async () => {
+    const term = newTerm.trim().toLowerCase()
+    if (!term) return
+    const syns = newSyns.split(',').map(s => s.trim()).filter(s => s.length > 0)
+    if (syns.length === 0) { setError('En az bir eşanlamlı gerekli'); return }
+    try {
+      await upsertRagSynonym(term, syns)
+      setNewTerm(''); setNewSyns('')
+      await refresh()
+    } catch (e: any) { setError(e.message) }
+  }
+  const onSaveEdit = async (term: string) => {
+    const syns = editingSyns.split(',').map(s => s.trim()).filter(s => s.length > 0)
+    if (syns.length === 0) { setError('En az bir eşanlamlı gerekli'); return }
+    try {
+      await upsertRagSynonym(term, syns)
+      setEditingTerm(null); setEditingSyns('')
+      await refresh()
+    } catch (e: any) { setError(e.message) }
+  }
+  const onDelete = async (term: string) => {
+    try {
+      await deleteRagSynonym(term)
+      setConfirm(null)
+      await refresh()
+    } catch (e: any) { setError(e.message) }
+  }
+  const onTest = async () => {
+    if (!testQ.trim()) return
+    try { setTestOut(await testRagSynonyms(testQ)) }
+    catch (e: any) { setError(e.message) }
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}
+              className="text-xs px-3 py-2 rounded-md cursor-pointer self-start transition"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+        🔤 RAG Eşanlamlıları (Türkçe ↔ İngilizce)
+      </button>
+    )
+  }
+
+  return (
+    <div className="rounded-xl p-4 space-y-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>🔤 RAG Eşanlamlıları</h3>
+          <p className="text-[11px] mt-0.5" style={{ color: 'var(--mute)' }}>
+            Kullanıcı "vergi" yazınca embedding/FTS sorgusu otomatik "vat kdv tax" haline gelir. Sözlük DB'de tutulur, 60sn cache. Türkçe ek alabilen terimler için 4+ karakter uzunluğundakiler prefix match yapar (örn. "vergisi" → "vergi" eşleşir).
+          </p>
+        </div>
+        <button onClick={() => setOpen(false)}
+                className="text-xs px-2 py-1 rounded cursor-pointer"
+                style={{ background: 'var(--surface-2)', color: 'var(--mute)' }}>
+          Kapat
+        </button>
+      </div>
+
+      {error && (
+        <div className="rounded-md px-3 py-2 text-xs"
+             style={{ background: 'rgba(234,67,53,0.1)', color: '#ea4335', border: '1px solid rgba(234,67,53,0.3)' }}>
+          {error}
+        </div>
+      )}
+
+      {/* Test sorgu genişletme */}
+      <div className="rounded-md p-3 space-y-2" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+        <div className="text-[11px] font-medium" style={{ color: 'var(--mute)' }}>Sorgu Genişletme Testi</div>
+        <div className="flex gap-2">
+          <input value={testQ} onChange={e => setTestQ(e.target.value)} placeholder="Sorgu yaz (örn: vergi kolonları)"
+                 onKeyDown={e => { if (e.key === 'Enter') onTest() }}
+                 className="flex-1 px-3 py-1.5 rounded-md text-sm outline-none"
+                 style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+          <button onClick={onTest}
+                  className="px-3 py-1.5 rounded-md text-sm cursor-pointer"
+                  style={{ background: 'var(--accent)', color: '#0a0a0a' }}>
+            Genişlet
+          </button>
+        </div>
+        {testOut && (
+          <div className="text-xs space-y-1 mt-2">
+            <div><span style={{ color: 'var(--mute)' }}>Genişletilmiş:</span> <code style={{ color: 'var(--text)' }}>{testOut.expanded}</code></div>
+            {testOut.added.length > 0 && (
+              <div><span style={{ color: 'var(--mute)' }}>Eklenen:</span>{' '}
+                {testOut.added.map(a => (
+                  <span key={a} className="inline-block text-[10px] px-1.5 py-0.5 rounded mx-0.5"
+                        style={{ background: 'var(--accent)', color: '#0a0a0a' }}>{a}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Yeni terim ekle */}
+      <div className="rounded-md p-3 space-y-2" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+        <div className="text-[11px] font-medium" style={{ color: 'var(--mute)' }}>Yeni Terim Ekle</div>
+        <div className="flex gap-2 flex-wrap">
+          <input value={newTerm} onChange={e => setNewTerm(e.target.value)} placeholder="terim (lowercase, örn: vergi)"
+                 className="px-3 py-1.5 rounded-md text-sm outline-none w-40"
+                 style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+          <input value={newSyns} onChange={e => setNewSyns(e.target.value)} placeholder="eşanlamlılar (virgülle ayır: vat, kdv, tax)"
+                 onKeyDown={e => { if (e.key === 'Enter') onAdd() }}
+                 className="flex-1 min-w-[20rem] px-3 py-1.5 rounded-md text-sm outline-none"
+                 style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+          <button onClick={onAdd} disabled={!newTerm.trim() || !newSyns.trim()}
+                  className="px-3 py-1.5 rounded-md text-sm cursor-pointer disabled:opacity-50"
+                  style={{ background: 'var(--accent)', color: '#0a0a0a' }}>
+            + Ekle
+          </button>
+        </div>
+      </div>
+
+      {/* Liste */}
+      <div className="rounded-md overflow-hidden" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+        <div className="px-3 py-2 text-[11px] flex items-center justify-between" style={{ color: 'var(--mute)', borderBottom: '1px solid var(--border)' }}>
+          <span>Toplam {rows.length} terim</span>
+          {loading && <span>yükleniyor…</span>}
+        </div>
+        <table className="w-full text-xs">
+          <thead style={{ color: 'var(--mute)' }}>
+            <tr>
+              <th className="px-3 py-2 text-left font-medium" style={{ width: '14rem' }}>Terim</th>
+              <th className="px-3 py-2 text-left font-medium">Eşanlamlılar</th>
+              <th className="px-3 py-2 text-right font-medium" style={{ width: '8rem' }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && !loading && (
+              <tr><td colSpan={3} className="px-3 py-4 text-center" style={{ color: 'var(--mute)' }}>Henüz eşanlamlı yok</td></tr>
+            )}
+            {rows.map(r => {
+              const isEdit    = editingTerm === r.term
+              const isConfirm = confirm === r.term
+              return (
+                <tr key={r.term} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td className="px-3 py-1.5 font-mono" style={{ color: 'var(--text)' }}>{r.term}</td>
+                  <td className="px-3 py-1.5">
+                    {isEdit ? (
+                      <input value={editingSyns} onChange={e => setEditingSyns(e.target.value)} autoFocus
+                             onKeyDown={e => { if (e.key === 'Enter') onSaveEdit(r.term); if (e.key === 'Escape') setEditingTerm(null) }}
+                             className="w-full px-2 py-1 rounded text-xs outline-none"
+                             style={{ background: 'var(--input-bg)', border: '1px solid var(--accent)', color: 'var(--text)' }} />
+                    ) : (
+                      <span style={{ color: 'var(--text-2)' }}>{r.synonyms.join(', ')}</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-1.5 text-right">
+                    {isEdit ? (
+                      <div className="inline-flex gap-1">
+                        <button onClick={() => onSaveEdit(r.term)}
+                                className="px-2 py-0.5 rounded text-[11px] cursor-pointer"
+                                style={{ background: '#34a853', color: '#fff' }}>Kaydet</button>
+                        <button onClick={() => setEditingTerm(null)}
+                                className="px-2 py-0.5 rounded text-[11px] cursor-pointer"
+                                style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>İptal</button>
+                      </div>
+                    ) : isConfirm ? (
+                      <div className="inline-flex gap-1">
+                        <button onClick={() => onDelete(r.term)}
+                                className="px-2 py-0.5 rounded text-[11px] cursor-pointer"
+                                style={{ background: '#ea4335', color: '#fff' }}>Sil</button>
+                        <button onClick={() => setConfirm(null)}
+                                className="px-2 py-0.5 rounded text-[11px] cursor-pointer"
+                                style={{ background: 'var(--surface-hi)', color: 'var(--text-2)' }}>İptal</button>
+                      </div>
+                    ) : (
+                      <div className="inline-flex gap-1">
+                        <button onClick={() => { setEditingTerm(r.term); setEditingSyns(r.synonyms.join(', ')) }}
+                                className="px-2 py-0.5 rounded text-[11px] cursor-pointer"
+                                style={{ color: 'var(--mute)' }}
+                                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-hi)'}
+                                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
+                          ✏ Düzenle
+                        </button>
+                        <button onClick={() => setConfirm(r.term)}
+                                className="px-2 py-0.5 rounded text-[11px] cursor-pointer"
+                                style={{ color: '#ea4335' }}
+                                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(234,67,53,0.1)'}
+                                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
+                          Sil
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

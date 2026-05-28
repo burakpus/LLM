@@ -165,6 +165,41 @@ export async function deleteDocument(collection: string, source: string): Promis
   return r.json()
 }
 
+// ── RAG synonyms ─────────────────────────────────────────────────────────────
+export interface RagSynonym {
+  term:     string
+  synonyms: string[]
+}
+export async function listRagSynonyms(): Promise<RagSynonym[]> {
+  const r = await fetch('/api/admin/rag/synonyms', { headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+export async function upsertRagSynonym(term: string, synonyms: string[], notes?: string): Promise<RagSynonym> {
+  const r = await fetch('/api/admin/rag/synonyms', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ term, synonyms, notes }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`)
+  return r.json()
+}
+export async function deleteRagSynonym(term: string): Promise<{ deleted: string }> {
+  const r = await fetch(`/api/admin/rag/synonyms/${encodeURIComponent(term)}`,
+    { method: 'DELETE', headers: authHeaders() })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+export async function testRagSynonyms(query: string): Promise<{ original: string; expanded: string; added: string[] }> {
+  const r = await fetch('/api/admin/rag/synonyms/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ query }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
+
 export async function listSkills(): Promise<SkillRow[]> {
   const r = await fetch('/api/admin/skills', { headers: authHeaders() })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)

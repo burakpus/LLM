@@ -154,6 +154,11 @@ public static class ServiceCollectionExtensions
             services.PostConfigure(kbOpts);
         services.AddSingleton<IHybridSearch, PgHybridSearch>();
 
+        // RAG synonym expansion — DB-backed dictionary with 60s cache.
+        // Seeded at startup if rag_synonyms table is empty.
+        services.AddSingleton<IRagSynonymService, RagSynonymService>();
+        services.AddHostedService<RagSynonymSeeder>();
+
         // Skill registry — load .md files at startup (eager)
         // Without this, the first /api/skills request pays the file I/O cost (86+ files).
         services.AddSingleton(sp =>
