@@ -44,6 +44,72 @@ Tipik süre: **20-25 saniye**.
 - generated/: Geçici, 24h TTL (Faz 1.3)
 - appsettings.json: server-side override key'ler `merge_appsettings.py` ile korunur
 
+## Opsiyonel — LiteParse OCR (taranmış PDF + resim desteği)
+
+`DocumentParser` text-based PDF'leri PdfPig ile parse eder; taranmış PDF veya resim
+yüklemelerde (.jpg/.png/.tiff) [LiteParse](https://github.com/run-llama/liteparse)
+CLI subprocess'i devreye girer. Binary yoksa kod sessizce devre dışı kalır
+(`LiteParseInvoker.IsAvailableAsync` boot'ta probe yapar, fail → no-op).
+
+### Sunucu kurulumu (~50 MB toplam, bir kerelik)
+
+```bash
+# 1) Tesseract OCR engine + dil paketleri
+sudo apt-get update
+sudo apt-get install -y tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng
+
+# 2) lit CLI binary (Rust, statik binary)
+LIT_VERSION=$(curl -s https://api.github.com/repos/run-llama/liteparse/releases/latest \
+              | grep tag_name | cut -d'"' -f4)
+curl -L "https://github.com/run-llama/liteparse/releases/download/${LIT_VERSION}/lit-x86_64-unknown-linux-gnu.tar.gz" \
+     -o /tmp/lit.tar.gz
+sudo tar xzf /tmp/lit.tar.gz -C /usr/local/bin/
+sudo chmod +x /usr/local/bin/lit
+rm /tmp/lit.tar.gz
+
+# 3) Doğrulama
+lit --version
+tesseract --list-langs | grep -E "(tur|eng)"
+
+# 4) Service'i kullansın (otomatik probe yapar — restart yeterli, kurulum sonrası
+#    yeni request'lerde LiteParse aktif olur)
+sudo systemctl restart setllm-api
+```
+
+### Konfigürasyon (appsettings.json — Server tarafı override)
+
+```json
+"LiteParse": {
+  "Enabled":      true,
+  "BinaryPath":   "lit",
+  "LangPack":     "tur+eng",
+  "TessdataPath": null,
+  "TimeoutSec":   30
+}
+```
+
+- `Enabled=false` → tüm fallback'i kapat (mevcut PdfPig davranışı)
+- `LangPack` → Tesseract dil kodu (örn. `tur+eng+ara` çok dilli)
+- `TessdataPath` → tessdata-fast dizini kullanmak istersen (`/usr/share/tesseract-ocr/4.00/tessdata/`); null = default
+- `TimeoutSec` → büyük tarama PDF'ler 30sn'yi aşarsa artırın
+
+### Sağlık kontrolü
+
+```bash
+# Test: küçük taranmış PDF yükle (admin UI → Upload tab)
+# Log'da görmeli:
+sudo journalctl -u setllm-api -n 100 | grep -iE "(liteparse|lit parse)"
+# Beklenen: "LiteParse available at lit" mesajı + parse OK
+```
+
+### Hata durumları
+
+| Belirti | Sebep | Çözüm |
+|---|---|---|
+| Log: "LiteParse not available" | Binary `PATH`'te değil | `which lit` ile kontrol, `BinaryPath` mutlak yola çevir |
+| OCR sonuç boş | tessdata-tur eksik | `tesseract --list-langs` kontrol |
+| Timeout sık | Büyük taranmış PDF | `TimeoutSec` artır (60-120) |
+
 ## Audit Log Yönetimi
 
 `event_log` tablosu OWASP-uyumlu denetim kayıtlarını saklar.

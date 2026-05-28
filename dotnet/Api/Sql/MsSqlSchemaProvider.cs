@@ -139,7 +139,7 @@ public sealed class MsSqlSchemaProvider : ISqlSchemaProvider
             if (pkCols.Contains(columns[i].Name))
                 columns[i] = columns[i] with { IsPrimaryKey = true };
 
-        // 3) Foreign keys
+        // 3a) Outgoing foreign keys (this table → other tables)
         var fks = new List<FkDef>();
         await using (var fkCmd = conn.CreateCommand())
         {
@@ -159,6 +159,30 @@ public sealed class MsSqlSchemaProvider : ISqlSchemaProvider
             await using var r = await fkCmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
                 fks.Add(new FkDef(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)));
+        }
+
+        // 3b) Incoming foreign keys (other tables → this table) — Faz 4 relation graph.
+        // Tells the chunk "Quotation is referenced by Invoice, Payment, Receipt, ..." so
+        // a model writing JOIN queries can find related tables without separate retrieval.
+        var incoming = new List<IncomingFkDef>();
+        await using (var inCmd = conn.CreateCommand())
+        {
+            inCmd.CommandText = @"
+                SELECT SCHEMA_NAME(pt.schema_id) AS src_schema,
+                       pt.name                   AS src_table,
+                       pc.name                   AS src_col,
+                       rc.name                   AS this_col
+                FROM sys.foreign_keys fk
+                JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+                JOIN sys.tables  pt ON pt.object_id = fk.parent_object_id
+                JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id     AND pc.column_id = fkc.parent_column_id
+                JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+                WHERE fk.referenced_object_id = OBJECT_ID(@n)
+                ORDER BY pt.name, pc.name";
+            inCmd.Parameters.Add("@n", SqlDbType.NVarChar, 520).Value = $"[{obj.Schema}].[{obj.Name}]";
+            await using var r = await inCmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                incoming.Add(new IncomingFkDef(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)));
         }
 
         // 4) Non-PK indexes
@@ -188,7 +212,7 @@ public sealed class MsSqlSchemaProvider : ISqlSchemaProvider
                 g.First().Unique))
             .ToList();
 
-        return new TableSchema(obj.Schema, obj.Name, columns, fks, indexes);
+        return new TableSchema(obj.Schema, obj.Name, columns, fks, indexes, incoming);
     }
 
     static async Task<string> GetObjectDefinitionAsync(SqlConnection conn, DbObjectInfo obj, CancellationToken ct)

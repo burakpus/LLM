@@ -50,24 +50,36 @@ public sealed record IndexDef(
     bool     Unique);
 
 public sealed record TableSchema(
-    string           Schema,
-    string           Name,
-    List<ColumnDef>  Columns,
-    List<FkDef>      ForeignKeys,
-    List<IndexDef>   Indexes);
+    string                  Schema,
+    string                  Name,
+    List<ColumnDef>         Columns,
+    List<FkDef>             ForeignKeys,
+    List<IndexDef>          Indexes,
+    List<IncomingFkDef>?    IncomingFks = null);
+
+/// <summary>
+/// Reverse-FK: which other tables reference THIS table. Used for Faz 4 relation
+/// graph — when retrieval picks up Quotation, the chunk lists "Invoice, Payment
+/// reference me" so downstream LLM can write JOIN queries.
+/// </summary>
+public sealed record IncomingFkDef(
+    string SourceSchema,
+    string SourceTable,
+    string SourceColumn,
+    string TargetColumn);   // which column on THIS table is being referenced
 
 public static class SqlSchemaChunkBuilder
 {
     /// <summary>
-    /// Max chars per chunk — nomic-embed-text-v1.5 supports only **2048 tokens** (vLLM enforces
-    /// this hard with HTTP 400, not silent truncation). 1 token ≈ 3-4 chars for SQL-heavy text,
-    /// so we keep chunks under ~6000 chars (safety margin of ~30%).
+    /// Max chars per chunk — nomic-embed-text-v1.5 hard limit is **2048 tokens** (vLLM 400 hatası).
+    /// SQL DDL'de token oranı 2.5-3.5 char/token (kısa identifier'lar, çok punctuation).
     ///
-    /// Earlier 7000-char limit caused 2788/11043 procedures to fail with
-    /// "maximum context length is 2048 tokens" — diagnosed 2026-05-28 after first
-    /// large-scale ingest. Lowered to 5500 to fit reliably.
+    /// Tarihçe:
+    ///  - 7000 → 2788/11043 fail (sınır çok yakın, dense SP'ler aşıyordu)
+    ///  - 5500 → 2151/11043 fail (hala yakın, ~%19 dense obje aşıyor)
+    ///  - 4000 → hedef &lt; 1% fail (~1000 token, %50 güvenlik payı)
     /// </summary>
-    public const int MaxChunkChars = 5500;
+    public const int MaxChunkChars = 4000;
 
     /// <summary>
     /// Build one or more chunks describing a table.
@@ -102,7 +114,7 @@ public static class SqlSchemaChunkBuilder
             colLines.Add(line.ToString());
         }
 
-        // FK + index sections
+        // FK + index + reverse-FK sections (tail of last chunk)
         var tailSb = new StringBuilder();
         if (t.ForeignKeys.Count > 0)
         {
@@ -110,6 +122,23 @@ public static class SqlSchemaChunkBuilder
             tailSb.AppendLine("FOREIGN_KEYS:");
             foreach (var fk in t.ForeignKeys)
                 tailSb.AppendLine($"  {fk.Column} -> {fk.RefSchema}.{fk.RefTable}.{fk.RefColumn}");
+        }
+        if (t.IncomingFks is { Count: > 0 })
+        {
+            tailSb.AppendLine();
+            tailSb.AppendLine($"INCOMING_REFS (this table is referenced by {t.IncomingFks.Count}):");
+            // Group by source table to reduce noise (one line per ref table, max 30)
+            var grouped = t.IncomingFks
+                .GroupBy(r => $"{r.SourceSchema}.{r.SourceTable}")
+                .OrderBy(g => g.Key)
+                .Take(30);
+            foreach (var g in grouped)
+            {
+                var cols = string.Join(",", g.Select(r => $"{r.SourceColumn}->{r.TargetColumn}").Distinct().Take(3));
+                tailSb.AppendLine($"  {g.Key} ({cols})");
+            }
+            if (t.IncomingFks.GroupBy(r => $"{r.SourceSchema}.{r.SourceTable}").Count() > 30)
+                tailSb.AppendLine($"  ... ve {t.IncomingFks.GroupBy(r => $"{r.SourceSchema}.{r.SourceTable}").Count() - 30} tablo daha");
         }
         if (t.Indexes.Count > 0)
         {
