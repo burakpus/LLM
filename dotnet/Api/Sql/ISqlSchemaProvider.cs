@@ -39,4 +39,16 @@ public interface ISqlSchemaProvider
         string connStr,
         DbObjectInfo obj,
         CancellationToken ct);
+
+    /// <summary>
+    /// Get a structured representation of a table (columns + FKs + indexes + PKs).
+    /// Used by SqlSchemaChunkBuilder to produce structured RAG chunks.
+    /// Providers that don't support this should return <c>null</c> and the ingest
+    /// pipeline will fall back to <see cref="GetCreateScriptAsync"/>.
+    /// </summary>
+    Task<TableSchema?> GetTableSchemaAsync(
+        string connStr,
+        DbObjectInfo obj,
+        CancellationToken ct)
+        => Task.FromResult<TableSchema?>(null);  // default: not supported
 }

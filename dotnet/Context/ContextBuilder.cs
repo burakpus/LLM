@@ -90,12 +90,17 @@ public sealed class ContextBuilder : IContextBuilder
         }
         budget -= Estimate(systemPrompt);
 
-        // 2. Embed query (used for both KB and agent memory retrieval)
-        var queryVec = await _embed.EmbedAsync(ctx.UserQuery, ct);
+        // 2. Embed query (used for both KB and agent memory retrieval).
+        //    Apply Turkish synonym expansion before embedding/FTS so that
+        //    "vergi" matches columns named "VAT*", "müşteri" matches "Customer*", etc.
+        //    The user's original query is unchanged in the LLM messages — only
+        //    the retrieval channel sees the expanded form.
+        var expandedQuery = TurkishSynonymExpander.Expand(ctx.UserQuery);
+        var queryVec      = await _embed.EmbedAsync(expandedQuery, ct);
 
-        // 3. KB retrieval
+        // 3. KB retrieval — expanded query goes to both vector + FTS channels
         var kbHits = await _kb.SearchAsync(
-            queryVec, ctx.UserQuery,
+            queryVec, expandedQuery,
             collections:    ctx.Collections,
             topK:           6,
             metadataFilter: ctx.MetadataFilter,

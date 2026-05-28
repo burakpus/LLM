@@ -70,7 +70,9 @@ public sealed class SqlIngestSchemaJobHandler : IJobHandler
         var ds        = ctx.Services.GetRequiredService<NpgsqlDataSource>();
 
         var (dbType, connStr) = await SqlConnLoader.LoadAsync(p.ConnectionId, svc, ds, ct);
-        var collection = string.IsNullOrWhiteSpace(p.Collection) ? "sql-schema" : p.Collection.Trim();
+        // baseCollection is the user-provided collection name (or default).
+        // Actual per-object collections become: {base}-tables, {base}-views, etc.
+        var baseCollection = string.IsNullOrWhiteSpace(p.Collection) ? "sql-schema" : p.Collection.Trim();
 
         HashSet<DbObjectType>? include = null;
         if (p.IncludeTypes is { Length: > 0 })
@@ -86,6 +88,7 @@ public sealed class SqlIngestSchemaJobHandler : IJobHandler
 
         var failures = new List<object>();
         var success = 0; var totalChunks = 0;
+        var typedCollections = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         for (int i = 0; i < objects.Count; i++)
         {
@@ -95,35 +98,91 @@ public sealed class SqlIngestSchemaJobHandler : IJobHandler
 
             try
             {
-                var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
-                if (string.IsNullOrWhiteSpace(ddl))
-                { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
-
+                // ─── Build structured chunk(s) ──────────────────────────────────
+                // Tables: structured (columns + FKs + indexes + tags) — one chunk
+                // Procedures: section-aware split — possibly multiple chunks
+                // Views/Functions/Triggers: DDL wrapped with header — one chunk
+                var typedCollection = SqlSchemaChunkBuilder.GetCollectionName(baseCollection, obj.Type);
+                typedCollections.Add(typedCollection);
                 var source = $"sql://{dbType.ToString().ToLower()}/conn-{p.ConnectionId}/{obj.TypeStr}/{obj.QualifiedName}";
                 var title  = $"{obj.TypeStr.ToUpperInvariant()} {obj.QualifiedName}";
                 var meta   = $"{{\"db_type\":\"{dbType.ToString().ToLower()}\",\"object_type\":\"{obj.TypeStr}\",\"schema\":\"{obj.Schema}\",\"name\":\"{obj.Name}\",\"connection_id\":{p.ConnectionId}}}";
 
-                await ingestion.DeleteSourceAsync(collection, source, ct);
-                var r = await ingestion.IngestAsync(new IngestRequest
-                {
-                    Collection = collection, Source = source, Title = title, Content = ddl,
-                    Metadata = meta, ChunkSize = 1600, ChunkOverlap = 200,
-                }, ct);
+                List<string> chunks;
+                string hashSource;   // text we hash for change-detection (raw DDL or structured form)
 
-                var hash = Sha.Of(ddl);
+                if (obj.Type == DbObjectType.Table)
+                {
+                    var ts = await provider.GetTableSchemaAsync(connStr, obj, ct);
+                    if (ts is not null)
+                    {
+                        var body = SqlSchemaChunkBuilder.BuildTableChunk(ts);
+                        chunks = new List<string> { body };
+                        hashSource = body;
+                    }
+                    else
+                    {
+                        // Fallback: raw DDL with header wrapper
+                        var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
+                        if (string.IsNullOrWhiteSpace(ddl))
+                        { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
+                        chunks = new List<string> { SqlSchemaChunkBuilder.BuildDdlChunk(obj, ddl) };
+                        hashSource = ddl;
+                    }
+                }
+                else
+                {
+                    var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
+                    if (string.IsNullOrWhiteSpace(ddl))
+                    { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
+
+                    chunks = obj.Type == DbObjectType.Procedure
+                        ? SqlSchemaChunkBuilder.BuildProcedureChunks(obj, ddl).ToList()
+                        : new List<string> { SqlSchemaChunkBuilder.BuildDdlChunk(obj, ddl) };
+                    hashSource = ddl;
+                }
+
+                // Delete any old chunks for this (collection, source) before re-ingest.
+                // Also try to clean up legacy single-collection entries.
+                await ingestion.DeleteSourceAsync(typedCollection, source, ct);
+                if (typedCollection != baseCollection)
+                    await ingestion.DeleteSourceAsync(baseCollection, source, ct);
+
+                // Ingest each chunk. ChunkSize=32000 forces single-pass insert
+                // (our pre-built chunks are already sized to ~7000 chars max).
+                int producedChunks = 0;
+                for (int part = 0; part < chunks.Count; part++)
+                {
+                    var content = chunks[part];
+                    var partSource = chunks.Count > 1 ? $"{source}#part{part + 1}" : source;
+                    var partTitle  = chunks.Count > 1 ? $"{title} (part {part + 1}/{chunks.Count})" : title;
+                    var r = await ingestion.IngestAsync(new IngestRequest
+                    {
+                        Collection = typedCollection,
+                        Source     = partSource,
+                        Title      = partTitle,
+                        Content    = content,
+                        Metadata   = meta,
+                        ChunkSize  = 32000,    // never split — pre-chunked
+                        ChunkOverlap = 0,
+                    }, ct);
+                    producedChunks += r.ChunksCreated;
+                }
+
+                var hash = Sha.Of(hashSource);
                 await using var conn = await ds.OpenConnectionAsync(ct);
                 await using var cmd  = conn.CreateCommand();
                 cmd.CommandText = @"INSERT INTO sql_ingested_objects (connection_id, collection, object_type, schema_name, object_name, source, ddl_hash, chunks_count, last_ingested_at)
                                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
                                     ON CONFLICT (connection_id, object_type, schema_name, object_name) DO UPDATE
                                     SET collection=$2, source=$6, ddl_hash=$7, chunks_count=$8, last_ingested_at=NOW()";
-                cmd.Parameters.AddWithValue(p.ConnectionId); cmd.Parameters.AddWithValue(collection);
+                cmd.Parameters.AddWithValue(p.ConnectionId); cmd.Parameters.AddWithValue(typedCollection);
                 cmd.Parameters.AddWithValue(obj.TypeStr); cmd.Parameters.AddWithValue(obj.Schema);
                 cmd.Parameters.AddWithValue(obj.Name); cmd.Parameters.AddWithValue(source);
-                cmd.Parameters.AddWithValue(hash); cmd.Parameters.AddWithValue(r.ChunksCreated);
+                cmd.Parameters.AddWithValue(hash); cmd.Parameters.AddWithValue(producedChunks);
                 await cmd.ExecuteNonQueryAsync(ct);
 
-                success++; totalChunks += r.ChunksCreated;
+                success++; totalChunks += producedChunks;
             }
             catch (Exception ex)
             {
@@ -131,10 +190,72 @@ public sealed class SqlIngestSchemaJobHandler : IJobHandler
             }
         }
 
+        // ─── Seed collection_settings for each new typed collection ─────────────
+        // Tables high-priority, views normal, procedures/functions/triggers low.
+        // Existing rows are not overwritten — admin can re-tune via the UI.
+        await SeedCollectionSettings(ds, typedCollections, baseCollection, ct);
+
         await ctx.ReportProgressAsync(objects.Count, objects.Count, "Tamamlandı", ct);
         return new {
-            total = objects.Count, success, chunks = totalChunks, failures, collection,
+            total       = objects.Count,
+            success,
+            chunks      = totalChunks,
+            failures,
+            collections = typedCollections.OrderBy(c => c).ToArray(),
         };
+    }
+
+    /// <summary>
+    /// UPSERT collection_settings with sensible priority defaults:
+    ///   tables=high, views=normal, procedures/functions/triggers=low.
+    /// Only inserts if the row doesn't exist (ON CONFLICT DO NOTHING) so admin overrides survive.
+    /// Also marks any legacy base-collection (single-bucket ingest) as 'hidden'
+    /// so the typed collections naturally take over without retrieval pollution.
+    /// </summary>
+    private static async Task SeedCollectionSettings(
+        NpgsqlDataSource ds, HashSet<string> typedCollections, string baseCollection, CancellationToken ct)
+    {
+        await using var conn = await ds.OpenConnectionAsync(ct);
+
+        foreach (var col in typedCollections)
+        {
+            var (priority, dataType, description) = ClassifyCollection(col);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"INSERT INTO collection_settings (collection, priority, data_type, description, updated_at)
+                                VALUES ($1, $2, $3, $4, NOW())
+                                ON CONFLICT (collection) DO NOTHING";
+            cmd.Parameters.AddWithValue(col);
+            cmd.Parameters.AddWithValue(priority);
+            cmd.Parameters.AddWithValue(dataType);
+            cmd.Parameters.AddWithValue(description);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        // Demote the legacy base collection (raw single-bucket ingest) to hidden
+        // so RAG retrieval prefers the new typed collections.
+        if (!typedCollections.Contains(baseCollection))
+        {
+            await using var demote = conn.CreateCommand();
+            demote.CommandText = @"INSERT INTO collection_settings (collection, priority, data_type, description, updated_at)
+                                   VALUES ($1, 'hidden', 'sql-schema-legacy', 'Eski tek-bucket schema ingest — yeni typed collection''lar tarafından değiştirildi', NOW())
+                                   ON CONFLICT (collection) DO UPDATE
+                                   SET priority='hidden',
+                                       data_type='sql-schema-legacy',
+                                       updated_at=NOW()
+                                   WHERE collection_settings.priority <> 'hidden'";
+            demote.Parameters.AddWithValue(baseCollection);
+            await demote.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    private static (string priority, string dataType, string description) ClassifyCollection(string collection)
+    {
+        if (collection.EndsWith("-tables",     StringComparison.OrdinalIgnoreCase)) return ("high",   "sql-schema", "SQL Tabloları");
+        if (collection.EndsWith("-views",      StringComparison.OrdinalIgnoreCase)) return ("normal", "sql-schema", "SQL Viewler");
+        if (collection.EndsWith("-procedures", StringComparison.OrdinalIgnoreCase)) return ("low",    "sql-schema", "Stored Procedures");
+        if (collection.EndsWith("-functions",  StringComparison.OrdinalIgnoreCase)) return ("low",    "sql-schema", "Fonksiyonlar");
+        if (collection.EndsWith("-triggers",   StringComparison.OrdinalIgnoreCase)) return ("low",    "sql-schema", "Triggerlar");
+        return ("normal", "sql-schema", "SQL Schema");
     }
 }
 
@@ -190,12 +311,49 @@ public sealed class SqlSyncSchemaJobHandler : IJobHandler
 
             try
             {
-                var ddl  = await provider.GetCreateScriptAsync(connStr, obj, ct);
-                if (string.IsNullOrWhiteSpace(ddl)) { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
+                // Build the same structured chunks as the initial ingest handler
+                List<string> chunks;
+                string hashSource;
+                if (obj.Type == DbObjectType.Table)
+                {
+                    var ts = await provider.GetTableSchemaAsync(connStr, obj, ct);
+                    if (ts is not null)
+                    {
+                        var body = SqlSchemaChunkBuilder.BuildTableChunk(ts);
+                        chunks = new List<string> { body };
+                        hashSource = body;
+                    }
+                    else
+                    {
+                        var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
+                        if (string.IsNullOrWhiteSpace(ddl))
+                        { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
+                        chunks = new List<string> { SqlSchemaChunkBuilder.BuildDdlChunk(obj, ddl) };
+                        hashSource = ddl;
+                    }
+                }
+                else
+                {
+                    var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
+                    if (string.IsNullOrWhiteSpace(ddl))
+                    { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
+                    chunks = obj.Type == DbObjectType.Procedure
+                        ? SqlSchemaChunkBuilder.BuildProcedureChunks(obj, ddl).ToList()
+                        : new List<string> { SqlSchemaChunkBuilder.BuildDdlChunk(obj, ddl) };
+                    hashSource = ddl;
+                }
 
-                var hash   = Sha.Of(ddl);
-                var source = $"sql://{dbType.ToString().ToLower()}/conn-{p.ConnectionId}/{obj.TypeStr}/{obj.QualifiedName}";
-                var collection = existing.TryGetValue(key, out var prev) ? prev.Collection : defaultColl;
+                var hash       = Sha.Of(hashSource);
+                var source     = $"sql://{dbType.ToString().ToLower()}/conn-{p.ConnectionId}/{obj.TypeStr}/{obj.QualifiedName}";
+                // For NEW objects, derive collection from the (now expected typed) base.
+                // For EXISTING objects, reuse the tracked collection — which should already be typed
+                // after the user re-ran ingest-schema.
+                var baseColl   = defaultColl;
+                // If defaultColl looks like a legacy single-bucket name (no "-tables/-views/..." suffix),
+                // derive the typed collection from it. Otherwise keep what's tracked.
+                var collection = existing.TryGetValue(key, out var prev)
+                    ? (LooksTyped(prev.Collection) ? prev.Collection : SqlSchemaChunkBuilder.GetCollectionName(StripTyped(prev.Collection), obj.Type))
+                    : SqlSchemaChunkBuilder.GetCollectionName(StripTyped(baseColl), obj.Type);
 
                 if (prev != default && prev.Hash == hash) { unchanged++; continue; }
                 if (prev != default) { await ingestion.DeleteSourceAsync(prev.Collection, prev.Source, ct); updated.Add(obj.QualifiedName); }
@@ -204,28 +362,50 @@ public sealed class SqlSyncSchemaJobHandler : IJobHandler
                 var title = $"{obj.TypeStr.ToUpperInvariant()} {obj.QualifiedName}";
                 var meta  = $"{{\"db_type\":\"{dbType.ToString().ToLower()}\",\"object_type\":\"{obj.TypeStr}\",\"schema\":\"{obj.Schema}\",\"name\":\"{obj.Name}\",\"connection_id\":{p.ConnectionId}}}";
 
-                var r = await ingestion.IngestAsync(new IngestRequest {
-                    Collection = collection, Source = source, Title = title, Content = ddl,
-                    Metadata = meta, ChunkSize = 1600, ChunkOverlap = 200,
-                }, ct);
-                totalChunks += r.ChunksCreated;
+                int producedChunks = 0;
+                for (int part = 0; part < chunks.Count; part++)
+                {
+                    var content = chunks[part];
+                    var partSource = chunks.Count > 1 ? $"{source}#part{part + 1}" : source;
+                    var partTitle  = chunks.Count > 1 ? $"{title} (part {part + 1}/{chunks.Count})" : title;
+                    var r = await ingestion.IngestAsync(new IngestRequest {
+                        Collection = collection, Source = partSource, Title = partTitle, Content = content,
+                        Metadata = meta, ChunkSize = 32000, ChunkOverlap = 0,
+                    }, ct);
+                    producedChunks += r.ChunksCreated;
+                }
+                totalChunks += producedChunks;
 
                 await using var conn = await ds.OpenConnectionAsync(ct);
                 await using var cmd  = conn.CreateCommand();
                 cmd.CommandText = @"INSERT INTO sql_ingested_objects (connection_id, collection, object_type, schema_name, object_name, source, ddl_hash, chunks_count, last_ingested_at)
                                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
                                     ON CONFLICT (connection_id, object_type, schema_name, object_name) DO UPDATE
-                                    SET ddl_hash=$7, chunks_count=$8, last_ingested_at=NOW()";
+                                    SET collection=$2, source=$6, ddl_hash=$7, chunks_count=$8, last_ingested_at=NOW()";
                 cmd.Parameters.AddWithValue(p.ConnectionId); cmd.Parameters.AddWithValue(collection);
                 cmd.Parameters.AddWithValue(obj.TypeStr); cmd.Parameters.AddWithValue(obj.Schema);
                 cmd.Parameters.AddWithValue(obj.Name); cmd.Parameters.AddWithValue(source);
-                cmd.Parameters.AddWithValue(hash); cmd.Parameters.AddWithValue(r.ChunksCreated);
+                cmd.Parameters.AddWithValue(hash); cmd.Parameters.AddWithValue(producedChunks);
                 await cmd.ExecuteNonQueryAsync(ct);
             }
             catch (Exception ex)
             {
                 failures.Add(new { name = obj.QualifiedName, error = ex.Message });
             }
+        }
+
+        // Helpers (local) — typed-collection naming heuristics
+        static bool LooksTyped(string col) =>
+            col.EndsWith("-tables",     StringComparison.OrdinalIgnoreCase) ||
+            col.EndsWith("-views",      StringComparison.OrdinalIgnoreCase) ||
+            col.EndsWith("-procedures", StringComparison.OrdinalIgnoreCase) ||
+            col.EndsWith("-functions",  StringComparison.OrdinalIgnoreCase) ||
+            col.EndsWith("-triggers",   StringComparison.OrdinalIgnoreCase);
+        static string StripTyped(string col)
+        {
+            foreach (var s in new[] { "-tables", "-views", "-procedures", "-functions", "-triggers" })
+                if (col.EndsWith(s, StringComparison.OrdinalIgnoreCase)) return col[..^s.Length];
+            return col;
         }
 
         // Removed objects

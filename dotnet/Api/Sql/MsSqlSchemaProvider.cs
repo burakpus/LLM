@@ -68,6 +68,129 @@ public sealed class MsSqlSchemaProvider : ISqlSchemaProvider
         };
     }
 
+    /// <summary>
+    /// Structured table schema — columns + PK markers + FKs + indexes — for the
+    /// SqlSchemaChunkBuilder. Returns null if <paramref name="obj"/> is not a TABLE.
+    /// </summary>
+    public async Task<TableSchema?> GetTableSchemaAsync(string connStr, DbObjectInfo obj, CancellationToken ct)
+    {
+        if (obj.Type != DbObjectType.Table) return null;
+
+        await using var conn = new SqlConnection(connStr);
+        await conn.OpenAsync(ct);
+
+        // 1) Columns (with type spec + nullable + identity + default)
+        var columns = new List<ColumnDef>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"
+                SELECT c.name AS col_name,
+                       t.name AS type_name,
+                       c.max_length, c.precision, c.scale,
+                       c.is_nullable, c.is_identity,
+                       OBJECT_DEFINITION(c.default_object_id) AS default_def
+                FROM sys.columns c
+                JOIN sys.types t ON c.user_type_id = t.user_type_id
+                WHERE c.object_id = OBJECT_ID(@n)
+                ORDER BY c.column_id";
+            cmd.Parameters.Add("@n", SqlDbType.NVarChar, 520).Value = $"[{obj.Schema}].[{obj.Name}]";
+
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var colName  = r.GetString(0);
+                var typeName = r.GetString(1);
+                var maxLen   = r.GetInt16(2);
+                var prec     = r.GetByte(3);
+                var scale    = r.GetByte(4);
+                var nullable = r.GetBoolean(5);
+                var identity = r.GetBoolean(6);
+                var defaultDef = r.IsDBNull(7) ? null : r.GetString(7);
+
+                var typeSpec = typeName.ToLowerInvariant() switch
+                {
+                    "nvarchar" or "nchar" => $"{typeName.ToLowerInvariant()}({(maxLen == -1 ? "MAX" : (maxLen / 2).ToString())})",
+                    "varchar" or "char" or "varbinary" or "binary" => $"{typeName.ToLowerInvariant()}({(maxLen == -1 ? "MAX" : maxLen.ToString())})",
+                    "decimal" or "numeric" => $"{typeName.ToLowerInvariant()}({prec},{scale})",
+                    _ => typeName.ToLowerInvariant()
+                };
+
+                columns.Add(new ColumnDef(colName, typeSpec, nullable, identity, defaultDef, IsPrimaryKey: false));
+            }
+        }
+
+        if (columns.Count == 0) return null;  // not a real table
+
+        // 2) Primary key columns → flip IsPrimaryKey flag in the column list
+        var pkCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var pkCmd = conn.CreateCommand())
+        {
+            pkCmd.CommandText = @"
+                SELECT c.name
+                FROM sys.indexes i
+                JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE i.object_id = OBJECT_ID(@n) AND i.is_primary_key = 1";
+            pkCmd.Parameters.Add("@n", SqlDbType.NVarChar, 520).Value = $"[{obj.Schema}].[{obj.Name}]";
+            await using var r = await pkCmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct)) pkCols.Add(r.GetString(0));
+        }
+        for (int i = 0; i < columns.Count; i++)
+            if (pkCols.Contains(columns[i].Name))
+                columns[i] = columns[i] with { IsPrimaryKey = true };
+
+        // 3) Foreign keys
+        var fks = new List<FkDef>();
+        await using (var fkCmd = conn.CreateCommand())
+        {
+            fkCmd.CommandText = @"
+                SELECT pc.name AS parent_col,
+                       SCHEMA_NAME(rt.schema_id) AS ref_schema,
+                       rt.name AS ref_table,
+                       rc.name AS ref_col
+                FROM sys.foreign_keys fk
+                JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+                JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id     AND pc.column_id = fkc.parent_column_id
+                JOIN sys.tables  rt ON rt.object_id = fk.referenced_object_id
+                JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+                WHERE fk.parent_object_id = OBJECT_ID(@n)
+                ORDER BY pc.name";
+            fkCmd.Parameters.Add("@n", SqlDbType.NVarChar, 520).Value = $"[{obj.Schema}].[{obj.Name}]";
+            await using var r = await fkCmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                fks.Add(new FkDef(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)));
+        }
+
+        // 4) Non-PK indexes
+        var idxRows = new List<(string IdxName, string ColName, int Ordinal, bool Unique)>();
+        await using (var idxCmd = conn.CreateCommand())
+        {
+            idxCmd.CommandText = @"
+                SELECT i.name, c.name, ic.key_ordinal, i.is_unique
+                FROM sys.indexes i
+                JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE i.object_id = OBJECT_ID(@n)
+                  AND i.is_primary_key = 0
+                  AND i.type_desc <> 'HEAP'
+                  AND i.name IS NOT NULL
+                ORDER BY i.name, ic.key_ordinal";
+            idxCmd.Parameters.Add("@n", SqlDbType.NVarChar, 520).Value = $"[{obj.Schema}].[{obj.Name}]";
+            await using var r = await idxCmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                idxRows.Add((r.GetString(0), r.GetString(1), r.GetByte(2), r.GetBoolean(3)));
+        }
+        var indexes = idxRows
+            .GroupBy(x => x.IdxName)
+            .Select(g => new IndexDef(
+                g.Key,
+                g.OrderBy(x => x.Ordinal).Select(x => x.ColName).ToArray(),
+                g.First().Unique))
+            .ToList();
+
+        return new TableSchema(obj.Schema, obj.Name, columns, fks, indexes);
+    }
+
     static async Task<string> GetObjectDefinitionAsync(SqlConnection conn, DbObjectInfo obj, CancellationToken ct)
     {
         // OBJECT_DEFINITION returns the full CREATE statement text for views/procs/funcs/triggers
