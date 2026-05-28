@@ -99,13 +99,23 @@ public sealed class ContextBuilder : IContextBuilder
         }
         budget -= Estimate(systemPrompt);
 
-        // 2. Embed query (used for both KB and agent memory retrieval).
-        //    Apply Turkish synonym expansion before embedding/FTS so that
-        //    "vergi" matches columns named "VAT*", "müşteri" matches "Customer*", etc.
-        //    The user's original query is unchanged in the LLM messages — only
-        //    the retrieval channel sees the expanded form. Dictionary lives in
-        //    `rag_synonyms` DB table; admin panel UI manages it (60s cache).
-        var expandedQuery = _synonyms.Expand(ctx.UserQuery);
+        // 2. Build retrieval query — multi-turn context aware.
+        //    Short queries like "kaç kolonu vardır" (3 kelime) embedding semantic
+        //    match'inde noise üretir. Son N user mesajını birlikte embed etmek
+        //    multi-turn context'i retrieval'a taşır: bir önceki turn'de "Quotation
+        //    tablosu" geçtiyse, bu turn'deki "kaç kolonu" sorgusu Quotation
+        //    chunk'larıyla daha yüksek skor alır.
+        //
+        //    Strategy: son 2 user mesajını + current'ı concat → synonym expand → embed.
+        //    Aşırı uzun sorgu olmaması için son 3 mesaj ile sınırlı, toplam max 500 char.
+        var retrievalQuery = await BuildRetrievalQueryAsync(ctx, ct);
+
+        // Apply Turkish synonym expansion before embedding/FTS so that
+        // "vergi" matches columns named "VAT*", "müşteri" matches "Customer*", etc.
+        // The user's original query is unchanged in the LLM messages — only
+        // the retrieval channel sees the expanded form. Dictionary lives in
+        // `rag_synonyms` DB table; admin panel UI manages it (60s cache).
+        var expandedQuery = _synonyms.Expand(retrievalQuery);
         var queryVec      = await _embed.EmbedAsync(expandedQuery, ct);
 
         // 3. KB retrieval — expanded query goes to both vector + FTS channels.
@@ -220,4 +230,48 @@ public sealed class ContextBuilder : IContextBuilder
 
     /// <summary>Rough token estimate: 4 chars ≈ 1 token (good enough for budget control).</summary>
     private static int Estimate(string text) => text.Length / 4 + 1;
+
+    /// <summary>
+    /// Build a multi-turn aware retrieval query. Short user messages (e.g. "kaç kolonu?")
+    /// produce noisy embeddings — we concat the last 2 user turns from session memory
+    /// with the current query, capped at ~500 chars to stay under embedding model limits
+    /// and keep retrieval coherent.
+    /// </summary>
+    private async Task<string> BuildRetrievalQueryAsync(AgentContext ctx, CancellationToken ct)
+    {
+        const int MaxQueryChars      = 500;
+        const int RecentUserTurnsMax = 2;
+
+        // If current query is already long enough (>= 30 chars), skip history merge —
+        // probably contains enough specifics already.
+        var current = ctx.UserQuery?.Trim() ?? string.Empty;
+        if (current.Length >= 30) return current;
+
+        try
+        {
+            // Pull recent session window; filter to user turns only.
+            var history = await _sessionMem.GetWindowAsync(ctx.SessionId, ctx.UserId, maxTokens: 1000, ct: ct);
+            if (history is null || history.Count == 0) return current;
+
+            var recentUserMsgs = history
+                .Where(m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))
+                .TakeLast(RecentUserTurnsMax)
+                .Select(m => m.Content?.Trim() ?? "")
+                .Where(s => s.Length > 0)
+                .ToList();
+            if (recentUserMsgs.Count == 0) return current;
+
+            // Build a "context: A B C | query: current" — keeps order but separates so
+            // FTS doesn't double-count duplicate tokens.
+            var contextStr = string.Join(" | ", recentUserMsgs);
+            var merged     = contextStr + " | " + current;
+            if (merged.Length > MaxQueryChars)
+                merged = merged[(merged.Length - MaxQueryChars)..]; // keep tail (newest context)
+            return merged;
+        }
+        catch
+        {
+            return current;   // session memory failure → fall back to just current query
+        }
+    }
 }
