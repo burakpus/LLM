@@ -189,6 +189,32 @@ CODE=$(curl -s -o /dev/null -w "%{http_code}" $API/api/admin/skills)
 
 echo ""
 echo "===================================================================="
+echo "T13. RAG structured chunk retrieval — VAT kolonu Türkçe sorgu"
+echo "===================================================================="
+# Faz 1 (structured chunking) + Faz 2 (Türkçe synonym) birlikte çalışırsa
+# "vergi" sorgusu Quotation tablosundaki VAT* kolonlarını içeren chunk'ı
+# top-K'ya getirir. Test SADECE Faz 1 re-ingest tamamlandıktan sonra anlamlı.
+HAS_TABLES_COLL=$(curl -s $API/api/admin/collections \
+    -H "Authorization: Bearer $TOKEN" \
+    | python3 -c "import sys,json;cols=json.load(sys.stdin);print(any('-tables' in c['collection'] for c in cols))" 2>/dev/null)
+if [ "$HAS_TABLES_COLL" != "True" ]; then
+    echo "  SKIP  Faz 1 re-ingest yapılmamış (no *-tables collection)"
+else
+    RESP=$(curl -s -X POST $API/api/chat \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"sessionId":"e2e-t13","agentId":"default","skillName":"serbest","message":"Quotation tablosunda vergi (vat/kdv) ile ilgili kolonlar nelerdir?","tokenBudget":4000}')
+    CONTENT=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('content',''))" 2>/dev/null)
+    KBHITS=$(echo  "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('kbHits',0))"  2>/dev/null)
+    if echo "$CONTENT" | grep -qiE "vat[A-Z]|kdv|tax"; then
+        passed "VAT/KDV kolonu retrieved (kbHits=$KBHITS)"
+    else
+        failed "VAT kolonu çıkmadı (kbHits=$KBHITS): $(echo "$CONTENT" | head -c 200)"
+    fi
+fi
+
+echo ""
+echo "===================================================================="
 echo "SUMMARY"
 echo "===================================================================="
 echo "PASS: $PASS_TESTS"
