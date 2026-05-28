@@ -44,7 +44,7 @@ export default function UploadTab() {
       <div>
         <h2 className="text-lg font-medium">Upload documents</h2>
         <p className="text-xs mt-1" style={{ color: 'var(--mute)' }}>
-          Supported file types: .txt, .md, .pdf, .docx
+          Supported file types: .txt, .md, .pdf, .docx, .xlsx, .jpg, .png, .tiff
         </p>
       </div>
 
@@ -86,13 +86,13 @@ export default function UploadTab() {
             Drag & drop files here, or click to browse
           </div>
           <div className="text-xs mt-1" style={{ color: 'var(--mute)' }}>
-            .txt, .md, .pdf, .docx
+            .txt, .md, .pdf, .docx, .xlsx, .jpg, .png, .tiff
           </div>
           <input
             ref={inputRef}
             type="file"
             multiple
-            accept=".txt,.md,.pdf,.docx"
+            accept=".txt,.md,.pdf,.docx,.xlsx,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.webp"
             onChange={e => onPick(e.target.files)}
             className="hidden"
           />

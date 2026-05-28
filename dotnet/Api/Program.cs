@@ -133,6 +133,10 @@ var skillsPath = cfg["Agent:SkillsDirectory"]
 services.AddAgentStack(skillsDirectory: skillsPath);
 services.AddSingleton<IDocumentIngestion, DocumentIngestion>();
 
+// LiteParse OCR fallback for scanned PDFs + image uploads. Disabled silently
+// if the `lit` binary isn't installed on the server — native parsers keep working.
+services.AddSingleton<SetYazilim.Llm.Api.Admin.LiteParseInvoker>();
+
 // ── CORS ──────────────────────────────────────────────────────────────────────
 services.AddCors(o => o.AddPolicy("ui", p =>
 {

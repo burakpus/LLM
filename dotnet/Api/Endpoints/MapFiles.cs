@@ -11,7 +11,10 @@ public static class FilesEndpoints
 {
     public static IEndpointRouteBuilder MapFiles(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/api/files/extract", [Authorize] async (HttpContext http, CancellationToken ct) =>
+        app.MapPost("/api/files/extract", [Authorize] async (
+            HttpContext http,
+            LiteParseInvoker liteParse,
+            CancellationToken ct) =>
         {
             if (!http.Request.HasFormContentType)
                 return Results.BadRequest(new { error = "multipart/form-data required" });
@@ -29,7 +32,7 @@ public static class FilesEndpoints
             string text;
             try
             {
-                text = DocumentParser.ExtractText(ms.ToArray(), file.FileName);
+                text = await DocumentParser.ExtractTextAsync(ms.ToArray(), file.FileName, liteParse, ct);
             }
             catch (Exception ex)
             {

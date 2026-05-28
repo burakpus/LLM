@@ -3,8 +3,24 @@ namespace SetYazilim.Llm.Api.Admin;
 public static class DocumentParser
 {
     /// <summary>
-    /// Extracts plain text from uploaded file bytes based on content type or filename extension.
-    /// Supported: .txt, .md, .csv, .pdf, .docx, .doc, .xlsx, .xls
+    /// Image formats that go straight to LiteParse (OCR-only — no native fallback).
+    /// </summary>
+    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp",
+    };
+
+    /// <summary>
+    /// Minimum char count below which a PDF parse result is considered "empty"
+    /// and triggers a LiteParse OCR fallback. Tuned for typical scanned PDFs
+    /// (whose PdfPig output is usually 0-10 chars of stray text).
+    /// </summary>
+    private const int PdfFallbackThreshold = 60;
+
+    /// <summary>
+    /// Synchronous text extraction — kept for backward compatibility with callers
+    /// that don't have an async path (e.g. agent tool dispatcher). Uses native
+    /// parsers only; no OCR. New code should prefer <see cref="ExtractTextAsync"/>.
     /// </summary>
     public static string ExtractText(byte[] data, string fileName)
     {
@@ -16,8 +32,45 @@ public static class DocumentParser
             ".xlsx"       => ExtractXlsx(data),
             ".xls"        => "[.xls formatı desteklenmiyor. Lütfen .xlsx olarak kaydedin.]",
             ".doc"        => "[.doc formatı desteklenmiyor. Lütfen .docx olarak kaydedin.]",
+            _ when ImageExtensions.Contains(ext) =>
+                "[Resim dosyaları için OCR gerekli — LiteParseInvoker enjekte edilmemiş çağrıdır.]",
             _             => System.Text.Encoding.UTF8.GetString(data) // txt, md, csv, etc.
         };
+    }
+
+    /// <summary>
+    /// Async-capable extraction with optional LiteParse OCR fallback:
+    ///  - PDF: try PdfPig first; if result is empty / very short, retry via LiteParse
+    ///  - Images (jpg/png/tiff/...): straight to LiteParse OCR
+    ///  - DOCX/XLSX/TXT/MD/CSV: same as sync path (no OCR needed)
+    ///
+    /// Pass <c>null</c> for <paramref name="liteParse"/> to disable OCR — behaves
+    /// identically to <see cref="ExtractText"/>.
+    /// </summary>
+    public static async Task<string> ExtractTextAsync(
+        byte[] data, string fileName, LiteParseInvoker? liteParse, CancellationToken ct = default)
+    {
+        var ext = Path.GetExtension(fileName).ToLowerInvariant();
+
+        if (ImageExtensions.Contains(ext))
+        {
+            if (liteParse is null)
+                return "[Resim dosyası — LiteParse OCR gerekli, mevcut değil.]";
+            var ocr = await liteParse.ParseAsync(data, fileName, ct);
+            return ocr ?? "[Resim OCR başarısız oldu.]";
+        }
+
+        if (ext == ".pdf")
+        {
+            var native = ExtractPdf(data);
+            if (native.Length >= PdfFallbackThreshold) return native;
+            // Empty or near-empty result → probably scanned PDF; try OCR
+            if (liteParse is null) return native;
+            var ocr = await liteParse.ParseAsync(data, fileName, ct);
+            return string.IsNullOrWhiteSpace(ocr) ? native : ocr!;
+        }
+
+        return ExtractText(data, fileName);   // docx/xlsx/txt/csv — already optimal
     }
 
     private static string ExtractPdf(byte[] data)

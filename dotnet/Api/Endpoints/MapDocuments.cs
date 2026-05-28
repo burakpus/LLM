@@ -46,6 +46,7 @@ public static class DocumentsEndpoints
         app.MapPost("/api/admin/upload", [Authorize("AdminOnly")] async (
             HttpContext http,
             IDocumentIngestion ingestion,
+            LiteParseInvoker liteParse,
             ClaimsPrincipal user,
             NpgsqlDataSource ds,
             CancellationToken ct) =>
@@ -64,7 +65,7 @@ public static class DocumentsEndpoints
                 {
                     using var ms = new MemoryStream();
                     await file.CopyToAsync(ms, ct);
-                    var text = DocumentParser.ExtractText(ms.ToArray(), file.FileName);
+                    var text = await DocumentParser.ExtractTextAsync(ms.ToArray(), file.FileName, liteParse, ct);
 
                     if (string.IsNullOrWhiteSpace(text))
                     {
