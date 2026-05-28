@@ -25,10 +25,10 @@ flowchart LR
 
         subgraph llm["LLM Layer"]
             litellm[LiteLLM]
-            vllmG[vLLM Gemma]
-            vllmQ[vLLM Qwen]
-            vllmGPT[vLLM GPT-OSS]
-            vllmE[vLLM nomic-embed]
+            vllmG[vLLM Gemma<br/>:8000 ✅]
+            vllmQ[vLLM Qwen<br/>:8002 ✅]
+            vllmGPT[vLLM GPT-OSS<br/>:8003 ⚠ planlanmış]
+            vllmE[vLLM nomic-embed<br/>:8004 ✅]
         end
 
         subgraph store["Storage"]
@@ -94,6 +94,21 @@ flowchart LR
 3. JobWorker → SqlSyncDataJobHandler → tablo başına delta query → row hash → değişen satırlar RAG'a ingest
 4. Progress: `/api/jobs/{id}` polling
 
+## Mevcut Durum vs Planlanan
+
+**Şu an çalışan**: 2 chat modeli (Gemma, Qwen) + 1 embedding modeli (nomic-embed).
+Toplam aktif VRAM ~30 GB / 128 GB.
+
+| | Aktif (deploy edilmiş) | Config + kod var, deploy yok |
+|---|---|---|
+| Chat modelleri | Gemma 4 26B NVFP4 (`chat`)<br/>Qwen3.6-27B FP8 (`code`) | GPT-OSS 120B MXFP4 (`reason`) |
+| Embedding | nomic-embed-text-v1.5 (`embed`) | — |
+| Reranker (Faz 3 plan) | — | BAAI/bge-reranker-v2-m3 (planlanmış) |
+
+`reason` endpoint'i kodda (`useGeneration.ts`, `MapSkills.cs`, `LiteLLMOptions`) ve `litellm-config.yaml`'da hazır — yalnızca `docker-compose.yml`'e `vllm-gptoss` service block'u ekleyip `.env`'i ayarlamak gerekir.
+
+`/health/deep` "modelCount=4" döner çünkü LiteLLM 4 model "advertise" eder. Aktif modeller `docker ps` veya `nvidia-smi` ile doğrulanmalı.
+
 ## Bileşenler
 
 ### Frontend (React + Vite + TypeScript)
@@ -116,9 +131,25 @@ flowchart LR
   Activity log + event_log dual-write için paylaşılan `ActivityLogger.LogAsync`.
 
 ### LLM Layer
-- **vLLM** — 3 model co-resident (Gemma 4 26B FP4, Qwen3 27B, GPT-OSS 120B MXFP4)
-- **LiteLLM** — model routing, virtual keys, cost tracking, retry/fallback
-- **nomic-embed-text-v1.5** — 768d embeddings (ayrı vLLM instance, port 8004)
+
+**Mevcut durum (aktif):**
+
+| LiteLLM endpoint | Model | Container | Port | VRAM (~) |
+|---|---|---|---|---|
+| `chat`  | Gemma 4 26B NVFP4         | `vllm-gemma` | 8000 | 19 GB |
+| `code`  | Qwen3.6-27B FP8           | `vllm-qwen3` | 8002 | 10 GB |
+| `embed` | nomic-embed-text-v1.5     | `vllm-embed` | 8004 | 0.3 GB (~274 MB, max 2048 token!) |
+
+**Config'de mevcut, deploy edilmemiş:**
+
+| LiteLLM endpoint | Model | Beklenen container | Beklenen port | VRAM (~) |
+|---|---|---|---|---|
+| `reason` | GPT-OSS 120B MXFP4 | `vllm-gptoss` (eklenecek) | 8003 | 69 GB |
+
+- **LiteLLM** — `litellm-config.yaml`'da 4 model_list entry var; `reason` için `REASON_MODEL_NAME` + `REASON_API_BASE` env vars'ları bekler. Service olmadığında `/v1/models` 4 model "advertise" eder ama `reason`'a yapılan call'lar fail eder.
+- **GPT-OSS 120B eklendiğinde**: ~69 GB ekstra → toplam ~100 GB / 128 GB. `docker-compose.yml` `default` profile'ına yeni `vllm-gptoss` service block'u ekleyip `.env`'de `REASON_MODEL_NAME=openai/gpt-oss-120b`, `REASON_API_BASE=http://vllm-gptoss:8000/v1` ayarlamak yeterli.
+
+**Frontend tarafı**: `useGeneration.ts` `VALID_MODELS` array'inde `reason` zaten var. Backend `MapSkills.cs` `/api/models/capabilities` endpoint'i `reason` modelinin metadata'sını döndürür (supportsTools=true, contextWindow=32768). Yani aktifleştirme `docker-compose.yml` + `.env` değişikliğinden ibaret, kod değişikliği gerekmez.
 
 ### Storage
 - **PostgreSQL 16 + pgvector** — RAG vektörleri, audit log, jobs queue, settings, ratings

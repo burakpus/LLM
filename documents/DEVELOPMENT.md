@@ -317,3 +317,21 @@ Detay: [OPERATIONS.md → Deploy](OPERATIONS.md#deploy)
 **Self-hosted runner**: DGX Spark üzerinde (`runs-on: self-hosted`).
 
 **Önemli**: Skills/ klasörü deploy'da git'ten gelir (Faz önceki commit'lerde repoya commit'lendi). Sunucuya UI'dan eklenen skill'ler **deploy'da kaybolur** — repoya commit gerekli.
+
+### ⚠ Uzun süreli job'lar sırasında deploy yapma
+
+`setllm-api.service` systemd ile `Restart=always` çalışıyor. Deploy = service restart. Eğer bir job (örn. `sql.ingest-schema` ile 11k obje işleyen ~45 dk'lık ingest) çalışırken deploy yaparsanız:
+
+- Service restart olur, .NET process biter
+- JobWorker (BackgroundService) yeniden başlatılır
+- "running" durumundaki job'ı bulup **döngünün başından** yeniden işlemeye başlar
+- Per-object hash tracking (`sql_ingested_objects.ddl_hash`) idempotent olduğu için **veri kaybı yok** — ama daha önce işlenen objeler tekrar ele alınır, ciddi zaman kaybı
+
+**Pratik kural**: Uzun job tetiklemeden önce admin paneli → İşler sekmesi → çalışan iş var mı kontrol et. Veya CI/CD'den deploy etmeden önce:
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:5080/api/admin/jobs?status=running" | jq '.total'
+```
+Sıfırdan farklıysa job bitene kadar bekle.
+
+İleride (TODO): JobWorker'a per-object checkpoint eklenebilir — restart sonrası kaldığı yerden devam etmesi için `sql_ingested_objects` tablosundaki son işlenmiş key'i okur.

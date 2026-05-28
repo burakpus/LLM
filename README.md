@@ -1,17 +1,19 @@
 # DGX Spark — Multi-Model LLM Stack (All-Hot 4-bit)
 
-Production-ready deployment of three large language models on a single NVIDIA DGX Spark. All three models are co-resident and always available — no swap, no cold-start.
+Production deployment of two large language models + one embedding model on a single NVIDIA DGX Spark. All three are co-resident, always available — no swap, no cold-start. A third generative model (`reason` → GPT-OSS 120B) is wired into the config/code paths but not deployed by default; enable it by adding the corresponding vLLM service to `docker-compose.yml` (see [ARCHITECTURE.md](documents/ARCHITECTURE.md#mevcut-durum-vs-planlanan)).
 
 > 📚 **Dokümantasyon**: [documents/README.md](documents/README.md) — mimari, operasyon, güvenlik, API, geliştirici rehberleri ve test sonuçları.
 
 ## Architecture Overview
 
-| Endpoint | Model | Quantization | VRAM |
-|---|---|---|---|
-| `/chat` | Gemma 4 31B | FP4 (Blackwell native) | ~19 GB |
-| `/code` | Qwen3-Coder-Next | — | — |
-| `/reason` | GPT-OSS 120B | MXFP4 (native) | ~69 GB |
-| | | **Total** | **~109 GB / 128 GB** |
+| LiteLLM endpoint | Model | Container | Port | Status |
+|---|---|---|---|---|
+| `chat`  | Gemma 4 26B NVFP4         | `vllm-gemma` | 8000 | ✅ Aktif |
+| `code`  | Qwen3.6-27B FP8           | `vllm-qwen3` | 8002 | ✅ Aktif |
+| `embed` | nomic-embed-text-v1.5     | `vllm-embed` | 8004 | ✅ Aktif (~274 MB VRAM) |
+| `reason`| GPT-OSS 120B MXFP4        | — | — | ⚠️ Config'de mevcut, deploy edilmemiş |
+
+Toplam aktif VRAM: ~30 GB / 128 GB (Gemma ~19 + Qwen ~10 + embed ~0.3). `reason` aktifleştirilirse +~69 GB ile toplam ~100 GB olur.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -27,9 +29,10 @@ Production-ready deployment of three large language models on a single NVIDIA DG
 │  └──────┬──────┘                                                  │
 │         ▼                                                         │
 │  ┌──────────────── DGX Spark (128 GB) ────────────────┐          │
-│  │  vLLM Gemma FP4   (port 8000)                       │          │
-│  │  vLLM Qwen  Int4  (port 8001)                       │          │
-│  │  vLLM GPT-OSS MXFP4 (port 8002)                     │          │
+│  │  vLLM Gemma NVFP4 (port 8000)  ✅                   │          │
+│  │  vLLM Qwen3.6 FP8 (port 8002)  ✅                   │          │
+│  │  vLLM nomic-embed (port 8004)  ✅                   │          │
+│  │  vLLM GPT-OSS MXFP4 (port 8003)  ⚠ planlanmış      │          │
 │  └────────────────────────────────────────────────────┘          │
 └──────────────────────────────────────────────────────────────────┘
 ```
