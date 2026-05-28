@@ -23,9 +23,18 @@ public static class TurkishSynonymExpander
     /// </summary>
     public static readonly Dictionary<string, string[]> Synonyms = new(StringComparer.OrdinalIgnoreCase)
     {
-        // ── Finansal kavramlar
-        ["vergi"]    = ["vat", "kdv", "tax", "taxation"],
+        // ── Finansal kavramlar (TR vergi sistemine özel kısaltmalar)
+        // KKDF: Kaynak Kullanımı Destekleme Fonu — finansman vergisi
+        // BMSV: Banka Sigorta Muameleleri Vergisi
+        // ÖTV : Özel Tüketim Vergisi
+        // gvk : Gelir Vergisi Kanunu
+        // tckn/vkn: Türk Kimlik No / Vergi Kimlik No
+        ["vergi"]    = ["vat", "kdv", "tax", "taxation", "kkdf", "bmsv", "ötv", "otv"],
         ["kdv"]      = ["vat", "tax", "vergi"],
+        ["kkdf"]     = ["vergi", "tax", "fund", "fon"],
+        ["bmsv"]     = ["vergi", "tax", "banka sigorta"],
+        ["ötv"]      = ["vergi", "tax", "ozel tuketim"],
+        ["otv"]      = ["vergi", "tax", "özel tüketim"],
         ["müşteri"]  = ["customer", "client", "cari", "musteri"],
         ["musteri"]  = ["customer", "client", "cari", "müşteri"],
         ["cari"]     = ["customer", "client", "müşteri", "musteri"],
