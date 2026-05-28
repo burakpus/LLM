@@ -51,4 +51,15 @@ public interface ISqlSchemaProvider
         DbObjectInfo obj,
         CancellationToken ct)
         => Task.FromResult<TableSchema?>(null);  // default: not supported
+
+    /// <summary>
+    /// Faz 4 TASK-4.2: Object dependencies — which tables/views/functions does this
+    /// SP/func/trigger reference? Used to add <c>DEPENDS_ON:</c> section to DDL chunks.
+    /// Default: empty list (provider doesn't support dependency tracking).
+    /// </summary>
+    Task<List<DepDef>> GetDependenciesAsync(
+        string connStr,
+        DbObjectInfo obj,
+        CancellationToken ct)
+        => Task.FromResult(new List<DepDef>());
 }

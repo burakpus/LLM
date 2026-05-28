@@ -214,6 +214,37 @@ app.MapDelete("/api/admin/sql-connections/{id:int}", [Authorize("AdminOnly")] as
     return Results.NoContent();
 });
 
+// POST /api/admin/sql-connections/{id}/reset-ingest — wipe all schema-ingest state for this connection.
+// Used before a fresh re-ingest: clears sql_ingested_objects + sql_object_relations.
+// Does NOT touch kb_documents — caller should DELETE the typed collections separately
+// via DELETE /api/admin/collections/{name}.
+app.MapPost("/api/admin/sql-connections/{id:int}/reset-ingest", [Authorize("AdminOnly")] async (
+    int id, ClaimsPrincipal user, NpgsqlDataSource ds, CancellationToken ct) =>
+{
+    var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
+    await using var conn = await ds.OpenConnectionAsync(ct);
+
+    long trackingDeleted = 0;
+    long relationsDeleted = 0;
+
+    await using (var c1 = conn.CreateCommand())
+    {
+        c1.CommandText = "DELETE FROM sql_ingested_objects WHERE connection_id=$1";
+        c1.Parameters.AddWithValue(id);
+        trackingDeleted = await c1.ExecuteNonQueryAsync(ct);
+    }
+    await using (var c2 = conn.CreateCommand())
+    {
+        c2.CommandText = "DELETE FROM sql_object_relations WHERE connection_id=$1";
+        c2.Parameters.AddWithValue(id);
+        relationsDeleted = await c2.ExecuteNonQueryAsync(ct);
+    }
+
+    _ = ActivityLogger.LogAsync(ds, username, "sql.ingest.reset",
+        $"connection={id} tracking={trackingDeleted} relations={relationsDeleted}");
+    return Results.Ok(new { trackingDeleted, relationsDeleted });
+});
+
 // POST /api/admin/sql-connections/{id}/test — test connection using stored password
 app.MapPost("/api/admin/sql-connections/{id:int}/test", [Authorize("AdminOnly")] async (
     int id, ISqlConnectionService svc, NpgsqlDataSource ds,

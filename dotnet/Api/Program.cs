@@ -219,6 +219,26 @@ var app = builder.Build();
             created_by   VARCHAR(200) NOT NULL DEFAULT 'system',
             updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
         );
+        -- Faz 4 TASK-4.3: SQL object relation graph (FKs + SP dependencies)
+        -- Persisted so external queries / future relation-walk retrieval can use it.
+        CREATE TABLE IF NOT EXISTS sql_object_relations (
+            id              BIGSERIAL    PRIMARY KEY,
+            connection_id   INT          NOT NULL,
+            source_schema   TEXT         NOT NULL,
+            source_object   TEXT         NOT NULL,
+            source_type     TEXT         NOT NULL,    -- 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TRIGGER'
+            target_schema   TEXT         NOT NULL,
+            target_object   TEXT         NOT NULL,
+            target_type     TEXT         NOT NULL,
+            relation_type   TEXT         NOT NULL,    -- 'fk' | 'sp_uses' | 'view_uses' | 'fn_uses' | 'trigger_on'
+            relation_detail TEXT         NOT NULL DEFAULT '',  -- column pair for FKs, blank for deps
+            created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            UNIQUE (connection_id, source_schema, source_object, target_schema, target_object, relation_type, relation_detail)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sql_rel_target ON sql_object_relations
+            (connection_id, target_schema, target_object);
+        CREATE INDEX IF NOT EXISTS idx_sql_rel_source ON sql_object_relations
+            (connection_id, source_schema, source_object);
         CREATE TABLE IF NOT EXISTS event_log (
             id          BIGSERIAL    PRIMARY KEY,
             ts          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),

@@ -215,6 +215,64 @@ public sealed class MsSqlSchemaProvider : ISqlSchemaProvider
         return new TableSchema(obj.Schema, obj.Name, columns, fks, indexes, incoming);
     }
 
+    /// <summary>
+    /// Faz 4 TASK-4.2: sys.sql_expression_dependencies — which objects does this
+    /// SP/func/trigger reference? Filters out self-references and system objects.
+    /// </summary>
+    public async Task<List<DepDef>> GetDependenciesAsync(string connStr, DbObjectInfo obj, CancellationToken ct)
+    {
+        // Tables don't have dependencies in this sense — they're referenced, not referrers.
+        if (obj.Type == DbObjectType.Table) return new List<DepDef>();
+
+        await using var conn = new SqlConnection(connStr);
+        await conn.OpenAsync(ct);
+
+        var deps = new List<DepDef>();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT DISTINCT
+                   COALESCE(d.referenced_schema_name, SCHEMA_NAME(o.schema_id), '') AS dep_schema,
+                   d.referenced_entity_name                                          AS dep_name,
+                   ISNULL(o.type_desc, 'UNKNOWN')                                    AS dep_type
+            FROM sys.sql_expression_dependencies d
+            LEFT JOIN sys.objects o ON o.object_id = d.referenced_id
+            WHERE d.referencing_id = OBJECT_ID(@n)
+              AND d.referenced_entity_name IS NOT NULL
+              AND d.referenced_entity_name <> @ownName
+            ORDER BY dep_schema, dep_name";
+        cmd.Parameters.Add("@n",       SqlDbType.NVarChar, 520).Value = $"[{obj.Schema}].[{obj.Name}]";
+        cmd.Parameters.Add("@ownName", SqlDbType.NVarChar, 200).Value = obj.Name;
+
+        try
+        {
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var schema   = r.IsDBNull(0) ? "" : r.GetString(0);
+                var name     = r.IsDBNull(1) ? "" : r.GetString(1);
+                var typeDesc = r.IsDBNull(2) ? "UNKNOWN" : r.GetString(2);
+                if (string.IsNullOrEmpty(name)) continue;
+
+                var simpleType = typeDesc switch
+                {
+                    var t when t.Contains("TABLE",     StringComparison.OrdinalIgnoreCase) => "TABLE",
+                    var t when t.Contains("VIEW",      StringComparison.OrdinalIgnoreCase) => "VIEW",
+                    var t when t.Contains("FUNCTION",  StringComparison.OrdinalIgnoreCase) => "FUNCTION",
+                    var t when t.Contains("PROCEDURE", StringComparison.OrdinalIgnoreCase) => "PROCEDURE",
+                    _                                                                     => "UNKNOWN",
+                };
+                deps.Add(new DepDef(schema, name, simpleType));
+            }
+        }
+        catch
+        {
+            // sys.sql_expression_dependencies may fail for encrypted SPs or insufficient
+            // permissions. Treat as "no known dependencies" rather than failing ingest.
+            return new List<DepDef>();
+        }
+        return deps;
+    }
+
     static async Task<string> GetObjectDefinitionAsync(SqlConnection conn, DbObjectInfo obj, CancellationToken ct)
     {
         // OBJECT_DEFINITION returns the full CREATE statement text for views/procs/funcs/triggers

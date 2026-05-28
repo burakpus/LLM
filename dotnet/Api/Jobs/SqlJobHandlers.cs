@@ -111,19 +111,26 @@ public sealed class SqlIngestSchemaJobHandler : IJobHandler
                 List<string> chunks;
                 string hashSource;   // text we hash for change-detection (raw DDL or structured form)
 
+                // Side-effect collectors for Faz 4 TASK-4.3 — flushed to sql_object_relations
+                // at the end of each iteration (per-object) to keep memory bounded.
+                List<(string ts, string tn, string tt, string rel, string detail)>? relations = null;
+
                 if (obj.Type == DbObjectType.Table)
                 {
                     var ts = await provider.GetTableSchemaAsync(connStr, obj, ct);
                     if (ts is not null)
                     {
-                        // Wide tables may produce multiple chunks (column overflow)
                         chunks = SqlSchemaChunkBuilder.BuildTableChunks(ts).ToList();
-                        // Hash from the full join for change-detection
                         hashSource = string.Join("\n", chunks);
+
+                        // Faz 4: outgoing FKs → sql_object_relations
+                        relations = new();
+                        foreach (var fk in ts.ForeignKeys)
+                            relations.Add((fk.RefSchema, fk.RefTable, "TABLE", "fk",
+                                           $"{fk.Column}->{fk.RefColumn}"));
                     }
                     else
                     {
-                        // Fallback: raw DDL with header wrapper
                         var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
                         if (string.IsNullOrWhiteSpace(ddl))
                         { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
@@ -137,14 +144,25 @@ public sealed class SqlIngestSchemaJobHandler : IJobHandler
                     if (string.IsNullOrWhiteSpace(ddl))
                     { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
 
-                    // Procedures, views, functions, triggers — all may overflow 2048-token
-                    // embedding limit. Use BuildProcedureChunks() for procs (boundary-aware split)
-                    // and BuildDdlChunk for others. If the resulting chunk is still too large,
-                    // BuildProcedureChunks's logic handles it too — apply uniformly.
+                    var deps = await provider.GetDependenciesAsync(connStr, obj, ct);
+
                     chunks = obj.Type == DbObjectType.Procedure
-                        ? SqlSchemaChunkBuilder.BuildProcedureChunks(obj, ddl).ToList()
-                        : SqlSchemaChunkBuilder.BuildDdlChunkOrSplit(obj, ddl).ToList();
+                        ? SqlSchemaChunkBuilder.BuildProcedureChunks(obj, ddl, deps).ToList()
+                        : SqlSchemaChunkBuilder.BuildDdlChunkOrSplit(obj, ddl, deps).ToList();
                     hashSource = ddl;
+
+                    // Faz 4: dependencies → sql_object_relations
+                    relations = new(deps.Count);
+                    var relType = obj.Type switch
+                    {
+                        DbObjectType.Procedure => "sp_uses",
+                        DbObjectType.View      => "view_uses",
+                        DbObjectType.Function  => "fn_uses",
+                        DbObjectType.Trigger   => "trigger_on",
+                        _                      => "uses",
+                    };
+                    foreach (var d in deps)
+                        relations.Add((d.TargetSchema, d.TargetName, d.TargetType, relType, ""));
                 }
 
                 // Delete any old chunks for this (collection, source) before re-ingest.
@@ -192,6 +210,44 @@ public sealed class SqlIngestSchemaJobHandler : IJobHandler
                 cmd.Parameters.AddWithValue(obj.Name); cmd.Parameters.AddWithValue(source);
                 cmd.Parameters.AddWithValue(hash); cmd.Parameters.AddWithValue(producedChunks);
                 await cmd.ExecuteNonQueryAsync(ct);
+
+                // Faz 4 TASK-4.3: flush per-object relations. Replace-all per source
+                // object so re-ingest produces clean state.
+                if (relations is not null)
+                {
+                    await using var delRel = conn.CreateCommand();
+                    delRel.CommandText = @"DELETE FROM sql_object_relations
+                                           WHERE connection_id=$1 AND source_schema=$2 AND source_object=$3";
+                    delRel.Parameters.AddWithValue(p.ConnectionId);
+                    delRel.Parameters.AddWithValue(obj.Schema);
+                    delRel.Parameters.AddWithValue(obj.Name);
+                    await delRel.ExecuteNonQueryAsync(ct);
+
+                    foreach (var rel in relations)
+                    {
+                        try
+                        {
+                            await using var insRel = conn.CreateCommand();
+                            insRel.CommandText = @"INSERT INTO sql_object_relations
+                                (connection_id, source_schema, source_object, source_type,
+                                 target_schema, target_object, target_type,
+                                 relation_type, relation_detail)
+                                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                                ON CONFLICT DO NOTHING";
+                            insRel.Parameters.AddWithValue(p.ConnectionId);
+                            insRel.Parameters.AddWithValue(obj.Schema);
+                            insRel.Parameters.AddWithValue(obj.Name);
+                            insRel.Parameters.AddWithValue(obj.Type.ToString().ToUpperInvariant());
+                            insRel.Parameters.AddWithValue(rel.ts);
+                            insRel.Parameters.AddWithValue(rel.tn);
+                            insRel.Parameters.AddWithValue(rel.tt);
+                            insRel.Parameters.AddWithValue(rel.rel);
+                            insRel.Parameters.AddWithValue(rel.detail);
+                            await insRel.ExecuteNonQueryAsync(ct);
+                        }
+                        catch { /* non-fatal */ }
+                    }
+                }
 
                 success++; totalChunks += producedChunks;
             }
@@ -347,9 +403,10 @@ public sealed class SqlSyncSchemaJobHandler : IJobHandler
                     var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
                     if (string.IsNullOrWhiteSpace(ddl))
                     { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
+                    var deps = await provider.GetDependenciesAsync(connStr, obj, ct);
                     chunks = obj.Type == DbObjectType.Procedure
-                        ? SqlSchemaChunkBuilder.BuildProcedureChunks(obj, ddl).ToList()
-                        : SqlSchemaChunkBuilder.BuildDdlChunkOrSplit(obj, ddl).ToList();
+                        ? SqlSchemaChunkBuilder.BuildProcedureChunks(obj, ddl, deps).ToList()
+                        : SqlSchemaChunkBuilder.BuildDdlChunkOrSplit(obj, ddl, deps).ToList();
                     hashSource = ddl;
                 }
 

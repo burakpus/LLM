@@ -58,6 +58,16 @@ public sealed record TableSchema(
     List<IncomingFkDef>?    IncomingFks = null);
 
 /// <summary>
+/// Faz 4 TASK-4.2: SP/func/trigger'ın hangi tabloları/view'leri kullandığı.
+/// SQL Server: sys.sql_expression_dependencies'ten çekilir. SP body içinde
+/// referans verilen her unique tablo/view için 1 kayıt.
+/// </summary>
+public sealed record DepDef(
+    string TargetSchema,
+    string TargetName,
+    string TargetType);   // 'TABLE' | 'VIEW' | 'FUNCTION' | 'PROCEDURE'
+
+/// <summary>
 /// Reverse-FK: which other tables reference THIS table. Used for Faz 4 relation
 /// graph — when retrieval picks up Quotation, the chunk lists "Invoice, Payment
 /// reference me" so downstream LLM can write JOIN queries.
@@ -215,20 +225,30 @@ public static class SqlSchemaChunkBuilder
 
     /// <summary>
     /// Wrap raw DDL (view/function/trigger) with structured header — splits if oversize.
-    /// Use this in ingest paths; <see cref="BuildDdlChunk(DbObjectInfo, string)"/> is the
+    /// Use this in ingest paths; <see cref="BuildDdlChunk(DbObjectInfo, string, List{DepDef}?)"/> is the
     /// single-chunk variant kept for callers that pre-check size.
     /// </summary>
-    public static IEnumerable<string> BuildDdlChunkOrSplit(DbObjectInfo obj, string ddl)
+    public static IEnumerable<string> BuildDdlChunkOrSplit(DbObjectInfo obj, string ddl, List<DepDef>? deps = null)
     {
-        var single = BuildDdlChunk(obj, ddl);
+        var single = BuildDdlChunk(obj, ddl, deps);
         if (single.Length <= MaxChunkChars) { yield return single; yield break; }
-        // Reuse procedure-chunking logic (boundary-aware split)
-        foreach (var chunk in BuildProcedureChunks(obj, ddl))
+        // Reuse procedure-chunking logic (boundary-aware split). DEPENDS_ON is
+        // attached to PART 1 only (heuristic — keeps split chunks small).
+        bool depsAttached = false;
+        foreach (var chunk in BuildProcedureChunks(obj, ddl, !depsAttached ? deps : null))
+        {
+            depsAttached = true;
             yield return chunk;
+        }
     }
 
-    /// <summary>Wrap raw DDL (view/function/trigger) with a structured header for retrieval cues.</summary>
-    public static string BuildDdlChunk(DbObjectInfo obj, string ddl)
+    /// <summary>
+    /// Wrap raw DDL (view/function/trigger) with a structured header for retrieval cues.
+    /// Optional <paramref name="deps"/> = which tables/views the object references
+    /// (Faz 4 TASK-4.2). Helps the LLM trace cross-object queries without separate
+    /// retrieval.
+    /// </summary>
+    public static string BuildDdlChunk(DbObjectInfo obj, string ddl, List<DepDef>? deps = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"OBJECT_TYPE: {obj.Type.ToString().ToUpperInvariant()}");
@@ -238,6 +258,13 @@ public static class SqlSchemaChunkBuilder
 
         var tags = DeriveTags(obj.Name, Array.Empty<string>());
         if (tags.Length > 0) sb.AppendLine($"TAGS: {string.Join(", ", tags)}");
+
+        if (deps is { Count: > 0 })
+        {
+            // Group by type and show first ~20 (rest summarized) — keeps header compact.
+            var sample = deps.Take(20).Select(d => $"{d.TargetType[..1]}:{d.TargetSchema}.{d.TargetName}");
+            sb.AppendLine($"DEPENDS_ON ({deps.Count}): {string.Join(", ", sample)}{(deps.Count > 20 ? ", …" : "")}");
+        }
 
         sb.AppendLine();
         sb.AppendLine("DEFINITION:");
@@ -250,12 +277,12 @@ public static class SqlSchemaChunkBuilder
     /// SQL statement boundaries (BEGIN/END blocks, SELECT/UPDATE/INSERT/DELETE/EXEC).
     /// Each chunk gets a SECTION header so retrieval shows which part matched.
     /// </summary>
-    public static IEnumerable<string> BuildProcedureChunks(DbObjectInfo obj, string ddl)
+    public static IEnumerable<string> BuildProcedureChunks(DbObjectInfo obj, string ddl, List<DepDef>? deps = null)
     {
         // If the SP fits in one chunk, emit one
         if (ddl.Length <= MaxChunkChars)
         {
-            yield return BuildDdlChunk(obj, ddl);
+            yield return BuildDdlChunk(obj, ddl, deps);
             yield break;
         }
 
@@ -278,7 +305,8 @@ public static class SqlSchemaChunkBuilder
 
             if (current.Length + line.Length + 1 > MaxChunkChars && current.Length > 0 && isBoundary)
             {
-                yield return BuildDdlChunkSection(obj, current.ToString(), sectionNum++);
+                // Deps attached only to PART 1 to keep multi-chunk SP headers compact.
+                yield return BuildDdlChunkSection(obj, current.ToString(), sectionNum++, sectionNum == 2 ? deps : null);
                 current.Clear();
             }
             current.Append(line).Append('\n');
@@ -286,16 +314,16 @@ public static class SqlSchemaChunkBuilder
             // Hard cap — emit even if no boundary (safety net)
             if (current.Length > MaxChunkChars + 1000)
             {
-                yield return BuildDdlChunkSection(obj, current.ToString(), sectionNum++);
+                yield return BuildDdlChunkSection(obj, current.ToString(), sectionNum++, sectionNum == 2 ? deps : null);
                 current.Clear();
             }
         }
 
         if (current.Length > 0)
-            yield return BuildDdlChunkSection(obj, current.ToString(), sectionNum);
+            yield return BuildDdlChunkSection(obj, current.ToString(), sectionNum, sectionNum == 1 ? deps : null);
     }
 
-    private static string BuildDdlChunkSection(DbObjectInfo obj, string section, int part)
+    private static string BuildDdlChunkSection(DbObjectInfo obj, string section, int part, List<DepDef>? deps = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"OBJECT_TYPE: {obj.Type.ToString().ToUpperInvariant()}");
@@ -303,6 +331,11 @@ public static class SqlSchemaChunkBuilder
         sb.AppendLine($"NAME: {obj.Name}");
         sb.AppendLine($"QUALIFIED: {obj.QualifiedName}");
         sb.AppendLine($"PART: {part}");
+        if (deps is { Count: > 0 })
+        {
+            var sample = deps.Take(20).Select(d => $"{d.TargetType[..1]}:{d.TargetSchema}.{d.TargetName}");
+            sb.AppendLine($"DEPENDS_ON ({deps.Count}): {string.Join(", ", sample)}{(deps.Count > 20 ? ", …" : "")}");
+        }
 
         var tags = DeriveTags(obj.Name, Array.Empty<string>());
         if (tags.Length > 0) sb.AppendLine($"TAGS: {string.Join(", ", tags)}");

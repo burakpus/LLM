@@ -4,13 +4,16 @@
 > - ✅ Faz 1 (structured chunking + collection separation) tamam
 > - ✅ Faz 2 (Türkçe synonym expansion) tamam
 > - ✅ TASK-2.3 (synonym admin UI) tamam — DB-backed, admin panelinden CRUD
-> - 🟡 Faz 3 (Reranker) **kısmen tamam**: `IRerankService` abstraction + `LlmReranker`
->      (DB-GPT'den ilham — mevcut Gemma chat modelini kullanır, ekstra VRAM gerektirmez)
->      + `CrossEncoderRerankService` skeleton (bge-reranker-v2-m3 deploy edildiğinde aktif).
->      `CompositeRerankService` strategy ile yönetilir: `llm | crossencoder | auto | off`.
->      Default: `llm`. Wire'lı, ContextBuilder `HybridSearch top-20 → rerank → top-6`.
-> - ⚠ Faz 3 kalan: cross-encoder vLLM service'ini docker-compose'a ekleme (VRAM bütçesi)
-> - ❌ Faz 4 (Relation graph) — beklemede
+> - 🟡 Faz 3 (Reranker) **kısmen tamam**: `IRerankService` + `LlmReranker` (Gemma)
+>      + `CrossEncoderRerankService` skeleton. Composite strategy.
+>      Cross-encoder vLLM deploy beklemede (VRAM bütçesi).
+> - 🟡 Faz 4 (Relation graph) **kısmen tamam** (2026-05-29):
+>      - ✅ TASK-4.1: Outgoing + Incoming FK chunk içinde (`FOREIGN_KEYS:` + `INCOMING_REFS:`)
+>      - ✅ TASK-4.2: `DEPENDS_ON:` SP/func/trigger chunk'larında
+>           (sys.sql_expression_dependencies → simple type ile gruplanmış)
+>      - ✅ TASK-4.3: `sql_object_relations` tablosu + ingest sırasında doldurma
+>           (relation_type: 'fk' | 'sp_uses' | 'view_uses' | 'fn_uses' | 'trigger_on')
+>      - ❌ TASK-4.3 relation-walk (top-K retrieval'a neighbor-fetch) — sonraki sprint
 
 
 
