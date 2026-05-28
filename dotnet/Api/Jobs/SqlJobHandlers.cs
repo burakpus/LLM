@@ -116,9 +116,10 @@ public sealed class SqlIngestSchemaJobHandler : IJobHandler
                     var ts = await provider.GetTableSchemaAsync(connStr, obj, ct);
                     if (ts is not null)
                     {
-                        var body = SqlSchemaChunkBuilder.BuildTableChunk(ts);
-                        chunks = new List<string> { body };
-                        hashSource = body;
+                        // Wide tables may produce multiple chunks (column overflow)
+                        chunks = SqlSchemaChunkBuilder.BuildTableChunks(ts).ToList();
+                        // Hash from the full join for change-detection
+                        hashSource = string.Join("\n", chunks);
                     }
                     else
                     {
@@ -136,17 +137,27 @@ public sealed class SqlIngestSchemaJobHandler : IJobHandler
                     if (string.IsNullOrWhiteSpace(ddl))
                     { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
 
+                    // Procedures, views, functions, triggers — all may overflow 2048-token
+                    // embedding limit. Use BuildProcedureChunks() for procs (boundary-aware split)
+                    // and BuildDdlChunk for others. If the resulting chunk is still too large,
+                    // BuildProcedureChunks's logic handles it too — apply uniformly.
                     chunks = obj.Type == DbObjectType.Procedure
                         ? SqlSchemaChunkBuilder.BuildProcedureChunks(obj, ddl).ToList()
-                        : new List<string> { SqlSchemaChunkBuilder.BuildDdlChunk(obj, ddl) };
+                        : SqlSchemaChunkBuilder.BuildDdlChunkOrSplit(obj, ddl).ToList();
                     hashSource = ddl;
                 }
 
                 // Delete any old chunks for this (collection, source) before re-ingest.
-                // Also try to clean up legacy single-collection entries.
+                // Also try to clean up legacy single-collection entries and old-style
+                // multi-part sources from previous ingest runs.
                 await ingestion.DeleteSourceAsync(typedCollection, source, ct);
                 if (typedCollection != baseCollection)
                     await ingestion.DeleteSourceAsync(baseCollection, source, ct);
+                // Multi-part chunks (source#partN) — best-effort cleanup of up to 10 parts
+                for (int oldPart = 1; oldPart <= 10; oldPart++)
+                {
+                    await ingestion.DeleteSourceAsync(typedCollection, $"{source}#part{oldPart}", ct);
+                }
 
                 // Ingest each chunk. ChunkSize=32000 forces single-pass insert
                 // (our pre-built chunks are already sized to ~7000 chars max).
@@ -319,16 +330,15 @@ public sealed class SqlSyncSchemaJobHandler : IJobHandler
                     var ts = await provider.GetTableSchemaAsync(connStr, obj, ct);
                     if (ts is not null)
                     {
-                        var body = SqlSchemaChunkBuilder.BuildTableChunk(ts);
-                        chunks = new List<string> { body };
-                        hashSource = body;
+                        chunks = SqlSchemaChunkBuilder.BuildTableChunks(ts).ToList();
+                        hashSource = string.Join("\n", chunks);
                     }
                     else
                     {
                         var ddl = await provider.GetCreateScriptAsync(connStr, obj, ct);
                         if (string.IsNullOrWhiteSpace(ddl))
                         { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
-                        chunks = new List<string> { SqlSchemaChunkBuilder.BuildDdlChunk(obj, ddl) };
+                        chunks = SqlSchemaChunkBuilder.BuildDdlChunkOrSplit(obj, ddl).ToList();
                         hashSource = ddl;
                     }
                 }
@@ -339,7 +349,7 @@ public sealed class SqlSyncSchemaJobHandler : IJobHandler
                     { failures.Add(new { name = obj.QualifiedName, error = "empty DDL" }); continue; }
                     chunks = obj.Type == DbObjectType.Procedure
                         ? SqlSchemaChunkBuilder.BuildProcedureChunks(obj, ddl).ToList()
-                        : new List<string> { SqlSchemaChunkBuilder.BuildDdlChunk(obj, ddl) };
+                        : SqlSchemaChunkBuilder.BuildDdlChunkOrSplit(obj, ddl).ToList();
                     hashSource = ddl;
                 }
 

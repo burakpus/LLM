@@ -58,19 +58,40 @@ public sealed record TableSchema(
 
 public static class SqlSchemaChunkBuilder
 {
-    /// <summary>Max chars per chunk — nomic-embed-text-v1.5 supports ~8192 tokens (~32 KB chars).
-    /// We stay well under to give the embedder slack and reduce truncation risk.</summary>
-    public const int MaxChunkChars = 7000;
+    /// <summary>
+    /// Max chars per chunk — nomic-embed-text-v1.5 supports only **2048 tokens** (vLLM enforces
+    /// this hard with HTTP 400, not silent truncation). 1 token ≈ 3-4 chars for SQL-heavy text,
+    /// so we keep chunks under ~6000 chars (safety margin of ~30%).
+    ///
+    /// Earlier 7000-char limit caused 2788/11043 procedures to fail with
+    /// "maximum context length is 2048 tokens" — diagnosed 2026-05-28 after first
+    /// large-scale ingest. Lowered to 5500 to fit reliably.
+    /// </summary>
+    public const int MaxChunkChars = 5500;
 
-    public static string BuildTableChunk(TableSchema t)
+    /// <summary>
+    /// Build one or more chunks describing a table.
+    ///
+    /// Small/medium tables (≤ ~60 cols → fits MaxChunkChars) → single chunk with full
+    /// columns + FKs + indexes + tags.
+    ///
+    /// Wide tables (200+ cols, common in denormalized finance schemas) overflow the
+    /// 2048-token embedding limit, so we split: chunk 1 carries header + first N
+    /// columns + FKs + indexes + tags; subsequent chunks carry header + remaining
+    /// column slices with a `COLUMNS_CONT` marker. Each chunk is independently
+    /// retrievable and contains enough metadata to identify the table.
+    /// </summary>
+    public static IEnumerable<string> BuildTableChunks(TableSchema t)
     {
-        var sb = new StringBuilder();
-        sb.AppendLine("OBJECT_TYPE: TABLE");
-        sb.AppendLine($"SCHEMA: {t.Schema}");
-        sb.AppendLine($"NAME: {t.Name}");
-        sb.AppendLine($"QUALIFIED: {t.Schema}.{t.Name}");
-        sb.AppendLine();
-        sb.AppendLine($"COLUMNS ({t.Columns.Count}):");
+        var headerSb = new StringBuilder();
+        headerSb.AppendLine("OBJECT_TYPE: TABLE");
+        headerSb.AppendLine($"SCHEMA: {t.Schema}");
+        headerSb.AppendLine($"NAME: {t.Name}");
+        headerSb.AppendLine($"QUALIFIED: {t.Schema}.{t.Name}");
+        var header = headerSb.ToString();
+
+        // Pre-format all columns as lines
+        var colLines = new List<string>(t.Columns.Count);
         foreach (var c in t.Columns)
         {
             var line = new StringBuilder($"  {c.Name} {c.DataType}");
@@ -78,36 +99,103 @@ public static class SqlSchemaChunkBuilder
             if (c.Identity) line.Append(" [IDENTITY]");
             if (c.IsPrimaryKey) line.Append(" [PK]");
             if (!string.IsNullOrEmpty(c.Default)) line.Append($" DEFAULT {c.Default}");
-            sb.AppendLine(line.ToString());
+            colLines.Add(line.ToString());
         }
 
+        // FK + index sections
+        var tailSb = new StringBuilder();
         if (t.ForeignKeys.Count > 0)
         {
-            sb.AppendLine();
-            sb.AppendLine("FOREIGN_KEYS:");
+            tailSb.AppendLine();
+            tailSb.AppendLine("FOREIGN_KEYS:");
             foreach (var fk in t.ForeignKeys)
-                sb.AppendLine($"  {fk.Column} -> {fk.RefSchema}.{fk.RefTable}.{fk.RefColumn}");
+                tailSb.AppendLine($"  {fk.Column} -> {fk.RefSchema}.{fk.RefTable}.{fk.RefColumn}");
         }
-
         if (t.Indexes.Count > 0)
         {
-            sb.AppendLine();
-            sb.AppendLine("INDEXES:");
+            tailSb.AppendLine();
+            tailSb.AppendLine("INDEXES:");
             foreach (var ix in t.Indexes)
             {
                 var prefix = ix.Unique ? "UNIQUE " : "";
-                sb.AppendLine($"  {prefix}{ix.Name} ({string.Join(", ", ix.Columns)})");
+                tailSb.AppendLine($"  {prefix}{ix.Name} ({string.Join(", ", ix.Columns)})");
             }
         }
-
         var tags = DeriveTags(t.Name, t.Columns.Select(c => c.Name));
-        if (tags.Length > 0)
+        var tagLine = tags.Length > 0 ? $"\nTAGS: {string.Join(", ", tags)}\n" : "";
+        var tail = tailSb.ToString() + tagLine;
+
+        // Try single chunk: header + COLUMNS + tail
+        var fullColsBlock = new StringBuilder();
+        fullColsBlock.AppendLine();
+        fullColsBlock.AppendLine($"COLUMNS ({t.Columns.Count}):");
+        foreach (var l in colLines) fullColsBlock.AppendLine(l);
+        var singleChunk = header + fullColsBlock + tail;
+        if (singleChunk.Length <= MaxChunkChars)
         {
-            sb.AppendLine();
-            sb.AppendLine($"TAGS: {string.Join(", ", tags)}");
+            yield return singleChunk;
+            yield break;
         }
 
-        return sb.ToString();
+        // Wide table — split COLUMNS across multiple chunks, keep FK/index/tags in last chunk
+        var partial = new StringBuilder();
+        int chunkIdx = 1;
+        int totalCols = colLines.Count;
+        int colsInChunk = 0;
+        int colStart = 0;
+
+        for (int i = 0; i < colLines.Count; i++)
+        {
+            // Build candidate body for this chunk
+            if (partial.Length == 0)
+            {
+                partial.Append(header);
+                partial.AppendLine();
+                partial.AppendLine(chunkIdx == 1
+                    ? $"COLUMNS ({totalCols}) — part {chunkIdx}:"
+                    : $"COLUMNS_CONT (cols {colStart + 1}..) — part {chunkIdx}:");
+            }
+            // Estimate adding this column line + (possibly) tail at end
+            var tentativeLen = partial.Length + colLines[i].Length + 1
+                             + (i == colLines.Count - 1 ? tail.Length : 0);
+            if (tentativeLen > MaxChunkChars && colsInChunk > 0)
+            {
+                // Flush this chunk WITHOUT tail (more columns follow)
+                yield return partial.ToString();
+                partial.Clear();
+                colStart = i;
+                colsInChunk = 0;
+                chunkIdx++;
+                i--;   // reprocess this column in the new chunk
+                continue;
+            }
+            partial.AppendLine(colLines[i]);
+            colsInChunk++;
+        }
+
+        // Last chunk gets the tail (FKs/indexes/tags) appended
+        if (partial.Length > 0)
+        {
+            partial.Append(tail);
+            yield return partial.ToString();
+        }
+    }
+
+    /// <summary>Backward-compat shim — single concatenated chunk (debugging / unit tests).</summary>
+    public static string BuildTableChunk(TableSchema t) => string.Join("\n---\n", BuildTableChunks(t));
+
+    /// <summary>
+    /// Wrap raw DDL (view/function/trigger) with structured header — splits if oversize.
+    /// Use this in ingest paths; <see cref="BuildDdlChunk(DbObjectInfo, string)"/> is the
+    /// single-chunk variant kept for callers that pre-check size.
+    /// </summary>
+    public static IEnumerable<string> BuildDdlChunkOrSplit(DbObjectInfo obj, string ddl)
+    {
+        var single = BuildDdlChunk(obj, ddl);
+        if (single.Length <= MaxChunkChars) { yield return single; yield break; }
+        // Reuse procedure-chunking logic (boundary-aware split)
+        foreach (var chunk in BuildProcedureChunks(obj, ddl))
+            yield return chunk;
     }
 
     /// <summary>Wrap raw DDL (view/function/trigger) with a structured header for retrieval cues.</summary>
