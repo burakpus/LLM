@@ -1,5 +1,19 @@
 # SQL RAG İyileştirme — Coding Agent Faz Planı
 
+> **İlerleme (2026-05-29)**:
+> - ✅ Faz 1 (structured chunking + collection separation) tamam
+> - ✅ Faz 2 (Türkçe synonym expansion) tamam
+> - ✅ TASK-2.3 (synonym admin UI) tamam — DB-backed, admin panelinden CRUD
+> - 🟡 Faz 3 (Reranker) **kısmen tamam**: `IRerankService` abstraction + `LlmReranker`
+>      (DB-GPT'den ilham — mevcut Gemma chat modelini kullanır, ekstra VRAM gerektirmez)
+>      + `CrossEncoderRerankService` skeleton (bge-reranker-v2-m3 deploy edildiğinde aktif).
+>      `CompositeRerankService` strategy ile yönetilir: `llm | crossencoder | auto | off`.
+>      Default: `llm`. Wire'lı, ContextBuilder `HybridSearch top-20 → rerank → top-6`.
+> - ⚠ Faz 3 kalan: cross-encoder vLLM service'ini docker-compose'a ekleme (VRAM bütçesi)
+> - ❌ Faz 4 (Relation graph) — beklemede
+
+
+
 > **Platform:** SET LLM · .NET 8 Minimal API · pgvector · nomic-embed-text-v1.5 · PostgreSQL 16  
 > **Hedef:** 11,040 SQL objesinin (4527 table + 3825 proc + 1921 view + 746 fn + 24 trigger)  
 > RAG retrieval kalitesini artırmak — özellikle Türkçe doğal dil sorgularında kolon bulma doğruluğu.  

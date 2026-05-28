@@ -159,6 +159,15 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IRagSynonymService, RagSynonymService>();
         services.AddHostedService<RagSynonymSeeder>();
 
+        // RAG rerank pipeline — HybridSearch top-N → reranker → top-K.
+        // Strategy in appsettings: 'llm' (default, uses chat model), 'crossencoder'
+        // (needs bge-reranker-v2-m3 deploy), 'auto' (ce→llm fallback), 'off'.
+        services.AddOptions<RerankOptions>()
+            .BindConfiguration(RerankOptions.SectionName);
+        services.AddSingleton<LlmReranker>();
+        services.AddSingleton<CrossEncoderRerankService>();
+        services.AddSingleton<IRerankService, CompositeRerankService>();
+
         // Skill registry — load .md files at startup (eager)
         // Without this, the first /api/skills request pays the file I/O cost (86+ files).
         services.AddSingleton(sp =>

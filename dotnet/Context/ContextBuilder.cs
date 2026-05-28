@@ -61,6 +61,8 @@ public sealed class ContextBuilder : IContextBuilder
     private readonly VectorStore.EmbeddingService _embed;
     private readonly SkillRegistry   _skills;
     private readonly IRagSynonymService _synonyms;
+    private readonly IRerankService  _rerank;
+    private readonly Microsoft.Extensions.Options.IOptions<RerankOptions> _rerankOpts;
 
     public ContextBuilder(
         IHybridSearch   kb,
@@ -68,7 +70,9 @@ public sealed class ContextBuilder : IContextBuilder
         ISessionMemory  sessionMem,
         VectorStore.EmbeddingService embed,
         SkillRegistry   skills,
-        IRagSynonymService synonyms)
+        IRagSynonymService synonyms,
+        IRerankService  rerank,
+        Microsoft.Extensions.Options.IOptions<RerankOptions> rerankOpts)
     {
         _kb         = kb;
         _agentMem   = agentMem;
@@ -76,6 +80,8 @@ public sealed class ContextBuilder : IContextBuilder
         _embed      = embed;
         _skills     = skills;
         _synonyms   = synonyms;
+        _rerank     = rerank;
+        _rerankOpts = rerankOpts;
     }
 
     public async Task<BuiltContext> BuildAsync(AgentContext ctx, CancellationToken ct = default)
@@ -102,13 +108,32 @@ public sealed class ContextBuilder : IContextBuilder
         var expandedQuery = _synonyms.Expand(ctx.UserQuery);
         var queryVec      = await _embed.EmbedAsync(expandedQuery, ct);
 
-        // 3. KB retrieval — expanded query goes to both vector + FTS channels
-        var kbHits = await _kb.SearchAsync(
+        // 3. KB retrieval — expanded query goes to both vector + FTS channels.
+        //    When reranker is enabled, fetch CandidateCount (~20) and rerank
+        //    down to TopK (~6). The reranker uses either an LLM filter
+        //    (DB-GPT style — Gemma scores candidates) or a cross-encoder
+        //    (bge-reranker, when deployed). See Endpoints/Retrieval/RerankOptions.
+        var ro          = _rerankOpts.Value;
+        var rerankOn    = ro.Enabled && !string.Equals(ro.Strategy, "off", StringComparison.OrdinalIgnoreCase);
+        var fetchTopK   = rerankOn ? Math.Max(ro.CandidateCount, ro.TopK) : ro.TopK;
+
+        var initialHits = await _kb.SearchAsync(
             queryVec, expandedQuery,
             collections:    ctx.Collections,
-            topK:           6,
+            topK:           fetchTopK,
             metadataFilter: ctx.MetadataFilter,
             ct:             ct);
+
+        IReadOnlyList<KbSearchResult> kbHits;
+        if (rerankOn && initialHits.Count > ro.TopK)
+        {
+            var reranked = await _rerank.RerankAsync(expandedQuery, initialHits, ro.TopK, ct);
+            kbHits = reranked.Select(r => r.Source).ToList();
+        }
+        else
+        {
+            kbHits = initialHits.Take(ro.TopK).ToList();
+        }
 
         var kbBlock = BuildKbBlock(kbHits, ref budget);
 
