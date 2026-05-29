@@ -127,11 +127,17 @@ public sealed class ContextBuilder : IContextBuilder
         var rerankOn    = ro.Enabled && !string.Equals(ro.Strategy, "off", StringComparison.OrdinalIgnoreCase);
         var fetchTopK   = rerankOn ? Math.Max(ro.CandidateCount, ro.TopK) : ro.TopK;
 
+        // Extract candidate object names from the user query — "quotation tablosu var mı?"
+        // → ["Quotation"], passed as exact-match boost. Surfaces dbo.Quotation even
+        // when the user doesn't type the dbo. schema prefix.
+        var boostNames = ObjectNameExtractor.Extract(ctx.UserQuery);
+
         var initialHits = await _kb.SearchAsync(
             queryVec, expandedQuery,
             collections:    ctx.Collections,
             topK:           fetchTopK,
             metadataFilter: ctx.MetadataFilter,
+            boostNames:     boostNames.Length > 0 ? boostNames : null,
             ct:             ct);
 
         IReadOnlyList<KbSearchResult> kbHits;

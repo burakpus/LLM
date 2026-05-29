@@ -45,14 +45,21 @@ public interface IHybridSearch
     /// <summary>
     /// Searches kb_documents using vector similarity + full-text BM25,
     /// merges scores, returns ranked results.
+    ///
+    /// <paramref name="boostNames"/>: optional exact-match boost list. If a chunk's
+    /// metadata <c>name</c> field (case-insensitively) equals any of these names,
+    /// its hybrid_score gets a 3× multiplier. Used to surface "the table literally
+    /// called Quotation" when the user's query mentions "quotation" — without
+    /// requiring the user to type the schema prefix.
     /// </summary>
     Task<IReadOnlyList<KbSearchResult>> SearchAsync(
         float[]            queryEmbedding,
         string             queryText,
-        string[]?          collections  = null,
-        int                topK         = 6,
+        string[]?          collections    = null,
+        int                topK           = 6,
         string?            metadataFilter = null,   // JSONB @> expression e.g. '{"year":2024}'
-        CancellationToken  ct           = default);
+        string[]?          boostNames     = null,   // exact metadata.name match → ×3.0
+        CancellationToken  ct             = default);
 }
 
 // ── Implementation ────────────────────────────────────────────────────────────
@@ -76,10 +83,11 @@ public sealed class PgHybridSearch : IHybridSearch
     public async Task<IReadOnlyList<KbSearchResult>> SearchAsync(
         float[]           queryEmbedding,
         string            queryText,
-        string[]?         collections  = null,
-        int               topK         = 6,
+        string[]?         collections    = null,
+        int               topK           = 6,
         string?           metadataFilter = null,
-        CancellationToken ct           = default)
+        string[]?         boostNames     = null,
+        CancellationToken ct             = default)
     {
         await using var conn = await _ds.OpenConnectionAsync(ct);
 
@@ -96,6 +104,12 @@ public sealed class PgHybridSearch : IHybridSearch
                                 ?? (_opts.AllowedCollections.Count > 0
                                     ? [.. _opts.AllowedCollections]
                                     : null);
+
+        var hasBoost = boostNames is { Length: > 0 };
+        // Lowercase all names for case-insensitive matching against metadata->>'name'.
+        var boostLower = hasBoost
+            ? boostNames!.Select(n => n.ToLowerInvariant()).Distinct().ToArray()
+            : null;
 
         // Fixed params: $1 embedding, $2 queryText, $3 maxDist, $4 topK
         int nextParam = 5;
@@ -118,13 +132,41 @@ public sealed class PgHybridSearch : IHybridSearch
         }
         else metadataClause = "";
 
+        int boostParam = 0;
+        if (hasBoost) boostParam = nextParam++;
+
         int weightParam = nextParam;
 
         await using var cmd = conn.CreateCommand();
 
-        // Priority filter — 'hidden' collections are dropped from candidate sets.
-        // Priority multiplier (CASE) — applied to final score, then ORDER BY adjusted_score.
-        // Collections with no settings row → priority='normal' (1.0x).
+        // Three CTEs feed the candidate pool:
+        //   vec_cand   — pgvector nearest neighbors (semantic)
+        //   fts_cand   — Postgres FTS (lexical / keyword)
+        //   exact_cand — chunks whose metadata.name exactly matches a query-extracted
+        //                object name (case-insensitive) → triggers 3× boost in final scoring
+        //
+        // Priority filter — 'hidden' collections are dropped from all candidate sets.
+        // Priority multiplier (CASE) — applied to final score.
+        var exactCandSql = hasBoost ? $@"
+            ,
+            exact_cand AS (
+                SELECT d.id,
+                       2.0                 AS vec_distance,
+                       0.0                 AS fts_rank
+                FROM   kb_documents d
+                LEFT JOIN collection_settings cs ON cs.collection = d.collection
+                WHERE  LOWER(d.metadata::jsonb->>'name') = ANY(${boostParam})
+                  AND  COALESCE(cs.priority, 'normal') <> 'hidden'
+                {collectionClause.Replace("collection", "d.collection")}
+                {metadataClause.Replace("metadata", "d.metadata")}
+                LIMIT  $4 * 3
+            )" : "";
+
+        var unionExtra = hasBoost ? " UNION ALL SELECT * FROM exact_cand" : "";
+        var exactBoostSql = hasBoost
+            ? $@" * CASE WHEN LOWER(d.metadata::jsonb->>'name') = ANY(${boostParam}) THEN 3.0 ELSE 1.0 END"
+            : "";
+
         cmd.CommandText = $"""
             WITH vec_cand AS (
                 SELECT d.id,
@@ -151,12 +193,12 @@ public sealed class PgHybridSearch : IHybridSearch
                 {metadataClause.Replace("metadata", "d.metadata")}
                 ORDER  BY fts_rank DESC
                 LIMIT  $4 * 3
-            ),
+            ){exactCandSql},
             merged AS (
                 SELECT id,
                        min(vec_distance) AS vec_distance,
                        max(fts_rank)     AS fts_rank
-                FROM   (SELECT * FROM vec_cand UNION ALL SELECT * FROM fts_cand) u
+                FROM   (SELECT * FROM vec_cand UNION ALL SELECT * FROM fts_cand{unionExtra}) u
                 GROUP  BY id
             )
             SELECT d.id, d.collection, d.source, d.title, d.content,
@@ -168,7 +210,7 @@ public sealed class PgHybridSearch : IHybridSearch
                               WHEN 'normal' THEN 1.0
                               WHEN 'low'    THEN 0.5
                               ELSE 1.0
-                       END AS hybrid_score
+                       END{exactBoostSql} AS hybrid_score
             FROM   merged m
             JOIN   kb_documents d USING (id)
             LEFT   JOIN collection_settings cs ON cs.collection = d.collection
@@ -180,8 +222,9 @@ public sealed class PgHybridSearch : IHybridSearch
         cmd.Parameters.AddWithValue(queryText);                  // $2
         cmd.Parameters.AddWithValue(_opts.MaxVecDistance);       // $3
         cmd.Parameters.AddWithValue(topK);                       // $4
-        if (colParam  > 0) cmd.Parameters.AddWithValue(effectiveCollections!); // $5?
-        if (metaParam > 0) cmd.Parameters.AddWithValue(metadataFilter!);       // $5/$6?
+        if (colParam   > 0) cmd.Parameters.AddWithValue(effectiveCollections!);
+        if (metaParam  > 0) cmd.Parameters.AddWithValue(metadataFilter!);
+        if (boostParam > 0) cmd.Parameters.AddWithValue(boostLower!);
         cmd.Parameters.AddWithValue(_opts.VectorWeight);         // $weight
 
         await using var r = await cmd.ExecuteReaderAsync(ct);
