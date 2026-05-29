@@ -5,6 +5,7 @@ import {
   listSqlObjects,
   getLatestJobForConnection,
   getSqlIngestedStats,
+  generateSqlSkill,
 } from '../../../api/admin'
 import type {
   SqlConnection, SqlConnectionUpsert, SqlDbType,
@@ -56,6 +57,8 @@ export default function SqlConnectionsTab() {
   const [activeJob, setActiveJob] = useState<{ id: number; title: string; subtitle?: string } | null>(null)
   // Sync start dialog
   const [syncDialog, setSyncDialog] = useState<{ conn: SqlConnection; lastJob: JobInfo | null; loading: boolean } | null>(null)
+  // Generate-skill busy state (per connection id) — UI feedback only
+  const [generatingSkill, setGeneratingSkill] = useState<number | null>(null)
 
   const load = async () => {
     setLoading(true); setError(null)
@@ -196,6 +199,28 @@ export default function SqlConnectionsTab() {
     } catch (e: any) {
       setError(e.message)
       setSyncDialog(null)
+    }
+  }
+
+  // Generate SQL skill .md from the connection schema (LLM-authored, ~30s).
+  // İzole özellik — SQL RAG'a hiç dokunmaz. Üretilen skill kullanıcı sohbette
+  // istediğinde seçer; tıpkı mevcut cfs-db-model.md gibi sistem prompt'una eklenir.
+  const onGenerateSkill = async (c: SqlConnection) => {
+    const slug = c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    if (!window.confirm(
+      `"${c.name}" şemasından bir SQL skill .md üretilsin mi?\n\n` +
+      `LiteLLM üzerinden 6 bölümlü doküman yazılır (~30 saniye).\n` +
+      `Mevcut "${slug || 'sql'}-db-model.md" üzerine yazılır.\n\n` +
+      `Not: Bu işlem RAG yapısını etkilemez; yalnızca Skills/ klasörüne dosya yazar.`
+    )) return
+    setGeneratingSkill(c.id); setError(null); setMsg(null)
+    try {
+      const r = await generateSqlSkill(c.id)
+      setMsg(`✓ ${r.skillFile} — ${r.tables} tablo · ${r.chars.toLocaleString('tr-TR')} karakter`)
+    } catch (e: any) {
+      setError(`Skill üretimi başarısız: ${e.message}`)
+    } finally {
+      setGeneratingSkill(null)
     }
   }
 
@@ -429,6 +454,13 @@ export default function SqlConnectionsTab() {
                             style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}
                             title="Tablo verilerini seçip RAG'a aktar">
                       💾 Veri
+                    </button>
+                    <button onClick={() => onGenerateSkill(c)}
+                            disabled={generatingSkill === c.id}
+                            className="px-2 py-1 rounded text-xs cursor-pointer disabled:opacity-50"
+                            style={{ background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }}
+                            title="Şemadan LLM ile SQL skill .md üret (~30 sn). RAG'ı etkilemez.">
+                      {generatingSkill === c.id ? '⏳ …' : '🧠 Skill'}
                     </button>
                     <button onClick={() => openEdit(c)}
                             className="px-2 py-1 rounded text-xs cursor-pointer"

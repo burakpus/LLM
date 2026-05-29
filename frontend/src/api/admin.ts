@@ -474,6 +474,28 @@ export async function testSqlCredentials(payload: SqlConnectionUpsert): Promise<
   return r.json()
 }
 
+// ── Auto-generate a SQL skill .md from the connection's schema ──────────────
+// Üretilen skill Skills/ klasörüne yazılır ve picker'da görünür. RAG yoluna
+// hiçbir etki yoktur — bu sadece statik bir referans skill üretir.
+export interface GenerateSkillResult {
+  skillFile: string
+  skillId:   string
+  tables:    number
+  chars:     number
+  note:      string
+}
+
+export async function generateSqlSkill(connId: number): Promise<GenerateSkillResult> {
+  const r = await fetch(`/api/admin/sql-connections/${connId}/generate-skill`, {
+    method: 'POST', headers: authHeaders(),
+  })
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}))
+    throw new Error(body.error ?? `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
 // ── Schema preview & ingest ──────────────────────────────────────────────────
 
 export interface SqlObjectSummary {
