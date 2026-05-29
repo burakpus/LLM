@@ -132,9 +132,21 @@ public sealed class ContextBuilder : IContextBuilder
         // when the user doesn't type the dbo. schema prefix.
         var boostNames = ObjectNameExtractor.Extract(ctx.UserQuery);
 
+        // If user didn't explicitly pass collections, fall back to the skill's
+        // preferred collection (from skill frontmatter `collection: X`). Lets a
+        // domain skill like "Data Sözlük" automatically focus on its source
+        // collection (sql-data-cfs-vizyon) without user having to remember.
+        var effectiveCollections = ctx.Collections;
+        if ((effectiveCollections is null || effectiveCollections.Length == 0)
+            && _skills.Metadata.TryGetValue(ctx.SkillName, out var skillMeta)
+            && !string.IsNullOrEmpty(skillMeta.Collection))
+        {
+            effectiveCollections = new[] { skillMeta.Collection };
+        }
+
         var initialHits = await _kb.SearchAsync(
             queryVec, expandedQuery,
-            collections:    ctx.Collections,
+            collections:    effectiveCollections,
             topK:           fetchTopK,
             metadataFilter: ctx.MetadataFilter,
             boostNames:     boostNames.Length > 0 ? boostNames : null,

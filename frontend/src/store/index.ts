@@ -71,7 +71,9 @@ export interface ConvSettings {
 export const defaultSettings: ConvSettings = {
   systemPrompt:   '',
   temperature:    0.7,
-  maxTokens:      1024,
+  // Was 1024 — yetersiz for uzun listeler (örn. 61-kolon tablo çıktısı).
+  // Settings panel'inden kullanıcı değiştirebilir.
+  maxTokens:      2048,
   stream:         true,
   agenticEnabled: false,
   maxAgentLoops:  10,
