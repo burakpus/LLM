@@ -21,8 +21,9 @@ namespace SetYazilim.Llm.Retrieval;
 public static class ObjectNameExtractor
 {
     // Turkish / English object-kind suffixes that signal "the word before me is an object name".
+    // Includes "isimli/adında/adlı" forms (Turkish: "named X") that don't directly say "table".
     private static readonly Regex SuffixPattern = new(
-        @"\b([A-Za-z_][\w]{2,})\s+(?:tablosu|tablo|view|görünüm|gorunum|prosedürü|prosedur|prosedüru|procedure|stored\s+procedure|fonksiyonu|fonksiyon|function|tetikleyici|trigger)\b",
+        @"\b([A-Za-z_][\w]{2,})\s+(?:tablosu|tablo|view|görünüm|gorunum|prosedürü|prosedur|prosedüru|procedure|stored\s+procedure|fonksiyonu|fonksiyon|function|tetikleyici|trigger|isimli|isimde|adlı|adli|adında|adinda|adlı\s+(?:ana\s+)?tablo|isimli\s+(?:ana\s+)?tablo)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // English-leading patterns: "table X", "view X"
