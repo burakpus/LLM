@@ -121,7 +121,13 @@ public static class SqlDataDelta
                 var v = r.IsDBNull(i) ? "" : (r.GetValue(i)?.ToString() ?? "");
                 if (SqlDataSampler.IsLikelyPII(colNames[i]) && !string.IsNullOrEmpty(v))
                     v = MaskValue(colNames[i], v);
-                if (v.Length > 500) v = v[..500] + "…";
+                // Per-cell truncation: 500 → 12000 (~3000 token). Önceki 500 sınırı veri
+                // sözlüğü view'lerindeki STRING_AGG ile birleşmiş columns_description
+                // gibi büyük metin alanlarını yarıdan kesiyordu (örn. 61-kolon Quotation
+                // açıklaması = ~5000 char). 12000 makul: BLOB/binary'yi sınırlar ama
+                // doğal metin alanlarını korur. Embedding chunk size (4000) zaten ikincil
+                // koruma — chunk split olur ama veri silinmez.
+                if (v.Length > 12000) v = v[..12000] + "…";
                 cols[colNames[i]] = v;
             }
 
