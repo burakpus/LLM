@@ -14,6 +14,10 @@ public sealed record SqlSyncSchemaParams(int      ConnectionId);
 public sealed record SqlIngestDataParams(int      ConnectionId, string Collection, int DefaultLimit, SqlTableSpecDto[] Tables);
 public sealed record SqlTableSpecDto(string Schema, string Name, int Limit, string? Where);
 public sealed record SqlSyncDataParams(int  ConnectionId, int[]? TableConfigIds);  // null = tüm config'li tablolar
+// Kullanıcı tarafından UI'da seçilmiş tabloların "schema.name" listesi.
+// Boş/null gönderilirse handler default olarak satır sayısı top-100'ü uygular
+// (geriye uyumluluk: API job'u doğrudan tetiklerse seçim olmadan da çalışır).
+public sealed record SqlGenerateSkillParams(int ConnectionId, string[]? Tables = null);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper — sha256 hex
@@ -755,5 +759,117 @@ public sealed class SqlIngestDataJobHandler : IJobHandler
 
         await ctx.ReportProgressAsync(p.Tables.Length, p.Tables.Length, "Tamamlandı", ct);
         return new { total = p.Tables.Length, success, rows = totalRows, chunks = totalChunks, failures, collection };
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Handler 5: Generate SQL skill .md from connection schema (background)
+// İzole: RAG yoluna dokunmaz. Top N tabloyu satır sayısına göre seçer, LiteLLM
+// ile 6 bölümlü skill yazdırır, Skills/ klasörüne kaydeder, registry'yi reload eder.
+// ─────────────────────────────────────────────────────────────────────────────
+public sealed class SqlGenerateSkillJobHandler : IJobHandler
+{
+    public string Type => "sql.generate-skill";
+
+    public async Task<object> RunAsync(JobContext ctx, CancellationToken ct)
+    {
+        var p   = ctx.ParseParams<SqlGenerateSkillParams>();
+        var svc = ctx.Services.GetRequiredService<ISqlConnectionService>();
+        var ds  = ctx.Services.GetRequiredService<NpgsqlDataSource>();
+        var cfg = ctx.Services.GetRequiredService<IConfiguration>();
+        var httpFactory = ctx.Services.GetRequiredService<IHttpClientFactory>();
+        var env  = ctx.Services.GetRequiredService<IWebHostEnvironment>();
+        var skills = ctx.Services.GetRequiredService<SetYazilim.Llm.Context.SkillRegistry>();
+
+        // Connection adı (slug + doküman başlığı için)
+        string? connName;
+        await using (var conn = await ds.OpenConnectionAsync(ct))
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT name FROM sql_connections WHERE id=$1";
+            cmd.Parameters.AddWithValue(p.ConnectionId);
+            var v = await cmd.ExecuteScalarAsync(ct);
+            connName = v as string;
+        }
+        if (connName is null) throw new InvalidOperationException($"Connection #{p.ConnectionId} not found");
+
+        await ctx.ReportProgressAsync(0, 8, "Şema okunuyor…", ct);
+        var (dbType, connStr) = await SqlConnLoader.LoadAsync(p.ConnectionId, svc, ds, ct);
+        var allTables = await SqlDataSampler.ListTablesAsync(dbType, connStr, ct);
+        if (allTables.Count == 0)
+            throw new InvalidOperationException("Bu bağlantıda tablo bulunamadı");
+
+        // Seçim mantığı: kullanıcı liste verdiyse onu kullan (UI'da onaylanmış);
+        // vermediyse satır sayısına göre top-100 default uygulanır. View'lerin
+        // EstimatedRows=0 olduğu için top-N default seçimi tabloları öne çeker —
+        // bu kasıtlı (kullanım yoğun tabloları önceliklendir).
+        List<TableInfo> picked;
+        string pickedDesc;
+        if (p.Tables is { Length: > 0 })
+        {
+            var requested = new HashSet<string>(p.Tables, StringComparer.OrdinalIgnoreCase);
+            picked = allTables
+                .Where(t => requested.Contains(t.QualifiedName))
+                .ToList();
+            pickedDesc = $"{picked.Count}/{p.Tables.Length} tablo kullanıcı tarafından seçildi";
+            if (picked.Count == 0)
+                throw new InvalidOperationException("Seçilen tablolar bağlantıda bulunamadı");
+        }
+        else
+        {
+            const int defaultTopN = 100;
+            picked = allTables
+                .OrderByDescending(t => t.EstimatedRows)
+                .ThenBy(t => t.QualifiedName, StringComparer.OrdinalIgnoreCase)
+                .Take(defaultTopN)
+                .ToList();
+            pickedDesc = $"{picked.Count}/{allTables.Count} tablo (satır sayısı top {defaultTopN})";
+        }
+
+        await ctx.ReportProgressAsync(1, 8, pickedDesc, ct);
+
+        var schemaText = SqlSkillGenerator.BuildSchemaText(picked);
+
+        // LiteLLM ayarları
+        var liteLlmBase = cfg["LiteLLM:BaseUrl"] ?? "http://localhost:4000";
+        var liteLlmKey  = cfg["LiteLLM:ApiKey"];
+        var model       = cfg["SkillGen:Model"] ?? "chat";
+        var http        = httpFactory.CreateClient();
+        http.Timeout    = TimeSpan.FromMinutes(5);
+
+        // 6 bölümü üretirken progress'e yansıt
+        var skillMd = await SqlSkillGenerator.GenerateAsync(
+            http, liteLlmBase, liteLlmKey, model, connName, schemaText,
+            onSectionDone: async (idx, total, title) =>
+            {
+                // idx: 1-based, total: 6 (sabit). Progress 2..7 arası mapping.
+                var cur = 1 + idx;
+                await ctx.ReportProgressAsync(cur, 8, $"Bölüm {idx}/{total}: {title}", ct);
+            },
+            ct);
+
+        // Skills/ yaz + registry hot-reload
+        await ctx.ReportProgressAsync(7, 8, "Dosya yazılıyor…", ct);
+        var skillsDir = skills.SkillsPath ?? Path.Combine(env.ContentRootPath, "Skills");
+        Directory.CreateDirectory(skillsDir);
+        var slug = System.Text.RegularExpressions.Regex.Replace(
+            connName.ToLowerInvariant(), @"[^a-z0-9]+", "-").Trim('-');
+        if (string.IsNullOrEmpty(slug)) slug = "sql";
+        var fileName  = $"{slug}-db-model.md";
+        var skillPath = Path.Combine(skillsDir, fileName);
+
+        await File.WriteAllTextAsync(skillPath, skillMd, ct);
+        skills.LoadFromDirectory(skillsDir);
+
+        await ctx.ReportProgressAsync(8, 8, "Tamamlandı", ct);
+        return new
+        {
+            skillFile     = fileName,
+            skillId       = Path.GetFileNameWithoutExtension(fileName),
+            tablesPicked  = picked.Count,
+            tablesTotal   = allTables.Count,
+            chars         = skillMd.Length,
+            selectionMode = p.Tables is { Length: > 0 } ? "user-selected" : "default-top100",
+        };
     }
 }

@@ -395,100 +395,30 @@ app.MapPost("/api/admin/sql-connections/{id:int}/sync-schema", [Authorize("Admin
     return Results.Ok(new { jobId });
 });
 
-// POST /api/admin/sql-connections/{id}/generate-skill — LLM-author a SQL skill .md
-// from the connection's live schema, save it as Skills/{slug}-db-model.md, and
-// hot-reload SkillRegistry so the new skill appears in the picker without restart.
+// POST /api/admin/sql-connections/{id}/generate-skill — background job ile
+// LLM-author bir SQL skill .md üretir, Skills/{slug}-db-model.md'ye kaydeder ve
+// SkillRegistry'yi reload eder. Body opsiyonel { tables: ["schema.name", ...] };
+// gönderilmezse handler default olarak satır sayısı top-100 uygular.
 //
-// IZOLE özellik: SQL RAG yolunu (kb_documents, hybrid search, ingest job'ları)
-// hiç etkilemez. SqlDataSampler.ListTablesAsync'i sadece OKUR — record'lara veya
-// SQL'lere dokunulmaz. Üretilen skill kullanıcı sohbette seçtiğinde sistem
-// prompt'ına eklenir (cfs-db-model.md ile aynı mekanizma).
-//
-// Senkron çalışır: 6 bölüm × ~5sn ≈ 30sn. Frontend disabled state ile bekler.
-app.MapPost("/api/admin/sql-connections/{id:int}/generate-skill", [Authorize("AdminOnly")] async (
-    int id, ISqlConnectionService svc, NpgsqlDataSource ds, IConfiguration cfg,
-    IHttpClientFactory httpFactory, IWebHostEnvironment env,
-    SetYazilim.Llm.Context.SkillRegistry skills,
-    ClaimsPrincipal user, CancellationToken ct) =>
+// İZOLE özellik: SQL RAG yolunu (kb_documents, hybrid search, ingest job'ları)
+// HİÇ etkilemez. SqlDataSampler.ListTablesAsync sadece OKUR. Üretilen skill
+// kullanıcı sohbette seçince sistem prompt'una eklenir (cfs-db-model.md ile
+// aynı mekanizma).
+app.MapPost("/api/admin/sql-connections/{id:int}/generate-skill",
+    [Authorize("AdminOnly")] async (
+        int id, [FromBody] GenerateSkillRequest? req,
+        IJobService jobs, ClaimsPrincipal user, CancellationToken ct) =>
 {
     var username = user.FindFirstValue(ClaimTypes.Name) ?? "admin";
-
-    // Connection adı — slug ve doc title için
-    string? connName;
-    await using (var conn = await ds.OpenConnectionAsync(ct))
-    {
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT name FROM sql_connections WHERE id=$1";
-        cmd.Parameters.AddWithValue(id);
-        var v = await cmd.ExecuteScalarAsync(ct);
-        connName = v as string;
-    }
-    if (connName is null) return Results.NotFound();
-
-    var (dbType, connStr) = await LoadConnectionAsync(id, svc, ds, ct);
-    if (connStr is null) return Results.NotFound();
-
-    // Şemayı hedef SQL Server'dan oku (PostgreSQL DEĞİL — LoadConnectionAsync
-    // sayesinde target DB connection string'i geldi). Mevcut SqlDataSampler
-    // kontratı korunur, sadece çağrılır.
-    List<TableInfo> tables;
-    try
-    {
-        tables = await SqlDataSampler.ListTablesAsync(dbType, connStr, ct);
-    }
-    catch (Exception ex)
-    {
-        return Results.BadRequest(new { error = $"Şema okuma hatası: {ex.Message}" });
-    }
-    if (tables.Count == 0)
-        return Results.BadRequest(new { error = "Bu bağlantıda tablo bulunamadı." });
-
-    var schemaText = SqlSkillGenerator.BuildSchemaText(tables);
-
-    // LiteLLM üzerinden 6 bölümlü doc üret
-    var liteLlmBase = cfg["LiteLLM:BaseUrl"] ?? "http://localhost:4000";
-    var liteLlmKey  = cfg["LiteLLM:ApiKey"];
-    var model       = cfg["SkillGen:Model"] ?? "chat";
-    var http        = httpFactory.CreateClient();
-    http.Timeout    = TimeSpan.FromMinutes(2);
-
-    string skillMd;
-    try
-    {
-        skillMd = await SqlSkillGenerator.GenerateAsync(
-            http, liteLlmBase, liteLlmKey, model, connName, schemaText, ct);
-    }
-    catch (Exception ex)
-    {
-        return Results.BadRequest(new { error = $"LLM üretim hatası: {ex.Message}" });
-    }
-
-    // Skills/ klasörüne yaz — connection adından slug
-    var skillsDir = skills.SkillsPath ?? Path.Combine(env.ContentRootPath, "Skills");
-    Directory.CreateDirectory(skillsDir);
-    var slug = System.Text.RegularExpressions.Regex.Replace(
-        connName.ToLowerInvariant(), @"[^a-z0-9]+", "-").Trim('-');
-    if (string.IsNullOrEmpty(slug)) slug = "sql";
-    var fileName  = $"{slug}-db-model.md";
-    var skillPath = Path.Combine(skillsDir, fileName);
-
-    await File.WriteAllTextAsync(skillPath, skillMd, ct);
-
-    // SkillRegistry hot-reload — restart gerekmesin diye. LoadFromDirectory
-    // clear+repopulate yapıyor (Context/SkillRegistry.cs:62-93).
-    skills.LoadFromDirectory(skillsDir);
-
-    _ = ActivityLogger.LogAsync(ds, username, "skill.generate_from_db",
-        fileName, $"connection={id} tables={tables.Count} chars={skillMd.Length}");
-
-    return Results.Ok(new
-    {
-        skillFile = fileName,
-        skillId   = Path.GetFileNameWithoutExtension(fileName),
-        tables    = tables.Count,
-        chars     = skillMd.Length,
-        note      = "Skill Skills/ klasörüne yazıldı ve registry yeniden yüklendi.",
-    });
+    var tables = req?.Tables?.Where(t => !string.IsNullOrWhiteSpace(t))
+                              .Select(t => t.Trim())
+                              .Distinct(StringComparer.OrdinalIgnoreCase)
+                              .ToArray();
+    var jobId = await jobs.EnqueueAsync(
+        "sql.generate-skill",
+        new SqlGenerateSkillParams(id, tables),
+        username, ct);
+    return Results.Ok(new { jobId });
 });
 
 // Helper — loads connection by ID and returns (dbType, connectionString) or null

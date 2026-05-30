@@ -42,7 +42,11 @@ public static class SqlSkillGenerator
          "Markdown table with columns: Issue | Detection Logic. Include 7 reconciliation checks relevant to the schema: closed records with outstanding balance, unmatched FK references, amount component sum mismatch, duplicate rows, missing required dates, GL entry gaps, allocation inconsistencies."),
     ];
 
-    private const int MaxSchemaChars = 14_000;
+    // Top-N strategy (Job pipeline) zaten ön-filtreleme yapıyor. Cap 30K'ya
+    // çekildi çünkü 100 tablo × ~30 kolon × ~25 char ≈ 75K worst-case; ortalamada
+    // 30K civarı yeterli. Bu LLM'in görebileceği üst sınırdır — gerçek schema
+    // seçimi job tarafında yapılır.
+    private const int MaxSchemaChars = 30_000;
 
     /// <summary>
     /// Şema dump'ı — sadece TableInfo'nun bilinen alanlarını kullanır.
@@ -78,6 +82,7 @@ public static class SqlSkillGenerator
         string model,
         string connectionName,
         string schemaText,
+        Func<int, int, string, Task>? onSectionDone = null,
         CancellationToken ct = default)
     {
         var parts = new List<string>
@@ -87,8 +92,9 @@ public static class SqlSkillGenerator
             "Covers schema, column semantics, code dictionaries, formulas, blueprints, and helpers.\n\n---\n",
         };
 
-        foreach (var (title, instruction) in Sections)
+        for (int sIdx = 0; sIdx < Sections.Length; sIdx++)
         {
+            var (title, instruction) = Sections[sIdx];
             var prompt =
                 "You are a senior database architect writing a SQL skill reference document.\n" +
                 "Style target: cfs-db-model.md — concise, technical, dense with semantic information.\n" +
@@ -132,6 +138,13 @@ public static class SqlSkillGenerator
             catch
             {
                 // Section atla, dokümanın geri kalanı kaybolmasın
+            }
+
+            // Progress callback — job pipeline'ın UI'a yansıtması için
+            if (onSectionDone is not null)
+            {
+                try { await onSectionDone(sIdx + 1, Sections.Length, title); }
+                catch { /* callback hatası job'u bozmamalı */ }
             }
         }
 

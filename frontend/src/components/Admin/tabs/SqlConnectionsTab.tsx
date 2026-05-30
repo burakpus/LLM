@@ -6,11 +6,13 @@ import {
   getLatestJobForConnection,
   getSqlIngestedStats,
   generateSqlSkill,
+  listSqlTables,
 } from '../../../api/admin'
 import type {
   SqlConnection, SqlConnectionUpsert, SqlDbType,
   SqlObjectSummary,
   JobInfo, SqlIngestedStats,
+  SqlTable,
 } from '../../../api/admin'
 import JobProgressModal from '../JobProgressModal'
 import SqlDataDialog from '../SqlDataDialog'
@@ -59,6 +61,15 @@ export default function SqlConnectionsTab() {
   const [syncDialog, setSyncDialog] = useState<{ conn: SqlConnection; lastJob: JobInfo | null; loading: boolean } | null>(null)
   // Generate-skill busy state (per connection id) — UI feedback only
   const [generatingSkill, setGeneratingSkill] = useState<number | null>(null)
+  // Skill üretim modal — kullanıcı önce tablo listesini görüp düzenler
+  const [skillDialog, setSkillDialog] = useState<{
+    conn:     SqlConnection
+    tables:   SqlTable[]              // satır sayısına göre sıralı tüm tablolar
+    selected: Set<string>             // "schema.name" set
+    filter:   string                  // arama kutusu
+    loading:  boolean
+    error?:   string
+  } | null>(null)
 
   const load = async () => {
     setLoading(true); setError(null)
@@ -202,25 +213,45 @@ export default function SqlConnectionsTab() {
     }
   }
 
-  // Generate SQL skill .md from the connection schema (LLM-authored, ~30s).
-  // İzole özellik — SQL RAG'a hiç dokunmaz. Üretilen skill kullanıcı sohbette
-  // istediğinde seçer; tıpkı mevcut cfs-db-model.md gibi sistem prompt'una eklenir.
-  const onGenerateSkill = async (c: SqlConnection) => {
-    const slug = c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-    if (!window.confirm(
-      `"${c.name}" şemasından bir SQL skill .md üretilsin mi?\n\n` +
-      `LiteLLM üzerinden 6 bölümlü doküman yazılır (~30 saniye).\n` +
-      `Mevcut "${slug || 'sql'}-db-model.md" üzerine yazılır.\n\n` +
-      `Not: Bu işlem RAG yapısını etkilemez; yalnızca Skills/ klasörüne dosya yazar.`
-    )) return
+  // Skill modal'ı aç — tabloları çek, satır sayısına göre sırala, top 100 default seçili.
+  // RAG yoluna dokunmaz; üretilen .md kullanıcı sohbette istediğinde seçer.
+  const onOpenSkillDialog = async (c: SqlConnection) => {
     setGeneratingSkill(c.id); setError(null); setMsg(null)
     try {
-      const r = await generateSqlSkill(c.id)
-      setMsg(`✓ ${r.skillFile} — ${r.tables} tablo · ${r.chars.toLocaleString('tr-TR')} karakter`)
+      const tables = await listSqlTables(c.id)
+      // Satır sayısına göre azalan sırala. View'ler (rows=0) en sona düşer.
+      const sorted = [...tables].sort((a, b) => b.estimatedRows - a.estimatedRows
+                                              || a.name.localeCompare(b.name))
+      // Default seçim: ilk 100 (kullanım yoğun tablolar)
+      const defaultSel = new Set(sorted.slice(0, 100).map(t => `${t.schema}.${t.name}`))
+      setSkillDialog({ conn: c, tables: sorted, selected: defaultSel, filter: '', loading: false })
     } catch (e: any) {
-      setError(`Skill üretimi başarısız: ${e.message}`)
+      setError(`Tablo listesi alınamadı: ${e.message}`)
     } finally {
       setGeneratingSkill(null)
+    }
+  }
+
+  // Üret butonu — job kuyruğuna at, JobProgressModal'a yönlendir.
+  const onStartSkillGen = async () => {
+    if (!skillDialog) return
+    const { conn, selected } = skillDialog
+    if (selected.size === 0) {
+      setSkillDialog(s => s ? { ...s, error: 'En az 1 tablo seçilmelidir.' } : s)
+      return
+    }
+    setSkillDialog(s => s ? { ...s, loading: true, error: undefined } : s)
+    try {
+      const tables = Array.from(selected)
+      const r = await generateSqlSkill(conn.id, tables)
+      setSkillDialog(null)
+      setActiveJob({
+        id:       r.jobId,
+        title:    `Skill Üretimi — ${conn.name}`,
+        subtitle: `${tables.length} tablo · LiteLLM ile 6 bölüm yazılıyor (arkada çalışıyor)`,
+      })
+    } catch (e: any) {
+      setSkillDialog(s => s ? { ...s, loading: false, error: e.message } : s)
     }
   }
 
@@ -455,11 +486,11 @@ export default function SqlConnectionsTab() {
                             title="Tablo verilerini seçip RAG'a aktar">
                       💾 Veri
                     </button>
-                    <button onClick={() => onGenerateSkill(c)}
+                    <button onClick={() => onOpenSkillDialog(c)}
                             disabled={generatingSkill === c.id}
                             className="px-2 py-1 rounded text-xs cursor-pointer disabled:opacity-50"
                             style={{ background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }}
-                            title="Şemadan LLM ile SQL skill .md üret (~30 sn). RAG'ı etkilemez.">
+                            title="Şemadan LLM ile SQL skill .md üret. Tablo listesi gösterilir; istediğini ekle/çıkar. RAG'ı etkilemez.">
                       {generatingSkill === c.id ? '⏳ …' : '🧠 Skill'}
                     </button>
                     <button onClick={() => openEdit(c)}
@@ -795,6 +826,149 @@ export default function SqlConnectionsTab() {
                         className="px-4 py-2 rounded-lg text-sm cursor-pointer"
                         style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
                   Kapat
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Skill üretim modal — tablo seçimi (default top 100, kullanıcı düzenler) */}
+      {skillDialog && (() => {
+        const { conn, tables, selected, filter, loading, error: dlgErr } = skillDialog
+        const filterLow = filter.trim().toLowerCase()
+        const visible = filterLow
+          ? tables.filter(t => `${t.schema}.${t.name}`.toLowerCase().includes(filterLow))
+          : tables
+        const visibleKeys = visible.map(t => `${t.schema}.${t.name}`)
+        const allVisibleSelected = visible.length > 0 && visibleKeys.every(k => selected.has(k))
+        const toggleOne = (key: string) => {
+          setSkillDialog(s => {
+            if (!s) return s
+            const next = new Set(s.selected)
+            if (next.has(key)) next.delete(key); else next.add(key)
+            return { ...s, selected: next }
+          })
+        }
+        const toggleAllVisible = () => {
+          setSkillDialog(s => {
+            if (!s) return s
+            const next = new Set(s.selected)
+            if (allVisibleSelected) visibleKeys.forEach(k => next.delete(k))
+            else                    visibleKeys.forEach(k => next.add(k))
+            return { ...s, selected: next }
+          })
+        }
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+               style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+               onClick={e => { if (e.target === e.currentTarget && !loading) setSkillDialog(null) }}>
+            <div className="w-full max-w-3xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+                 style={{ background: 'var(--bg)', border: '1px solid var(--border)', maxHeight: '85vh' }}>
+              <div className="px-5 py-4 flex items-center gap-3 shrink-0"
+                   style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
+                <span className="text-2xl">🧠</span>
+                <div className="flex-1">
+                  <div className="font-semibold" style={{ color: 'var(--text)' }}>
+                    Skill Üret — {conn.name}
+                  </div>
+                  <div className="text-xs" style={{ color: 'var(--mute)' }}>
+                    LLM'in dokümante edeceği tabloları seçin. Default: satır sayısı top 100.
+                  </div>
+                </div>
+                <button onClick={() => setSkillDialog(null)} disabled={loading}
+                        className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer disabled:opacity-50"
+                        style={{ color: 'var(--mute)' }}>×</button>
+              </div>
+
+              <div className="px-5 py-3 flex items-center gap-2 shrink-0"
+                   style={{ borderBottom: '1px solid var(--border)' }}>
+                <input type="text" placeholder="🔍 Tablo ara…" value={filter}
+                       onChange={e => setSkillDialog(s => s ? { ...s, filter: e.target.value } : s)}
+                       className="flex-1 px-3 py-1.5 text-sm rounded-lg outline-none"
+                       style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+                <span className="text-xs font-mono" style={{ color: 'var(--mute)' }}>
+                  {selected.size.toLocaleString('tr-TR')} seçili / {tables.length.toLocaleString('tr-TR')} toplam
+                </span>
+                <button onClick={toggleAllVisible}
+                        className="px-2 py-1 text-xs rounded cursor-pointer"
+                        style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                  {allVisibleSelected ? 'Görünür seçimi kaldır' : 'Görünür hepsini seç'}
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0" style={{ background: 'var(--surface)' }}>
+                    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                      <th className="w-10 px-3 py-2 text-left"></th>
+                      <th className="px-3 py-2 text-left font-medium" style={{ color: 'var(--mute)' }}>Tablo</th>
+                      <th className="px-3 py-2 text-right font-medium" style={{ color: 'var(--mute)' }}>Satır</th>
+                      <th className="px-3 py-2 text-right font-medium" style={{ color: 'var(--mute)' }}>Kolon</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visible.slice(0, 1000).map(t => {
+                      const key = `${t.schema}.${t.name}`
+                      const checked = selected.has(key)
+                      return (
+                        <tr key={key} onClick={() => toggleOne(key)}
+                            className="cursor-pointer"
+                            style={{ background: checked ? 'rgba(168,85,247,0.06)' : 'transparent',
+                                     borderBottom: '1px solid var(--border)' }}>
+                          <td className="px-3 py-1.5">
+                            <input type="checkbox" checked={checked}
+                                   onChange={() => toggleOne(key)}
+                                   onClick={e => e.stopPropagation()} />
+                          </td>
+                          <td className="px-3 py-1.5 font-mono text-xs" style={{ color: 'var(--text)' }}>
+                            {key}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono text-xs"
+                              style={{ color: t.estimatedRows > 0 ? 'var(--text-2)' : 'var(--mute)' }}>
+                            {t.estimatedRows.toLocaleString('tr-TR')}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono text-xs" style={{ color: 'var(--mute)' }}>
+                            {t.columns.length}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {visible.length > 1000 && (
+                      <tr><td colSpan={4} className="px-3 py-3 text-center text-xs" style={{ color: 'var(--mute)' }}>
+                        … {(visible.length - 1000).toLocaleString('tr-TR')} satır daha (filtreyi daralt)
+                      </td></tr>
+                    )}
+                    {visible.length === 0 && (
+                      <tr><td colSpan={4} className="px-3 py-6 text-center text-sm" style={{ color: 'var(--mute)' }}>
+                        Filtreyle eşleşen tablo yok.
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {dlgErr && (
+                <div className="px-5 py-2 text-xs" style={{ background: 'rgba(234,67,53,0.08)', color: '#ea4335' }}>
+                  {dlgErr}
+                </div>
+              )}
+
+              <div className="px-5 py-4 flex gap-2 shrink-0"
+                   style={{ borderTop: '1px solid var(--border)', background: 'var(--surface)' }}>
+                <div className="flex-1 text-xs" style={{ color: 'var(--mute)' }}>
+                  ~{Math.ceil(selected.size / 100 * 3)} dakika sürebilir (6 bölüm × LLM çağrısı). RAG'a dokunmaz; sadece <span className="font-mono">Skills/</span> klasörüne yazar.
+                </div>
+                <button onClick={onStartSkillGen}
+                        disabled={loading || selected.size === 0}
+                        className="px-4 py-2 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{ background: '#a855f7', color: '#fff' }}>
+                  {loading ? '⏳ Başlatılıyor…' : `🚀 Üret (${selected.size} tablo)`}
+                </button>
+                <button onClick={() => setSkillDialog(null)} disabled={loading}
+                        className="px-4 py-2 rounded-lg text-sm cursor-pointer disabled:opacity-50"
+                        style={{ background: 'var(--surface-hi)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                  İptal
                 </button>
               </div>
             </div>

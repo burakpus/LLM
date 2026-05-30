@@ -119,6 +119,7 @@ services.AddSingleton<IJobHandler, SqlIngestSchemaJobHandler>();
 services.AddSingleton<IJobHandler, SqlSyncSchemaJobHandler>();
 services.AddSingleton<IJobHandler, SqlIngestDataJobHandler>();
 services.AddSingleton<IJobHandler, SqlSyncDataJobHandler>();
+services.AddSingleton<IJobHandler, SqlGenerateSkillJobHandler>();
 services.AddHostedService<JobWorker>();
 services.AddHostedService<AutoSyncScheduler>();
 services.AddHostedService<SetYazilim.Llm.Api.Auth.EventLogRetentionService>();
@@ -676,6 +677,7 @@ public sealed record TableConfigUpsert(
     int?      GroupId,
     string?   Collection);
 public sealed record SyncDataRequest(int[]? TableConfigIds);
+public sealed record GenerateSkillRequest(string[]? Tables);   // ["schema.name", ...] — null/empty = default top-100
 
 public sealed record ApiChatRequest(
     string    SessionId,

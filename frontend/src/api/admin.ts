@@ -474,24 +474,24 @@ export async function testSqlCredentials(payload: SqlConnectionUpsert): Promise<
   return r.json()
 }
 
-// ── Auto-generate a SQL skill .md from the connection's schema ──────────────
+// ── Auto-generate a SQL skill .md from the connection's schema (background job)
 // Üretilen skill Skills/ klasörüne yazılır ve picker'da görünür. RAG yoluna
 // hiçbir etki yoktur — bu sadece statik bir referans skill üretir.
-export interface GenerateSkillResult {
-  skillFile: string
-  skillId:   string
-  tables:    number
-  chars:     number
-  note:      string
-}
-
-export async function generateSqlSkill(connId: number): Promise<GenerateSkillResult> {
+// Job result olarak { skillFile, skillId, tablesPicked, tablesTotal, chars, selectionMode }.
+export async function generateSqlSkill(
+  connId: number,
+  tables?: string[],          // ["schema.name", ...] — null/boş = default top-100
+): Promise<{ jobId: number }> {
+  const body: Record<string, unknown> = {}
+  if (tables && tables.length > 0) body.tables = tables
   const r = await fetch(`/api/admin/sql-connections/${connId}/generate-skill`, {
-    method: 'POST', headers: authHeaders(),
+    method:  'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body:    JSON.stringify(body),
   })
   if (!r.ok) {
-    const body = await r.json().catch(() => ({}))
-    throw new Error(body.error ?? `HTTP ${r.status}`)
+    const e = await r.json().catch(() => ({}))
+    throw new Error(e.error ?? `HTTP ${r.status}`)
   }
   return r.json()
 }
